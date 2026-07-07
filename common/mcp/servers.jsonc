@@ -1,0 +1,20 @@
+// Tool-neutral MCP server catalog.
+//
+// Add your real MCP servers here, one entry per server, keyed by server
+// name. Setup steps for each tool (Claude Code, Codex CLI) read this file
+// and render it into that tool's native MCP config format/container.
+//
+// Keep commands portable: use `$HOME` and `$REPO` placeholders instead of
+// absolute paths so this file works across machines and checkouts. `$REPO`
+// is substituted with this repo's absolute path at bootstrap time; `$HOME`
+// is resolved by the shell/tool at launch time.
+//
+// The entry below is a placeholder example -- replace or remove it and add
+// your own servers.
+{
+  "example-server": {
+    "command": "npx",
+    "args": ["-y", "@scope/mcp-server"],
+    "env": {}
+  }
+}

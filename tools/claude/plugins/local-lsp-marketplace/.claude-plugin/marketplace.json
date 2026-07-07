@@ -1,0 +1,35 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "local-lsp",
+  "description": "Local LSP server definitions",
+  "owner": {
+    "name": "you",
+    "email": "local@localhost"
+  },
+  "plugins": [
+    {
+      "name": "ruby-lsp",
+      "description": "Ruby language server for code intelligence",
+      "version": "1.0.0",
+      "author": {
+        "name": "you",
+        "email": "local@localhost"
+      },
+      "source": "./plugins/ruby-lsp",
+      "category": "development",
+      "strict": false,
+      "lspServers": {
+        "ruby-lsp": {
+          "command": "mise",
+          "args": ["x", "--", "ruby-lsp"],
+          "extensionToLanguage": {
+            ".rb": "ruby",
+            ".rake": "ruby",
+            ".gemspec": "ruby",
+            ".ru": "ruby"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# Optional Codex-only skill sidecar.
+#
+# Drop a copy of this file (renamed to `openai.yaml`) next to a `SKILL.md`
+# under `common/skills/<name>/` when that skill needs Codex-specific
+# metadata -- e.g. declaring MCP server dependencies or UI hints for the
+# Codex CLI. Other tool integrations ignore this file entirely; it is
+# never read outside the Codex setup flow.
+#
+# Leave it out of a skill directory if the skill needs no Codex-specific
+# metadata -- it is optional, not required per skill.
+
+# MCP servers (by name, matching keys in common/mcp/servers.jsonc) that this
+# skill depends on. Codex CLI uses this to confirm/expose the right servers
+# when the skill is invoked. Leave empty if the skill has no MCP dependency.
+mcp_dependencies: []

@@ -1,0 +1,20 @@
+# Tier -> concrete model per tool. Single source of truth; edit here to change both tools.
+[orchestrator]
+claude = "opus"
+codex_model = "gpt-5.5"
+codex_effort = "high"
+
+[specialist]
+claude = "sonnet"
+codex_model = "gpt-5.4"
+codex_effort = "medium"
+
+[specialist-fast]
+claude = "sonnet"
+codex_model = "gpt-5.4-mini"
+codex_effort = "high"
+
+[data-fetch]
+claude = "haiku"
+codex_model = "gpt-5.4-mini"
+codex_effort = "low"

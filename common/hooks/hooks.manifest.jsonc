@@ -1,0 +1,35 @@
+// Tool-neutral hooks manifest.
+//
+// Maps a shared hook-event name to one or more scripts to run on that event.
+// Both Claude Code and Codex CLI understand this event vocabulary
+// (SessionStart, Stop, PreToolUse, PostToolUse, UserPromptSubmit, etc.).
+// Each tool's setup step reads this file and renders it into that tool's
+// native hook config format/container.
+//
+// Scripts are referenced with a literal `$REPO` token prefix. The bootstrap
+// process substitutes `$REPO` with the absolute path to this repo when
+// wiring the hook into a tool's config, so these paths stay portable
+// across machines.
+//
+// Add your own hooks here by adding a new event key (or appending to an
+// existing event's array) and pointing `script` at a script under
+// `common/hooks/`.
+{
+  // Runs once when a new session starts. Use for priming context
+  // (role reminders, protocol checklists, environment notes).
+  "SessionStart": [
+    { "script": "$REPO/common/hooks/startup-checklist.sh" }
+  ],
+
+  // Runs when the agent finishes responding / is about to stop.
+  // Use for end-of-turn reminders (e.g. nudging uncommitted changes
+  // into a commit) rather than mid-task interruptions.
+  "Stop": [
+    { "script": "$REPO/common/hooks/commit-reminder.sh" }
+  ]
+
+  // Other available shared events you can map scripts to:
+  // "PreToolUse":       runs before a tool call (can block/approve).
+  // "PostToolUse":      runs after a tool call completes.
+  // "UserPromptSubmit": runs when the user submits a new prompt.
+}

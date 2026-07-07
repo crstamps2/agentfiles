@@ -1,0 +1,18 @@
+# agentfiles-scan.sh deny-list (example / committed).
+#
+# This file ships generic placeholder tokens only. To scan for your own
+# organization's real internal identifiers (hostnames, org names, emails,
+# usernames, etc.), copy this file to `denylist.local` in this same
+# directory and add your real tokens there, one per line.
+#
+# `denylist.local` is gitignored and will never be committed. The scanner
+# prefers it automatically when present (see agentfiles-scan.sh), falling
+# back to this example file otherwise. You can also point at an arbitrary
+# file via the AF_DENYLIST environment variable.
+#
+# Blank lines and lines starting with # are ignored. Remaining lines are
+# treated as extended-regex (ERE) alternatives, so escape regex metachars
+# (e.g. `\.`) if you want a literal match.
+example-internal-hostname
+example-org-name
+noreply@example.invalid

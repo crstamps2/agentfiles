@@ -18,7 +18,7 @@ if [ "$AF_PRINT_ENV" = "1" ]; then
 fi
 
 af_sync_repo() {
-  if [ -d "$AF_REPO/.git" ]; then git -C "$AF_REPO" pull --ff-only
+  if [ -d "$AF_REPO/.git" ]; then git -C "$AF_REPO" -c pull.rebase=false pull --ff-only --no-rebase >/dev/null 2>&1 || echo "warning: could not fast-forward $AF_REPO (diverged/dirty/offline); using existing checkout as-is" >&2
   else git clone https://github.com/crstamps2/agentfiles.git "$AF_REPO"; fi
 }
 af_dispatch() {

@@ -54,6 +54,7 @@ Transform rules, applied to the YAML frontmatter only. The body (everything afte
   `model: <value>` frontmatter key with that value.
 - `access:` -- if present, rename the key to `tools:` (value copied through unchanged). If
   `access:` is absent, do not add a `tools:` key.
+- `sandbox:` -- omit this key from the rendered frontmatter (it is not used here).
 - Any other frontmatter key (e.g. `permissionMode:`, `memory:`) -- copy through unchanged,
   same key name, same value.
 - Preserve the original key order as closely as possible, with `model:` taking the position

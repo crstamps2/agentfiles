@@ -3,6 +3,7 @@ name: platform-engineer
 description: Platform Engineer responsible for worktree health, branch management, CI status, and development environment maintenance. Use for checking worktree status, cleaning up stale branches, verifying CI, and environment troubleshooting.
 access: Bash, Read, Grep, Glob
 tier: data-fetch
+sandbox: workspace-write
 permissionMode: default
 memory: user
 ---

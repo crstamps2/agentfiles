@@ -3,6 +3,7 @@ name: comms-coordinator
 description: Communications Coordinator responsible for responding to GitHub PR comments, Jira comments, and Slack messages on behalf of the team. Use when external communication is needed -- replying to review feedback, updating stakeholders, or responding to questions.
 access: Read, Bash
 tier: specialist
+sandbox: workspace-write
 permissionMode: default
 memory: user
 mcpServers:

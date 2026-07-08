@@ -72,6 +72,10 @@ means "no restriction was declared" -- the source agent gets every tool. Render 
 way in both directions: absent `access:` -> full/write-capable. Only a declared `access:` list
 that omits write-capable tools should render as read-only:
 
+- **Override first.** If the source frontmatter defines a `sandbox:` key, use its value
+  verbatim as `sandbox_mode` and skip the access-based inference entirely. Otherwise, infer
+  from `access:` as described below (absent `access:` -> `workspace-write`; `access:` with a
+  write/edit tool -> `workspace-write`; `access:` with only read-type tools -> `read-only`).
 - If `access:` is **absent**, set `sandbox_mode = "workspace-write"` -- no restriction was
   declared, so the agent is write-capable (matching the "all tools" default when this same
   agent source has no `access:`/`tools:` key).

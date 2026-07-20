@@ -63,6 +63,14 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 
 - Before reporting a review finding as a bug, actually reproduce it locally (run the code path, check rendered output). Do not rely on static reading alone.
 
+# Environment / Service State
+
+- Never report a service or environment as down (or up) based on a startup environment-check snapshot (e.g. a `doctor` script) alone. That snapshot can be stale, especially after a restart or compaction. Run an independent probe first: `pg_isready`, `redis-cli ping`, `curl -s localhost:9200`, etc. This is doubly required before telling the user to start something that may already be running, or before citing a service outage as a blocker. Contradicting evidence (e.g. `bundle`/`rubocop`/`rails` commands just succeeded) means the check is wrong, not reality -- treat it as a bug in the check and probe.
+
+# Answering the User
+
+- Never respond to a genuine user question with a non-answer ("No response requested." or similar). If the user asks "why", explain the actual reason plainly, including when the answer reflects a mistake you made. A direct question always gets a direct answer.
+
 # Browser Testing
 
 - Always use **Chrome for Testing** for all browser automation. The Playwright MCP server uses a wrapper (`~/.claude/bin/playwright-mcp-chrome`) that resolves the Chrome for Testing binary from Playwright's cache.

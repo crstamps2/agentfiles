@@ -65,7 +65,7 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 
 # Environment / Service State
 
-- Never report a service or environment as down (or up) based on a startup environment-check snapshot (e.g. a `doctor` script) alone. That snapshot can be stale, especially after a restart or compaction. Run an independent probe first: `pg_isready`, `redis-cli ping`, `curl -s localhost:9200`, etc. This is doubly required before telling the user to start something that may already be running, or before citing a service outage as a blocker. Contradicting evidence (e.g. `bundle`/`rubocop`/`rails` commands just succeeded) means the check is wrong, not reality -- treat it as a bug in the check and probe.
+- Never report a service or environment as down (or up) based on a startup environment-check snapshot (e.g. a `doctor` script) alone. That snapshot can be stale, especially after a restart or compaction. Run an independent probe of the service itself first. This is doubly required before telling the user to start something that may already be running, or before citing a service outage as a blocker. Contradicting evidence (e.g. a command that depends on that service just succeeded) means the check is wrong, not reality -- treat it as a bug in the check and probe.
 
 # Answering the User
 

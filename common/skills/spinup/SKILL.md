@@ -21,7 +21,7 @@ Personal workflow command. Four modes:
 
 When spinning up a ticket or PR without `--atlas`, the chain does:
 
-1. **git worktree** -- `git worktree add` from `~/workspace/your-app` into `~/workspace/your-app-worktrees/<name>` (idempotent: reuses path if it already exists).
+1. **git worktree** -- `git worktree add` from `~/workspace/your-app` into `~/workspace/your-app-worktrees/<name>` (idempotent: reuses path if it already exists). A genuinely new ticket branch is fetched and cut from `origin/main` (not the prime checkout's possibly-stale local `main`); re-spinning an existing branch attaches it as-is.
 2. **Setup tab** -- opens a cmux workspace with a terminal tab running `bin/worktree-setup` (with `WORKTREE_NAME` and `WORKTREE_ROOT_PATH` set). Writes an exit sentinel (`.cmux-setup-status`) when done. Blocks until setup succeeds or times out (10 min).
 3. **Dev-server tab** -- opens a second terminal tab, sends `bin/dev` + Enter (worktree-aware: picks Procfile.dev.worktree via .env). Polls `https://admin.<name>.test` until it responds or times out (2 min).
 4. **Agent tab** -- opens a third terminal tab, launches `claude`, waits briefly for it to start, then submits the work prompt already typed:

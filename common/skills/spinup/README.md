@@ -147,7 +147,7 @@ The key constants to change in `cmux_chain.py` and `spinup_helper.py`:
 
 ## Gotchas
 
-- **Stale base:** branches are cut from the prime checkout's local `main`. Run `git fetch origin main` and rebase early rather than at PR time.
+- **Base ref:** new ticket branches are cut from a freshly-fetched `origin/main` (`ensure_worktree` runs `git fetch origin main` and bases the branch on `origin/main`), not the prime checkout's local `main`. Re-spinning an existing branch attaches it as-is -- no fetch, no rebase -- to preserve in-progress work.
 - **Worktree slots are finite and shared** across all clones (count via `git worktree list`). Clean up orphaned worktrees regularly.
 - **The prime checkout is protected** -- `/spindown` refuses to tear it down.
 - **Verify dev-server state from the cmux terminal**, not curl alone -- an orphaned process squatting on the port can satisfy a curl probe.

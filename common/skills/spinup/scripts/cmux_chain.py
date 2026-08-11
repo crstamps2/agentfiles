@@ -20,6 +20,7 @@ PR_NOTIFY_STATE_PATH = Path.home() / ".claude" / "cache" / "cmux-pr-notify.json"
 
 MAIN_REPO = Path.home() / "workspace" / "your-app"          # TODO: set to your prime checkout path
 WORKTREE_BASE = Path.home() / "workspace" / "your-app-worktrees"  # TODO: set to your worktree base
+MAIN_BRANCH = "main"                                        # TODO: set to your default branch
 CMUX = "cmux"
 GH_REPO = "your-org/your-app"                                # TODO: set to your GitHub repo
 JIRA_BROWSE_BASE = "https://your-jira-instance/browse"   # TODO: set to your Jira base URL
@@ -493,10 +494,14 @@ def cmd_close_listen(args) -> int:
     return 0
 
 
-def git_worktree_add(path: str, branch: str, new_branch: bool) -> None:
+def git_worktree_add(path: str, branch: str, new_branch: bool, base: str = None) -> None:
     args = ["git", "-C", str(MAIN_REPO), "worktree", "add"]
     if new_branch:
         args += ["-b", branch, str(path)]
+        if base:
+            # Base the new branch on an explicit commit-ish (e.g. origin/main)
+            # instead of the prime checkout's possibly-stale HEAD.
+            args += [base]
     else:
         args += [str(path), branch]
     r = subprocess.run(args, capture_output=True, text=True)
@@ -651,10 +656,16 @@ def branch_exists(branch: str) -> bool:
 
 
 def branch_has_commits(branch: str) -> bool:
-    """True if `branch` has commits beyond `main` (i.e. real in-progress work).
-    A branch sitting at base HEAD with 0 commits ahead is treated as fresh."""
+    """True if `branch` has commits beyond `origin/<MAIN_BRANCH>` (i.e. real in-progress
+    work). A branch sitting at base HEAD with 0 commits ahead is treated as fresh.
+
+    Measured against origin/<MAIN_BRANCH> -- the same base ensure_worktree cuts new
+    branches from -- and NOT the prime checkout's local branch, which is routinely many
+    commits stale. Counting `<MAIN_BRANCH>..branch` reports those phantom commits as real
+    work, so a brand-new branch looks in-progress and jira_agent_prompt silently launches
+    the agent idle with no prompt at all."""
     r = subprocess.run(
-        ["git", "-C", str(MAIN_REPO), "rev-list", "--count", f"main..{branch}"],
+        ["git", "-C", str(MAIN_REPO), "rev-list", "--count", f"origin/{MAIN_BRANCH}..{branch}"],
         capture_output=True, text=True)
     try:
         return r.returncode == 0 and int(r.stdout.strip()) > 0
@@ -666,13 +677,22 @@ def ensure_worktree(name: str, branch: str, new_branch: bool) -> str:
     """Create the worktree if its path doesn't already exist; return the path.
 
     If new_branch is requested but the branch already exists (e.g. re-spinning a
-    torn-down ticket), attach the existing branch instead of failing on `worktree add -b`."""
+    torn-down ticket), attach the existing branch instead of failing on `worktree add -b`.
+
+    A genuinely new branch is based on the freshly-fetched origin/main, never the
+    prime checkout's local HEAD -- the prime's local main is often many commits
+    stale and would otherwise become the worktree's base (bad merge-base, phantom
+    diffs, CI changed-file noise)."""
     _ensure_base_dir()
     path = worktree_path(name)
     if not os.path.isdir(path):
+        base = None
         if new_branch and branch_exists(branch):
             new_branch = False
-        git_worktree_add(path, branch, new_branch)
+        elif new_branch:
+            git_fetch(MAIN_BRANCH)
+            base = f"origin/{MAIN_BRANCH}"
+        git_worktree_add(path, branch, new_branch, base)
     return path
 
 

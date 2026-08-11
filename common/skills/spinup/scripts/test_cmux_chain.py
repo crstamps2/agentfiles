@@ -78,6 +78,15 @@ class WrapperTests(unittest.TestCase):
         self.assertIn("feature/proj-1-x", argv); self.assertIn("/wt/proj-1", argv)
 
     @patch("cmux_chain.subprocess.run")
+    def test_git_worktree_add_new_branch_with_base(self, run):
+        run.return_value = _run()
+        cc.git_worktree_add("/wt/proj-1", "feature/proj-1-x", new_branch=True, base="origin/main")
+        argv = run.call_args[0][0]
+        self.assertIn("-b", argv)
+        # base commit-ish must be the trailing arg so the branch is cut from it
+        self.assertEqual(argv[-1], "origin/main")
+
+    @patch("cmux_chain.subprocess.run")
     def test_git_worktree_add_existing_branch(self, run):
         run.return_value = _run()
         cc.git_worktree_add("/wt/pr-9", "internal/foo", new_branch=False)
@@ -96,12 +105,31 @@ class WorktreeTests(unittest.TestCase):
                          str(cc.WORKTREE_BASE / "proj-5487"))
 
     @patch("cmux_chain._ensure_base_dir")
+    @patch("cmux_chain.branch_exists", return_value=False)
+    @patch("cmux_chain.git_fetch")
     @patch("cmux_chain.git_worktree_add")
     @patch("cmux_chain.os.path.isdir", return_value=False)
-    def test_ensure_worktree_creates_new_branch(self, isdir, add, mkd):
+    def test_ensure_worktree_creates_new_branch_from_origin_main(self, isdir, add, fetch, bex, mkd):
+        # A genuinely new branch must fetch origin/main first and base the branch
+        # on origin/main, never the prime checkout's (possibly stale) local HEAD.
         p = cc.ensure_worktree("proj-1", "feature/proj-1-x", new_branch=True)
         self.assertEqual(p, str(cc.WORKTREE_BASE / "proj-1"))
-        add.assert_called_once_with(str(cc.WORKTREE_BASE / "proj-1"), "feature/proj-1-x", True)
+        fetch.assert_called_once_with(cc.MAIN_BRANCH)
+        add.assert_called_once_with(
+            str(cc.WORKTREE_BASE / "proj-1"), "feature/proj-1-x", True, "origin/main")
+
+    @patch("cmux_chain._ensure_base_dir")
+    @patch("cmux_chain.branch_exists", return_value=True)
+    @patch("cmux_chain.git_fetch")
+    @patch("cmux_chain.git_worktree_add")
+    @patch("cmux_chain.os.path.isdir", return_value=False)
+    def test_ensure_worktree_reattaches_existing_branch_without_fetch(self, isdir, add, fetch, bex, mkd):
+        # Re-spinning a torn-down ticket: branch already exists, so attach it as-is.
+        # No fetch, no base override -- we must not rebase the user's existing work.
+        cc.ensure_worktree("proj-1", "feature/proj-1-x", new_branch=True)
+        fetch.assert_not_called()
+        add.assert_called_once_with(
+            str(cc.WORKTREE_BASE / "proj-1"), "feature/proj-1-x", False, None)
 
     @patch("cmux_chain._ensure_base_dir")
     @patch("cmux_chain.git_worktree_add")
@@ -110,6 +138,32 @@ class WorktreeTests(unittest.TestCase):
         p = cc.ensure_worktree("proj-1", "feature/proj-1-x", new_branch=True)
         add.assert_not_called()  # already there -> reuse
         self.assertEqual(p, str(cc.WORKTREE_BASE / "proj-1"))
+
+
+class BranchHasCommitsTests(unittest.TestCase):
+    """branch_has_commits must measure against origin/<MAIN_BRANCH> -- the same base
+    ensure_worktree cuts new branches from. The prime checkout's local main is routinely
+    many commits stale, so `main..branch` counts phantom commits, a brand-new branch
+    looks like real in-progress work, and jira_agent_prompt then silently launches the
+    agent idle with no prompt at all."""
+
+    @patch("cmux_chain.subprocess.run")
+    def test_counts_against_origin_main_not_local_main(self, run):
+        run.return_value = _run(stdout="0\n")
+        cc.branch_has_commits("feature/proj-1-x")
+        argv = run.call_args[0][0]
+        self.assertIn(f"origin/{cc.MAIN_BRANCH}..feature/proj-1-x", argv)
+        self.assertNotIn(f"{cc.MAIN_BRANCH}..feature/proj-1-x", argv)
+
+    @patch("cmux_chain.subprocess.run")
+    def test_fresh_branch_at_base_has_no_commits(self, run):
+        run.return_value = _run(stdout="0\n")
+        self.assertFalse(cc.branch_has_commits("feature/proj-1-x"))
+
+    @patch("cmux_chain.subprocess.run")
+    def test_branch_with_real_work_has_commits(self, run):
+        run.return_value = _run(stdout="3\n")
+        self.assertTrue(cc.branch_has_commits("feature/proj-1-x"))
 
 
 class SetupTabTests(unittest.TestCase):

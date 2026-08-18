@@ -15,7 +15,7 @@ process.
 
 The selected approach is a tmux-session-sharing shim: a global wrapper installed
 at `~/.pi/agent/bin/pi` intercepts interactive invocations, starts the real Pi
-binary inside a deterministically named tmux session, then uses the Paseo CLI to
+binary inside a uniquely named tmux session, then uses the Paseo CLI to
 open a terminal that attaches to that session. Both panes show the same TUI
 rendered by tmux. Cleanup is self-contained: the Paseo terminal's startup command
 runs the attach and then kills itself when the tmux attach returns.
@@ -100,8 +100,7 @@ The following must be available for the full integration. The shim checks each
 before proceeding; missing dependencies trigger the fail-clearly behavior
 described below.
 
-- **tmux >= 3.2** -- required for reliable `new-session` and hook behavior.
-  Version is checked at shim entry.
+- **tmux** -- must be installed and available in PATH.
 - **Paseo daemon** -- probed with `paseo status --json`. If the daemon is not
   running, started with `paseo start` before proceeding. If `paseo start` fails or
   `paseo status --json` still reports not-ready afterward, the shim falls back to
@@ -149,7 +148,7 @@ pi <args>
   +-- Noninteractive invocation? (see below)
   |     --> exec real Pi directly, no tmux, no Paseo
   |
-  +-- tmux not found or version < 3.2?
+  +-- tmux not found?
   |     --> warn to stderr, exec real Pi directly in local terminal
   |
   +-- Paseo CLI not in PATH?
@@ -185,14 +184,14 @@ Additionally, the shim scans arguments and bypasses when any of the following
 are present, because these invocations are logically noninteractive even in a tty:
 
 - `--help` or `-h`
-- `--version`
+- `--version` or `-v`
 - `--print` or `-p`
 - `--mode json`
 - `--mode rpc`
 - `--export`
 - `--list-models`
-- A leading subcommand that is one of: `package`, `auth`, `config`, `update`,
-  `list`
+- A leading subcommand that is one of: `install`, `remove`, `uninstall`,
+  `update`, `list`, `config`, `auth`
 
 ### Session Naming
 
@@ -241,6 +240,13 @@ and continues: the local tmux attach proceeds and Pi runs locally. No remote pan
 is opened in this case; the user is not misled into thinking a remote session is
 available.
 
+If `paseo terminal send-keys` fails after `paseo terminal create` succeeded, the
+shim immediately kills the orphaned terminal (`paseo terminal kill "$TERM_ID"
+--json`) to avoid leaving a dangling Paseo window, then reports to stderr that
+remote access failed, then continues with the local tmux attach so Pi still
+launches. The shim never implies remote access is available after a send-keys
+failure.
+
 ### Argument Forwarding
 
 All arguments passed to the shim are forwarded verbatim to the real Pi binary
@@ -253,8 +259,10 @@ tmux new-session -d -s "$SESSION" \
 
 The shim does not inspect, filter, or modify any arguments beyond the bypass
 checks listed above. Environment variables are inherited unchanged from the
-calling process. `PI_NO_PASEO` and `PI_IN_SHIM` are unset in the child
-environment so they do not propagate into Pi or any Pi-spawned subprocesses.
+calling process. `PI_NO_PASEO` is unset before the `tmux new-session` call so
+the bypass flag does not propagate into Pi or any Pi-spawned subprocesses.
+`PI_IN_SHIM` is left set so the recursion guard remains active for any nested
+`pi` invocations that explicitly unset `TMUX`.
 
 ### Recursion Avoidance
 
@@ -298,12 +306,12 @@ back:
 | Condition | Behavior |
 | ----------- | ---------- |
 | tmux not installed | `pi-shim: tmux not found; launching pi directly` then exec real Pi |
-| tmux version < 3.2 | `pi-shim: tmux <ver> is below required 3.2; launching pi directly` then exec real Pi |
 | Paseo CLI not in PATH | `pi-shim: paseo not found in PATH; launching pi directly` then exec real Pi |
 | jq not in PATH | `pi-shim: jq not found in PATH; launching pi directly` then exec real Pi |
 | paseo start fails | `pi-shim: paseo daemon failed to start; launching pi directly` then exec real Pi |
 | tmux new-session fails | `pi-shim: failed to create tmux session; launching pi directly` then exec real Pi |
 | paseo terminal create fails | `pi-shim: paseo terminal create failed; Pi running locally only` then local tmux attach proceeds |
+| paseo terminal send-keys fails | `pi-shim: paseo terminal send-keys failed; remote access unavailable` then kill the orphaned terminal (`paseo terminal kill <id> --json`), then local tmux attach proceeds |
 | Real Pi binary not found | `pi-shim: real pi binary not found; check PI_REAL or ~/.pi/agent/pi-real` exit 1 |
 
 In every fallback case where Pi can be launched, it is. The Paseo path is
@@ -318,7 +326,7 @@ User types: pi [args]
   v
 ~/.pi/agent/bin/pi (shim)
   |-- bypass checks (TMUX, PI_NO_PASEO, noninteractive flags, non-tty)
-  |-- prerequisite checks (tmux version, paseo in PATH, jq in PATH,
+  |-- prerequisite checks (tmux present, paseo in PATH, jq in PATH,
   |                        paseo status --json / paseo start, PI_REAL)
   |
   v (full path)
@@ -391,6 +399,12 @@ shim for those sessions.
   invocation.
 - **Shim permissions:** The shim must not be writable by any user other than the
   owner (`chmod 0755`, world-write forbidden).
+- **Remote access is privileged:** Any Paseo terminal attached to the tmux
+  session has effective local account shell access, not just Pi access. The tmux
+  session can be used to create or switch windows, send keystrokes to arbitrary
+  panes, or otherwise escape the Pi TUI. Any Paseo relay, pairing mechanism, or
+  external controller that can reach this terminal must be treated as having
+  local account privileges. Do not grant Paseo remote access to untrusted parties.
 
 ## Validation Expectations
 

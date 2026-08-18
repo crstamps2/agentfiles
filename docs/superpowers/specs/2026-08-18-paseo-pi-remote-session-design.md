@@ -10,30 +10,35 @@ Pi sessions today exist only in the local terminal where they are launched. Pase
 can open a managed terminal window alongside any cmux surface, but it has no
 mechanism to attach to an already-running Pi TUI. The goal is to let a single Pi
 session be visible in BOTH the local pane (cmux or ordinary terminal) AND a
-Paseo-managed terminal at the same time, with full interactive TUI fidelity in
-both views, while keeping all session state in one place.
+Paseo-managed terminal at the same time, while keeping all session state in one
+process.
 
 The selected approach is a tmux-session-sharing shim: a global wrapper installed
 at `~/.pi/agent/bin/pi` intercepts interactive invocations, starts the real Pi
-binary inside a deterministically named tmux session, then signals Paseo to open
-a terminal that attaches to the same session. Both panes show the identical TUI.
+binary inside a deterministically named tmux session, then uses the Paseo CLI to
+open a terminal that attaches to that session. Both panes show the same TUI
+rendered by tmux. Cleanup is self-contained: the Paseo terminal's startup command
+runs the attach and then kills itself when the tmux attach returns.
 
 ## Goals
 
 - Interactive `pi` invocations remain the single entry point. No new subcommands
   or mental model changes for the user.
-- The full Pi TUI is preserved. Paseo's view is a real tmux attach, not a
-  transcript or screenshot stream.
-- Session state lives in exactly one process. Both views write to the same pty.
-- Paseo's terminal closes automatically when Pi exits. No polling loop required.
+- The Pi TUI is visible in both the local pane and the Paseo pane via tmux session
+  sharing. Both panes write to the same pty.
+- Session state lives in exactly one process. Both views are clients of the same
+  tmux session.
+- Paseo's terminal closes automatically when Pi exits. No polling loop, no helper
+  script, and no state files are required.
 - Noninteractive and utility invocations are completely unaffected.
 - The shim is safe to leave in place permanently; disabling is a single env var.
-- Failure in Paseo setup does not silently swallow Pi. Pi still launches locally.
+- If Paseo setup fails, Pi still launches locally with a clear error on stderr.
+  The session is never implied to be remotely available when setup has failed.
 
 ## Non-Goals
 
-- Multiplexing Pi across more than two terminal windows simultaneously. The design
-  handles one local pane + one Paseo pane; additional viewers are out of scope.
+- Multiplexing Pi across more than one Paseo terminal at a time. The primary use
+  case is the local pane plus one Paseo pane.
 - Replacing the Pi TUI with a web-based or Paseo-native rendering surface.
 - Using Paseo's native Pi provider (see Approach A below and the version mismatch
   section).
@@ -70,52 +75,53 @@ two consumers (the local terminal and a Paseo terminal socket).
 
 **Why rejected:** Writing a reliable pty multiplexer is complex (flow control,
 terminal resize events, color escape passthrough, inline image protocols). Any
-relay process becomes a single point of failure that swallows output if it crashes.
-Tmux already solves this problem correctly.
+relay process becomes a single point of failure that swallows output if it
+crashes. Tmux already solves this problem correctly.
 
 ### Approach C: Tmux Session Sharing Shim (Selected)
 
 A thin shell wrapper at `~/.pi/agent/bin/pi` creates a named tmux session,
-launches the real Pi inside it, signals Paseo via its local relay to open an
-attaching terminal, and blocks waiting for tmux to exit. Cleanup is event-driven
-via a tmux `remain-on-exit off` and an `after-hook` on the Pi pane exit.
+launches the real Pi inside it, uses `paseo terminal create` to open a managed
+terminal window, and sends that window a self-cleaning attach command. The local
+terminal then attaches to the same tmux session.
 
 **Why selected:** Tmux handles all pty complexity. Session sharing is its primary
-design goal. The shim itself is under 60 lines of POSIX shell. Paseo integration
-is a single HTTP or socket call to an already-running Paseo relay. The design
-composes independently: both halves (tmux launch and Paseo notification) are
-tested and used independently of each other.
+design goal. Paseo integration uses the `paseo terminal` CLI (create, send-keys,
+kill) with no daemon socket contract to maintain. Cleanup is event-driven and
+self-contained in the Paseo terminal's startup command chain: when the tmux attach
+returns, the terminal immediately kills itself. No helper scripts, no state files,
+and no polling loops are required.
 
 ## Prerequisites
 
-### Daemon / Relay Requirements
+### Daemon and CLI Requirements
 
-The following services must be running for the full integration to work. The shim
-checks each before proceeding with the Paseo path; missing services trigger the
-fail-clearly behavior described below.
+The following must be available for the full integration. The shim checks each
+before proceeding; missing dependencies trigger the fail-clearly behavior
+described below.
 
-- **tmux >= 3.2** -- required for `remain-on-exit` behavior and reliable
-  `send-keys`/`new-session` flags. Version is checked at shim entry.
-- **Paseo relay** -- a local HTTP or Unix-socket relay (`paseo relay`) must be
-  running and accepting requests on a well-known address (default:
-  `$PASEO_RELAY_SOCK` or `~/.pi/agent/paseo.sock`). The shim tests reachability
-  with a short-timeout probe before attempting session setup.
-- **Real Pi binary** -- the shim locates the real Pi binary via `PI_REAL` (env)
-  or by reading the path recorded in `~/.pi/agent/pi-real` at install time,
-  skipping itself to avoid recursion (see Recursion Avoidance below).
+- **tmux >= 3.2** -- required for reliable `new-session` and hook behavior.
+  Version is checked at shim entry.
+- **Paseo daemon** -- probed with `paseo status --json`. If the daemon is not
+  running, started with `paseo start` before proceeding. If `paseo start` fails or
+  `paseo status --json` still reports not-ready afterward, the shim falls back to
+  direct Pi and reports the failure clearly.
+- **Paseo CLI** -- `paseo terminal create`, `paseo terminal send-keys`, and
+  `paseo terminal kill` must be available in PATH.
+- **Real Pi binary** -- located via `PI_REAL` (env) or the path recorded in
+  `~/.pi/agent/pi-real` at bootstrap install time, skipping the shim itself to
+  avoid recursion (see Recursion Avoidance below).
+- **`jq`** -- used to extract the terminal `id` from `paseo terminal create
+  --json` output. If absent, the shim falls back to direct Pi.
 
 ### Installed Layout
 
 ```
-~/.pi/agent/bin/pi           # the shim (this script); must appear BEFORE real pi in PATH
-~/.pi/agent/paseo.sock       # default Paseo relay socket path (overridable via env)
-~/.pi/agent/sessions/        # per-session state dir (session name, pid file)
+~/.pi/agent/bin/pi           # the shim; must appear BEFORE real pi in PATH
+~/.pi/agent/pi-real          # path to the real Pi binary (written at install time)
 ```
 
-The shim is installed by the agentfiles bootstrap as part of Pi tool setup. The
-real Pi binary location is resolved at install time and written to
-`~/.pi/agent/pi-real` so the shim does not have to re-search PATH every
-invocation.
+The shim is installed by the agentfiles bootstrap as part of Pi tool setup.
 
 ## Design
 
@@ -143,40 +149,50 @@ pi <args>
   +-- Noninteractive invocation? (see below)
   |     --> exec real Pi directly, no tmux, no Paseo
   |
-  +-- tmux not found or wrong version?
+  +-- tmux not found or version < 3.2?
   |     --> warn to stderr, exec real Pi directly in local terminal
   |
-  +-- Paseo relay unreachable?
+  +-- Paseo CLI not in PATH?
   |     --> warn to stderr, exec real Pi directly in local terminal
-  |         (Pi must still launch; Paseo is best-effort)
+  |
+  +-- Paseo daemon not running? (paseo status --json)
+  |     +-- paseo start succeeds?
+  |     |     --> continue
+  |     +-- paseo start fails?
+  |           --> report failure clearly to stderr, exec real Pi directly
+  |               (Pi launches locally; session is not remotely available)
   |
   +-- Proceed with full Paseo integration:
         1. Generate unique tmux session name
         2. Create tmux session with real Pi as the only pane command
-        3. Signal Paseo relay to open attaching terminal
+        3. Create Paseo terminal and send self-cleaning attach command
         4. Attach local terminal to tmux session
-        5. Register exit hook for Paseo cleanup
-        6. Block until tmux session exits
+        5. Block until tmux session exits
 ```
 
 ### Noninteractive Bypass Conditions
 
-The following invocations exec the real Pi binary directly without tmux or Paseo:
+The following invocations exec the real Pi binary directly without tmux or Paseo.
 
-- `pi --help` or `pi -h` (any argument that is exactly `--help` or `-h`)
-- `pi --version` or `pi -v`
-- `pi models` or `pi model-list` (or any subcommand that produces machine-readable output)
-- `pi --json` flag present anywhere in the argument list
-- `pi --print` flag present anywhere in the argument list
-- Any invocation where stdout is not a tty (`[ -t 1 ]` is false) -- pipes, file
-  redirects, and CI-style script invocations are noninteractive by definition
-- Any invocation where stdin is not a tty (`[ -t 0 ]` is false) -- RPC-style
-  usage driving Pi with piped input
+The primary gate is a tty check: if stdout or stdin is not a tty, the invocation
+is noninteractive and bypasses the shim entirely:
 
-The check `[ -t 1 ] && [ -t 0 ]` is the primary gate. Argument scanning for
-explicit flags is a secondary catch for cases where both fds are ttys but the
-invocation is logically noninteractive (e.g. running `pi models` in a terminal
-to inspect available models).
+```sh
+[ -t 0 ] && [ -t 1 ] || exec "$PI_REAL" "$@"
+```
+
+Additionally, the shim scans arguments and bypasses when any of the following
+are present, because these invocations are logically noninteractive even in a tty:
+
+- `--help` or `-h`
+- `--version`
+- `--print` or `-p`
+- `--mode json`
+- `--mode rpc`
+- `--export`
+- `--list-models`
+- A leading subcommand that is one of: `package`, `auth`, `config`, `update`,
+  `list`
 
 ### Session Naming
 
@@ -190,32 +206,40 @@ pi-<timestamp>-<random4>
 Where `<timestamp>` is seconds since epoch and `<random4>` is four hex digits from
 `/dev/urandom`. Example: `pi-1755523812-a3f1`.
 
-The session name is written to `~/.pi/agent/sessions/<name>.pid` along with the
-PID of the Pi process inside tmux. This allows external tooling (e.g. `cmux top`)
-to correlate the tmux session with a cmux surface without requiring integration
-changes to cmux itself.
+### Paseo Terminal Creation and Self-Cleaning Attach
 
-### Paseo Terminal Attachment
+After the tmux session exists and the Pi pane is running, the shim creates a
+Paseo-managed terminal window and sends it a command that attaches to the tmux
+session and then kills itself when the attach returns:
 
-After the tmux session exists and the Pi pane is running, the shim calls the Paseo
-relay to open a terminal window attached to the session:
+```sh
+TERM_JSON=$(paseo terminal create \
+  --cwd "$PWD" \
+  --name "pi ($SESSION)" \
+  --json)
+TERM_ID=$(printf '%s' "$TERM_JSON" | jq -r '.id')
 
+# Build a safely quoted self-cleaning attach command and send it to the terminal.
+ATTACH_CMD="tmux attach-session -t '${SESSION}'; paseo terminal kill '${TERM_ID}' --json"
+paseo terminal send-keys "$TERM_ID" "$ATTACH_CMD" Enter
 ```
-POST $PASEO_RELAY_SOCK/terminal/open
-{
-  "type": "tmux-attach",
-  "session": "<session-name>",
-  "title": "pi (<session-name>)"
-}
-```
 
-The relay responds synchronously with the terminal window ID or an error. On error,
-the shim prints a clear warning to stderr and continues: the local tmux attach
-proceeds regardless.
+`paseo terminal create --json` returns `{"id":"...","name":"...","cwd":"..."}`.
+The shim extracts `id` to use in the kill command.
 
-The Paseo terminal is opened with `tmux attach-session -t <session-name>` as its
-command. Both the local terminal and the Paseo terminal are now full pty clients of
-the same tmux session. Either can be used interactively.
+When the Paseo terminal's shell executes this command:
+
+1. `tmux attach-session -t <session>` blocks while Pi is running. The Paseo pane
+   shows the same TUI as the local pane.
+2. When Pi exits and tmux returns, `;` runs `paseo terminal kill <id> --json`.
+3. The Paseo terminal closes.
+
+No helper scripts, no state files, no tmux hooks, and no polling are involved.
+
+On error from `paseo terminal create`, the shim prints a clear warning to stderr
+and continues: the local tmux attach proceeds and Pi runs locally. No remote pane
+is opened in this case; the user is not misled into thinking a remote session is
+available.
 
 ### Argument Forwarding
 
@@ -223,14 +247,14 @@ All arguments passed to the shim are forwarded verbatim to the real Pi binary
 inside tmux:
 
 ```sh
-tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
+tmux new-session -d -s "$SESSION" \
   "$PI_REAL" "$@"
 ```
 
 The shim does not inspect, filter, or modify any arguments beyond the bypass
 checks listed above. Environment variables are inherited unchanged from the
-calling process. `PI_NO_PASEO` is unset in the child environment so it does not
-propagate into Pi itself or any Pi-spawned subprocesses.
+calling process. `PI_NO_PASEO` and `PI_IN_SHIM` are unset in the child
+environment so they do not propagate into Pi or any Pi-spawned subprocesses.
 
 ### Recursion Avoidance
 
@@ -245,33 +269,6 @@ invocation from within the Pi process itself (e.g. from a hook or subagent that
 explicitly unsets `TMUX`) still hits the recursion guard and execs the real
 binary directly.
 
-### Cleanup: Automatic Paseo Terminal Removal
-
-The Paseo terminal must close when Pi exits. This is achieved without polling via
-tmux hooks.
-
-The shim registers a `set-hook` on the session before attaching:
-
-```sh
-tmux set-hook -t "$SESSION" pane-died \
-  "run-shell '~/.pi/agent/bin/pi-cleanup $SESSION'"
-```
-
-`pi-cleanup` is a small helper that:
-
-1. Calls `DELETE $PASEO_RELAY_SOCK/terminal/<window-id>` to close the Paseo pane.
-2. Removes `~/.pi/agent/sessions/<name>.pid`.
-3. Kills the tmux session if it is still alive (handles cases where Pi exits but
-   the tmux session lingers due to `remain-on-exit` configuration).
-
-The hook fires on the pane exit event, which tmux delivers immediately when the
-Pi process terminates. There is no polling loop in either the shim or the cleanup
-helper.
-
-If `pi-cleanup` cannot reach the Paseo relay (e.g. relay was stopped first), it
-logs the failure to `~/.pi/agent/sessions/<name>.cleanup.log` and skips the
-relay call. The tmux session and pid file are still cleaned up.
-
 ### Emergency Bypass
 
 Setting `PI_NO_PASEO=1` in the environment causes the shim to exec the real Pi
@@ -285,7 +282,7 @@ This bypass is silent (no warning printed). It is intended for:
 
 - Debugging the shim itself without triggering Paseo.
 - Running Pi in environments where Paseo is intentionally absent (CI, remote SSH
-  without the relay, Docker containers).
+  without the Paseo daemon, Docker containers).
 - Recovering from a broken shim without modifying PATH.
 
 `PI_REAL` can also be set to an explicit path to override the resolved real Pi
@@ -295,21 +292,23 @@ production installation.
 ### Fail-Clearly Behavior
 
 The shim must never silently degrade. Each failure condition has a defined
-observable output:
+observable output on stderr, and Pi always launches locally when the shim falls
+back:
 
 | Condition | Behavior |
-|-----------|----------|
-| tmux not installed | `pi-shim: tmux not found; launching pi directly` to stderr, then exec real Pi |
-| tmux version too old (< 3.2) | `pi-shim: tmux <ver> is below required 3.2; launching pi directly` to stderr, then exec real Pi |
-| Paseo relay socket missing | `pi-shim: paseo relay not found at <path>; launching pi directly` to stderr, then exec real Pi |
-| Paseo relay connection refused | `pi-shim: paseo relay unreachable; launching pi directly` to stderr, then exec real Pi |
-| tmux new-session fails | `pi-shim: failed to create tmux session; launching pi directly` to stderr, then exec real Pi |
-| Paseo terminal open returns error | `pi-shim: paseo terminal open failed (<reason>); continuing without remote pane` to stderr, local attach proceeds |
-| Real Pi binary not found | `pi-shim: real pi binary not found; check PI_REAL or ~/.pi/agent/pi-real` to stderr, exit 1 |
+| ----------- | ---------- |
+| tmux not installed | `pi-shim: tmux not found; launching pi directly` then exec real Pi |
+| tmux version < 3.2 | `pi-shim: tmux <ver> is below required 3.2; launching pi directly` then exec real Pi |
+| Paseo CLI not in PATH | `pi-shim: paseo not found in PATH; launching pi directly` then exec real Pi |
+| jq not in PATH | `pi-shim: jq not found in PATH; launching pi directly` then exec real Pi |
+| paseo start fails | `pi-shim: paseo daemon failed to start; launching pi directly` then exec real Pi |
+| tmux new-session fails | `pi-shim: failed to create tmux session; launching pi directly` then exec real Pi |
+| paseo terminal create fails | `pi-shim: paseo terminal create failed; Pi running locally only` then local tmux attach proceeds |
+| Real Pi binary not found | `pi-shim: real pi binary not found; check PI_REAL or ~/.pi/agent/pi-real` exit 1 |
 
-In every case where the shim falls back to a direct exec, Pi launches. The fallback
-message goes to stderr so that interactive users see it and scripted callers can
-suppress it with `2>/dev/null`.
+In every fallback case where Pi can be launched, it is. The Paseo path is
+best-effort for all steps after the tmux session is created. Fallback messages go
+to stderr; scripted callers can suppress them with `2>/dev/null`.
 
 ## Lifecycle Summary
 
@@ -318,93 +317,80 @@ User types: pi [args]
   |
   v
 ~/.pi/agent/bin/pi (shim)
-  |-- bypass checks (TMUX, PI_NO_PASEO, noninteractive)
-  |-- prerequisite checks (tmux version, relay reachability, PI_REAL)
+  |-- bypass checks (TMUX, PI_NO_PASEO, noninteractive flags, non-tty)
+  |-- prerequisite checks (tmux version, paseo in PATH, jq in PATH,
+  |                        paseo status --json / paseo start, PI_REAL)
   |
   v (full path)
-tmux new-session -d -s pi-<ts>-<rand> <PI_REAL> [args]
+tmux new-session -d -s pi-<ts>-<rand> "$PI_REAL" [args]
   |                                        |
   |                                        v
   |                                   Pi TUI running inside tmux session
   |
   v
-POST paseo relay /terminal/open { type: tmux-attach, session: pi-<ts>-<rand> }
+paseo terminal create --cwd "$PWD" --name "pi (pi-<ts>-<rand>)" --json
+  --> returns { "id": "<term-id>", "name": "...", "cwd": "..." }
   |
   v
-Paseo opens new terminal window running:
-  tmux attach-session -t pi-<ts>-<rand>
+paseo terminal send-keys <term-id> \
+  "tmux attach-session -t 'pi-<ts>-<rand>'; paseo terminal kill '<term-id>' --json" \
+  Enter
   |
   v
-shim: tmux attach-session -t pi-<ts>-<rand>  (local terminal joins)
+Paseo terminal executes: tmux attach-session -t pi-<ts>-<rand>
+  --> Paseo pane now shows the same TUI
   |
   v
-[User interacts via either pane; both see identical TUI]
+shim: tmux attach-session -t pi-<ts>-<rand>   (local terminal joins)
   |
   v
-Pi exits
+[User interacts via either pane]
   |
   v
-tmux fires pane-died hook
+Pi exits; tmux session ends
   |
-  v
-pi-cleanup: DELETE paseo /terminal/<window-id>
-            rm ~/.pi/agent/sessions/pi-<ts>-<rand>.pid
-            tmux kill-session -t pi-<ts>-<rand>
+  +-- Local terminal: tmux returns, shim exits, shell prompt restored
   |
-  v
-Paseo terminal closes. Local terminal returns to shell prompt.
+  +-- Paseo terminal: tmux attach returns, shell runs next command:
+        paseo terminal kill <term-id> --json
+        --> Paseo terminal window closes
 ```
 
 ## Caveats
 
-### cmux / Tmux Resizing
+### Tmux Resizing
 
 When both the local pane and the Paseo pane are attached to the same tmux session,
-tmux sizes the session to the SMALLER of the two terminal dimensions. This is
+tmux sizes the session to the smaller of the two terminal dimensions. This is
 standard tmux multi-client behavior. If the Paseo terminal is narrower than the
-local pane, the Pi TUI will appear constrained in the local view.
+local pane, the Pi TUI will appear constrained in the local view. Subsequent
+resizes from either terminal update the session size dynamically.
 
-Mitigation: configure the Paseo terminal to open at the same dimensions as the
-current local terminal. The shim reads `$COLUMNS` and `$LINES` from the calling
-environment and passes them as the initial session size (`-x $COLS -y $ROWS`).
-Subsequent resizes from either terminal update the session size dynamically.
-
-For cmux users: the cmux surface layout determines the local pane size. The Pi
-shim reads `CMUX_PANE_COLS` and `CMUX_PANE_ROWS` if set (populated by the cmux
-spinup hook); otherwise it falls back to `$COLUMNS`/`$LINES` from the tty.
+The shim passes the calling terminal's current dimensions as the initial session
+size (`-x "$COLUMNS" -y "$LINES"`) when creating the tmux session. If those
+variables are unset, tmux uses its default width and height.
 
 ### Inline Image Support
 
-Pi uses Kitty terminal graphics protocol (and/or Sixel) to render inline images in
-the TUI. Tmux does not natively pass through inline image escape sequences. As a
-result, inline images rendered by Pi will NOT appear correctly in either the local
-pane or the Paseo pane when running through the shim.
+Pi may use terminal graphics protocols (Kitty graphics, Sixel) for inline images.
+Tmux does not pass these escape sequences through to attached clients unchanged.
+Inline images may not render correctly in either the local pane or the Paseo pane
+when running through the shim.
 
-This is a known limitation of the tmux approach. Approach B (PTY relay) also cannot
-solve it without protocol-aware muxing. Users who require inline image support
-should use `PI_NO_PASEO=1` to bypass the shim for those sessions.
-
-If tmux gains native passthrough for Kitty graphics in a future version, this
-caveat should be revisited.
+Users who require inline image rendering should use `PI_NO_PASEO=1` to bypass the
+shim for those sessions.
 
 ### Security Implications
 
 - **Session name predictability:** The session name `pi-<timestamp>-<rand4>` is
   not a secret. Any local user with access to `tmux list-sessions` can see active
-  Pi sessions and their names. The random suffix is entropy-for-uniqueness, not
-  entropy-for-secrecy. On multi-user machines, ensure tmux server socket
-  permissions restrict access (`tmux -L <socket>` with a per-user socket).
-- **Relay socket permissions:** `~/.pi/agent/paseo.sock` must be owner-only
-  (`chmod 0600` or `0700`). The shim verifies this before sending the terminal-open
-  request. If the socket is world-readable, the shim refuses to use it and falls
-  back with a warning.
+  Pi sessions and their names. The random suffix is for uniqueness, not secrecy.
+  On multi-user machines, use a per-user tmux server socket.
 - **Argument forwarding:** The shim forwards all arguments verbatim to Pi. No
   injection surface is introduced that was not already present in direct Pi
-  invocation. The shim itself must not be writable by any user other than the
-  owner (`chmod 0755` with owner = current user; world-write is forbidden).
-- **pi-cleanup helper:** The cleanup script is invoked by the tmux hook mechanism.
-  Ensure `~/.pi/agent/bin/pi-cleanup` has the same ownership and permission
-  requirements as the shim.
+  invocation.
+- **Shim permissions:** The shim must not be writable by any user other than the
+  owner (`chmod 0755`, world-write forbidden).
 
 ## Validation Expectations
 
@@ -414,35 +400,23 @@ The following checks constitute a passing validation of the integration:
    reachable at the path recorded in `~/.pi/agent/pi-real`.
 2. **Version forwarded correctly:** `pi --version` (noninteractive bypass) prints
    the Earendil 0.84.1 version string, not 0.70.2.
-3. **Noninteractive bypass confirmed:** `pi --version` and `echo '' | pi --json`
-   do not create any tmux sessions. `tmux list-sessions` is unchanged before and
-   after each call.
+3. **Noninteractive bypass confirmed:** `pi --version`, `pi --list-models`, and
+   `echo '' | pi` do not create any tmux sessions. `tmux list-sessions` is
+   unchanged before and after each call.
 4. **Interactive session creates tmux session:** Running `pi` in an interactive
    terminal creates exactly one new tmux session matching `pi-*`. `tmux
    list-sessions` shows it.
-5. **Paseo pane appears:** The Paseo-managed terminal opens and shows the Pi TUI
-   within 3 seconds of the tmux session being created.
-6. **Both panes interactive:** Typing in either the local pane or the Paseo pane
-   is reflected in both views immediately.
-7. **Cleanup on exit:** Closing Pi (exit or `/quit`) causes the Paseo terminal to
-   close automatically. `tmux list-sessions` no longer shows the session. The pid
-   file under `~/.pi/agent/sessions/` is removed.
+5. **Paseo pane appears:** `paseo terminal create` succeeds and the terminal opens
+   showing the Pi TUI after the send-keys command runs.
+6. **Both panes connected:** Typing in either pane is reflected in both views
+   because both are clients of the same tmux session.
+7. **Cleanup on exit:** Closing Pi causes the Paseo terminal to close
+   automatically (via the self-cleaning command chain). `tmux list-sessions` no
+   longer shows the session afterward.
 8. **PI_NO_PASEO bypass:** `PI_NO_PASEO=1 pi` launches Pi in the local terminal
    with no tmux session created and no Paseo terminal opened.
-9. **Relay-absent fallback:** Stopping the Paseo relay and running `pi` produces
-   a clear stderr warning and launches Pi locally with no tmux wrapping.
+9. **Paseo-absent fallback:** With `paseo start` unable to reach a daemon, running
+   `pi` prints a clear failure message to stderr and launches Pi locally with no
+   tmux wrapping and no implication of remote availability.
 10. **Recursion guard:** Running `pi` from inside a tmux pane (with `TMUX` set)
     launches Pi directly without creating a nested tmux session.
-
-## Open Items
-
-- Confirm Paseo relay HTTP API surface (`/terminal/open`, `/terminal/<id>`) or
-  whether a different IPC mechanism (Unix socket + line protocol) is used in
-  Paseo 0.1.78. The design assumes HTTP-over-Unix-socket; adjust if the relay
-  uses a different protocol.
-- Decide whether `pi-cleanup` should use a timeout when calling the Paseo relay
-  (recommended: 2 second timeout, then log and skip).
-- Determine whether the agentfiles bootstrap should auto-start the Paseo relay
-  as a launchd/systemd service or leave that to the user. The shim currently
-  treats a missing relay as a graceful fallback rather than a fatal error.
-- Inline image limitation: track upstream tmux development for passthrough support.

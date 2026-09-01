@@ -22,13 +22,19 @@ af_sync_repo() {
   else git clone https://github.com/crstamps2/agentfiles.git "$AF_REPO"; fi
 }
 af_dispatch() {
-  case "$AF_TOOL" in claude|codex) : ;; *) echo "error: --tool must be claude|codex" >&2; exit 2 ;; esac
+  case "$AF_TOOL" in claude|codex|pi) : ;; *) echo "error: --tool must be claude|codex|pi" >&2; exit 2 ;; esac
   SETUP_DOC="$AF_REPO/tools/$AF_TOOL/setup.md"
   [ -f "$SETUP_DOC" ] || { echo "error: missing $SETUP_DOC" >&2; exit 3; }
   if [ "${AF_DRY_RUN:-0}" = "1" ]; then
     printf 'SETUP_DOC=%s\nAF_HOME=%s\nAF_REPO=%s\nAF_OS=%s\n' "$SETUP_DOC" "$AF_HOME" "$AF_REPO" "$AF_OS"; return 0
   fi
-  AF_HOME="$AF_HOME" AF_REPO="$AF_REPO" AF_OS="$AF_OS" "$AF_TOOL" "Read and mechanically execute $SETUP_DOC. Do not improvise."
+  AF_MSG="Read and mechanically execute $SETUP_DOC. Do not improvise."
+  # pi runs one-shot setup in non-interactive print mode with project trust.
+  if [ "$AF_TOOL" = "pi" ]; then
+    AF_HOME="$AF_HOME" AF_REPO="$AF_REPO" AF_OS="$AF_OS" pi -a -p "$AF_MSG"
+  else
+    AF_HOME="$AF_HOME" AF_REPO="$AF_REPO" AF_OS="$AF_OS" "$AF_TOOL" "$AF_MSG"
+  fi
 }
 
 if [ "$AF_DRY_RUN" != "1" ]; then

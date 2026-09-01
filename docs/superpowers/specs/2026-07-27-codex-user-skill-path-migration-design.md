@@ -2,7 +2,7 @@
 
 ## Goal
 
-Update agentfiles and Cody's live Codex setup to use the current user-scoped
+Update agentfiles and the user's live Codex setup to use the current user-scoped
 skill discovery directory, `~/.agents/skills`, instead of the legacy
 `~/.codex/skills` directory.
 

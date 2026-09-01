@@ -1,20 +1,39 @@
-# Tier -> concrete model per tool. Single source of truth; edit here to change both tools.
+# Tier -> concrete model per tool. Single source of truth; edit here to change all tools.
+#
+# Keys per table:
+#   claude       -- Claude Code model name
+#   codex_model  -- Codex CLI model name
+#   codex_effort -- Codex CLI reasoning effort
+#   pi_model     -- pi model pattern (see `pi --list-models`); accepts `provider/id` too
+#   pi_thinking  -- pi thinking level: off|minimal|low|medium|high|xhigh|max
+#
+# pi composes model + thinking as `pi_model:pi_thinking` (e.g. `opus:high`) when it
+# needs a single string (agent frontmatter `model:`), and uses them separately for
+# the orchestrator's settings.json (defaultModel / defaultThinkingLevel).
 [orchestrator]
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
+pi_model = "opus"
+pi_thinking = "high"
 
 [specialist]
 claude = "sonnet"
 codex_model = "gpt-5.4"
 codex_effort = "medium"
+pi_model = "sonnet"
+pi_thinking = "medium"
 
 [specialist-fast]
 claude = "sonnet"
 codex_model = "gpt-5.4-mini"
 codex_effort = "high"
+pi_model = "sonnet"
+pi_thinking = "high"
 
 [data-fetch]
 claude = "haiku"
 codex_model = "gpt-5.4-mini"
 codex_effort = "low"
+pi_model = "haiku"
+pi_thinking = "low"

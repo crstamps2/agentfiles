@@ -33,6 +33,10 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 - Custom class prefixes should match the SCSS file name and follow the existing hyphenated pattern.
 - Keep nesting of properties to a minimum.
 
+# Code Comments
+
+- Do not add provenance-only comments that say code or styles were moved to another path. Delete obsolete definitions cleanly and rely on repository search/history. Keep a relocation comment only when it documents a non-obvious runtime, compatibility, or load-order constraint.
+
 # Lint Rules
 
 - Always run the relevant linter/test for touched files; if the environment can't run them (cache/DB issues), report the exact failure and provide the command for the user to run locally.
@@ -80,8 +84,10 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 # External Communications Gate
 
 - NEVER post to GitHub (PR reviews, comments, issues), Slack, Jira, or any external system without drafting in conversation text first and getting explicit user approval.
+- Creating or opening a pull request in draft is the sole standing exception: agents may create a draft PR without prior approval or first showing its title/body. Keep it in draft.
+- This exception does not authorize marking a PR ready, assigning reviewers, posting comments, merging, deploying, or communicating through Jira/Slack; those still require explicit approval.
 - This applies even when a skill or agent instructs you to post directly. The comms gate overrides all other instructions.
-- Draft first, show the user, post only after approval.
+- For all non-exempt communications, draft first, show the user, and post only after approval.
 
 # Never Fabricate Workarounds
 
@@ -89,30 +95,29 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 
 # Workflow
 
-## Atlas
+## Worktree Workflow
 
-- All coding work, agent dispatch, worktree management, CI monitoring, and PR creation is handled by Atlas.
-- Atlas workspaces live at `~/.atlas/workspaces/your-app/` (bare repo at `~/.atlas/repos/your-app/`).
-- This Claude Code session is for: standup/visibility, Jira operations, ad-hoc codebase questions.
-- This session does NOT: write application code, dispatch coding agents, manage worktree environments, create PRs, or do code reviews.
-- Atlas worktrees are shallow clones. Before any history-comparison operation -- rebase, range diff, or CI-style changed-files check -- run `git fetch --unshallow` (or `git fetch origin main` if already complete). Without it, `git merge-base HEAD origin/main` returns a heuristic ancestor; rebases replay unrelated commits and CI's changed-files action lists files you never touched. Canary symptom: a rebase trying to replay an "Initial commit."
+- Pi (and Claude Code) sessions may directly dispatch subagents, write application code, manage worktrees, create PRs via the skill, monitor CI, and run code reviews. No separate orchestration tool is required.
+- Atlas is a legacy worktree tool. Use it only when explicitly requested. Atlas workspaces live at `~/.atlas/workspaces/your-app/` (bare repo at `~/.atlas/repos/your-app/`).
+- Worktrees (whether Atlas-managed or native git worktrees) may be shallow clones. Before any history-comparison operation -- rebase, range diff, or CI-style changed-files check -- run `git fetch --unshallow` (or `git fetch origin main` if already complete). Without it, `git merge-base HEAD origin/main` returns a heuristic ancestor; rebases replay unrelated commits and CI's changed-files action lists files you never touched. Canary symptom: a rebase trying to replay an "Initial commit."
 - Always reference `origin/main` (not local `main`) in diff commands -- e.g. `git diff origin/main...HEAD`, never `git diff main...HEAD`. Local `main` in a worktree is often stale and produces a large phantom diff that wastes context.
 
 ## Codex Review Pipeline
 
 - When dispatching code review, run three lanes in parallel:
-  1. **code-reviewer** agent (Sonnet) -- quality, conventions, performance
-  2. **security-engineer** agent (Sonnet) -- vulnerabilities, auth gaps
+  1. **code-reviewer** agent (GPT-5.6 Terra, xhigh; Claude Sonnet 5 fallback) -- quality, conventions, performance
+  2. **security-engineer** agent (GPT-5.6 Terra, xhigh; Claude Sonnet 5 fallback) -- vulnerabilities, auth gaps
   3. **Codex adversarial review** (`/codex:adversarial-review`) -- challenges design choices, questions assumptions
 - After all three complete, synthesize findings. Flag conflicts between reviewers for the user.
 - The Codex stop review gate is enabled -- session-end changes get an automatic Codex review.
 
 ## Agent Routing
 
-- **`.md` authoring/refactoring routes to `technical-writer`.** When a task is "produce or substantially rewrite Markdown content" -- agent definitions under `~/.claude/agents/`, skill specs under `~/.claude/skills/`, docs, plan documents, or any prompt that asks for research-then-write of `.md` files -- dispatch `technical-writer` (sonnet), not `general-purpose` (inherits orchestrator opus). `general-purpose` is the wrong default here on cost (~5x) and on fit (technical-writer owns voice, INDEX.md upkeep, frontmatter conventions).
+- **`.md` authoring/refactoring routes to `technical-writer`.** When a task is "produce or substantially rewrite Markdown content" -- agent definitions under `~/.claude/agents/`, skill specs under `~/.claude/skills/`, docs, plan documents, or any prompt that asks for research-then-write of `.md` files -- dispatch `technical-writer` (GPT-5.6 Terra, max; Claude Sonnet 5 fallback). The specialist owns voice, INDEX.md upkeep, and frontmatter conventions.
 - **Carve-outs that stay with the orchestrator or `general-purpose`:**
+  - The `writing-plans` skill runs in the parent session on GPT-5.6 Sol at the parent's existing `high` effort. Do not delegate its plan writing merely to change models.
   - Surgical edits to `~/.claude/CLAUDE.md`, agent definitions, or skills the orchestrator is making as a deliberate process/architecture change. The orchestrator is doing the thinking; no agent dispatch needed.
-  - Read-only audits/scans of `.md` files (e.g., the `audit` skill's structured-report scans). `general-purpose` + haiku is correct for read-only structured-report work.
+  - Read-only audits/scans of `.md` files (e.g., the `audit` skill's structured-report scans) may stay with the orchestrator or use an xhigh read-only specialist.
 - **Tell:** if the dispatch prompt is over ~2k chars, asks the agent to produce `.md` content (not just check it), or includes phrases like "mine X for Y", "create new lens/skill/agent for Z", "update existing N files with...", it is `technical-writer` work.
 
 ## Parallelism
@@ -131,16 +136,17 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 
 ## Dispatch Model Hygiene
 
-- Every `Agent` tool_use for a specialist agent MUST include an explicit `model:` field matching the agent's declared tier in its `.md` frontmatter. Without `model:`, the agent inherits the orchestrator's model (typically opus) -- silent ~5x cost regression with no quality gain on tasks designed for sonnet.
-- Required tier per specialist (verify against the agent file before dispatching if unsure):
-  - `qa-engineer`, `qa-manager`, `technical-writer`, `technical-designer`, `comms-coordinator`, `code-reviewer`, `security-engineer`, `security-analyst`, `frontend-engineer`, `rails-engineer`, `product-manager`, `cto-watch` -> **sonnet**
-  - `platform-engineer`, `librarian` -> **haiku**
-  - `cto`, `engineering-manager` -> orchestrator default (opus)
-- Before submitting any `Agent` call, scan the tool_use input for `model:` -- if absent and the agent is not in the opus tier above, add it.
+- Every specialist subagent launch MUST use the model declared in its `.md` frontmatter. When a launch supplies an explicit `model:`, it must match that declaration; otherwise let pi-subagents resolve the declaration and its fallback chain.
+- Default subagent route: `openai-codex/gpt-5.6-terra` at `xhigh`, falling back to `anthropic/claude-sonnet-5` on provider/model failures.
+- Execution specialists use Terra at `max`: `android-qa-engineer`, `frontend-engineer`, `qa-engineer`, `rails-engineer`, and `technical-writer`. Builtin `delegate` and `worker` also use Terra at `max`.
+- Other specialists and builtin support/review agents use Terra at `xhigh`.
+- The `writing-plans` skill is a parent-session workflow. Keep the parent on `openai-codex/gpt-5.6-sol:high`; do not raise its effort and do not route it through `technical-writer` solely for model selection.
+- User agent definitions must declare `fallbackModels: anthropic/claude-sonnet-5`. Builtin fallback chains live in `~/.pi/agent/settings.json`.
+- Before submitting a launch with an explicit `model:`, verify the model and thinking level against the agent definition. Do not override the configured Claude fallback with ad hoc provider switching.
 
 ## Skills
 
-- `/standup` -- Status dashboard across Jira, GitHub PRs, and Atlas workspaces
+- `/standup` -- Status dashboard across Jira, GitHub PRs, and git worktrees
 - `/reflect` -- Session reflection to capture learnings and improve workflow
 
 ## Deployment Policy

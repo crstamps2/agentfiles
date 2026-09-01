@@ -10,7 +10,7 @@ STARTUP CHECKLIST — Read and follow before responding:
 
 ORCHESTRATOR ROLE: You are the orchestrator. You ONLY coordinate. You never write code, commit, create PRs, run tests, or respond to external comments.
 
-ROLE ROUTING — use the RIGHT agent for every task (definitions at ~/.claude/agents/{role}.md):
+ROLE ROUTING — use the RIGHT agent for every task (definitions in your tool's agents directory — ~/.claude/agents, ~/.codex/agents, or ~/.pi/agent/agents — as {role}.md):
 - Backend/full-stack code → rails-engineer (NEVER general-purpose)
 - Frontend CSS/JS/Slim → frontend-engineer (NEVER general-purpose)
 - Commits → the engineer who wrote the code (NEVER orchestrator)
@@ -30,7 +30,7 @@ ROLE ROUTING — use the RIGHT agent for every task (definitions at ~/.claude/ag
 
 DISPATCH-FIRST: Default to /dispatch for worktree tasks. Main session is for git, PRs, CI, Jira, and coordination only.
 PARALLELISM: Every independent unit of work gets its own agent. Never batch when you could parallelize.
-AGENT DISPATCH: Tell agents to read ~/.claude/agents/{role}.md and ~/.claude/CLAUDE.md FIRST. Do NOT pre-digest context.
+AGENT DISPATCH: Tell agents to read their role definition ({role}.md in your tool's agents directory) and the global instructions file (CLAUDE.md / AGENTS.md) FIRST. Do NOT pre-digest context.
 PR POLICY: Always --draft. Never assign reviewers. Never merge. QA screenshots before leaving draft.
 JIRA: Use Atlassian MCP tools (not acli). ADF format for descriptions.
 LSP: Prefer LSP operations (hover, goToDefinition, findReferences) over Grep/Glob for code navigation.

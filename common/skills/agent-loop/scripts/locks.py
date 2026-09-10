@@ -59,7 +59,7 @@ class Lease:
             fcntl.flock(fl, fcntl.LOCK_EX)
             try:
                 rec = owner(self.path)
-                if rec and rec.get("boot_id") == boot_id() and pid_alive(int(rec.get("pid", -1))):
+                if rec and rec.get("boot_id") == boot_id() and self._is_owner_alive(rec):
                     return False
                 self._write()
                 self.held = True
@@ -67,10 +67,25 @@ class Lease:
             finally:
                 fcntl.flock(fl, fcntl.LOCK_UN)
 
+    def _is_owner_alive(self, rec: dict) -> bool:
+        """Check if record's PID is alive. Missing or invalid pid means no owner."""
+        pid_val = rec.get("pid")
+        if pid_val is None:
+            return False
+        try:
+            return pid_alive(int(pid_val))
+        except (ValueError, TypeError):
+            return False
+
     def _write(self) -> None:
-        self.path.write_text(json.dumps({"pid": os.getpid(), "boot_id": boot_id(), "heartbeat_utc": _now(), "name": self.name}))
+        """Atomically write owner record using temp file + os.replace()."""
+        data = json.dumps({"pid": os.getpid(), "boot_id": boot_id(), "heartbeat_utc": _now(), "name": self.name})
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp_path.write_text(data)
+        os.replace(tmp_path, self.path)
 
     def heartbeat(self) -> None:
+        """Update heartbeat timestamp if held. Write is atomic."""
         if self.held:
             self._write()
 

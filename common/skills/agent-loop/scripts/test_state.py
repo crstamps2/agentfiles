@@ -62,5 +62,40 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(state.assign_vendors(1), ("fable", "astra"))
         self.assertEqual(state.assign_vendors(2), ("astra", "fable"))
 
+    def test_transition_does_not_alias_mutable_fields(self):
+        t = state.load(self.d / "TICKET-1")
+        t.attempts["001"] = [{"n": 1}]
+        t2 = state.transition(t, "spinup")
+        t2.attempts["001"].append({"n": 2})
+        t2.decisions.append("x")
+        self.assertEqual(len(t.attempts["001"]), 1)
+        self.assertEqual(t.decisions, [])
+
+    def test_load_ignores_unknown_keys(self):
+        td = self.d / "TICKET-2"
+        td.mkdir(parents=True)
+        data = {
+            "key": "TICKET-2",
+            "state": "spinup",
+            "previous": "",
+            "worktree": "",
+            "branch": "",
+            "workspace": "",
+            "head_sha": "",
+            "evidence_sha": "",
+            "author_vendor": "",
+            "critic_vendor": "",
+            "attempts": {},
+            "decisions": [],
+            "reason": "",
+            "updated_utc": "2025-01-01T00:00:00Z",
+            "future_field": 1
+        }
+        (td / "state.json").write_text(json.dumps(data))
+        t = state.load(td)
+        self.assertEqual(t.key, "TICKET-2")
+        self.assertEqual(t.state, "spinup")
+        self.assertFalse(hasattr(t, "future_field"))
+
 if __name__ == "__main__":
     unittest.main()

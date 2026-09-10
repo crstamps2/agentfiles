@@ -40,6 +40,9 @@ class ParseResultTests(unittest.TestCase):
     def test_missing_optional_fields_default_empty(self):
         r = contracts.parse_result("STATUS: blocked\nREASON: owner\n")
         self.assertEqual(r.files, []); self.assertEqual(r.base, "")
+    def test_unknown_reason_normalizes_to_empty(self):
+        r = contracts.parse_result("STATUS: fail\nREASON: bogus\n")
+        self.assertEqual(r.reason, "")
 
 TASKS = """
 [[tasks]]
@@ -93,6 +96,21 @@ class TasksTests(unittest.TestCase):
         self.p.write_text("[[tasks]]\nid='001'\n")
         with self.assertRaises(contracts.ManifestError):
             contracts.load_tasks(self.p)
+    def test_unknown_key_is_validation_error(self):
+        bad_toml = """
+[[tasks]]
+id = "001"
+slug = "test"
+summary = "test task"
+allowed_files = ["f"]
+verification_commands = ["c"]
+acceptance = ["a"]
+figma_node = ["x"]
+"""
+        self.p.write_text(bad_toml)
+        with self.assertRaises(contracts.ManifestError) as cm:
+            contracts.load_tasks(self.p)
+        self.assertIn("unknown key 'figma_node'", str(cm.exception))
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,3 +37,40 @@ codex_model = "gpt-5.4-mini"
 codex_effort = "low"
 pi_model = "haiku"
 pi_thinking = "low"
+
+# --- Agent-loop tiers (ZIP-6774 pilot). Worker model IDs are verified in slice 1
+# (see docs/superpowers/plans/2026-09-10-agent-loop-1-runner-core.md, Task 14). ---
+[worker-cloud]
+claude = "sonnet"                    # workers are pi-only; other tools get a sane default
+codex_model = "gpt-5.4-mini"
+codex_effort = "medium"
+pi_model = "ollama-cloud/deepseek-v4-flash"
+pi_thinking = "medium"
+
+[worker-local]
+claude = "sonnet"
+codex_model = "gpt-5.4-mini"
+codex_effort = "medium"
+pi_model = "ollama-local/gpt-oss:20b"
+pi_thinking = "medium"
+
+[worker-premium]
+claude = "sonnet"
+codex_model = "gpt-5.4"
+codex_effort = "high"
+pi_model = "openai-codex/gpt-5.6-terra"
+pi_thinking = "max"
+
+[flagship-author]
+claude = "opus"
+codex_model = "gpt-5.5"
+codex_effort = "high"
+pi_model = "anthropic/claude-fable-5-1"
+pi_thinking = "high"
+
+[flagship-critic]
+claude = "opus"
+codex_model = "gpt-5.5"
+codex_effort = "high"
+pi_model = "openai-codex/gpt-6-astra"
+pi_thinking = "xhigh"

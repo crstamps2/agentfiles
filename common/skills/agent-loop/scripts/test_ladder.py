@@ -13,6 +13,9 @@ class AssignArmTests(unittest.TestCase):
     def test_invalid_pin_raises(self):
         with self.assertRaises(ValueError):
             ladder.assign_arm(0, False, "premium", ALT)
+    def test_empty_alternate_raises(self):
+        with self.assertRaises(ValueError):
+            ladder.assign_arm(0, False, None, [])
 
 class NextRungTests(unittest.TestCase):
     def test_sequence_for_cloud_arm(self):
@@ -32,6 +35,9 @@ class NextRungTests(unittest.TestCase):
         r1 = ladder.next_rung([], "cloud")
         self.assertEqual(ladder.next_rung([Attempt(r1, "environment")], "cloud"), r1)
         self.assertEqual(ladder.next_rung([Attempt(r1, "environment"), Attempt(r1, "environment")], "cloud"), r1)
+    def test_unknown_outcome_raises(self):
+        with self.assertRaises(ValueError):
+            ladder.next_rung([Attempt(Rung("cloud-worker", "cheap", 1), "rejeted")], "cloud")
 
 class FeedbackTests(unittest.TestCase):
     def test_append_feedback_accumulates(self):

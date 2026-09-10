@@ -60,7 +60,7 @@ test_path_globs = ["test/**", "spec/**", "**/fixtures/**", "**/__snapshots__/**"
 
 [arms]
 # Cheap arms alternate by task index unless a ticket pins one. Values: cloud | local
-alternate = ["cloud", "local"]
+alternate = ["local", "cloud"]   # local-first per Cody 2026-09-10: overnight runs trade wall time for $0
 
 [outcomes]
 # Pre-registered before the first real run; the dashboard shows these verbatim.

@@ -296,6 +296,7 @@ class Runner:
             self._rewrite_artifact(adir / "attempt.json", json.dumps({"status": "completed", "pgid": stage.pgid,
                 "started_utc": started, "base_tree": base, "agent": rung.agent, "rung": dataclasses.asdict(rung)}, sort_keys=True))
         verification_seconds = 0.0
+        violations = []
         if not stage.terminated:
             self._fence(stage, t, task, n)
             outcome, reason, changed = "environment", f"termination unverified pgid {stage.pgid}", []
@@ -311,23 +312,30 @@ class Runner:
             except OSError: stderr = ""
             outcome, reason = _classify(res, stage, violations, stderr)
             if outcome == "accepted":
+                verify_outcome, verify_reason = "accepted", "none"
                 for i, cmd in enumerate(task.verification_commands):
                     vs = procs.run_stage(["/bin/sh", "-c", cmd], wt, timeout, env, adir / f"verify-{i}.out", adir / f"verify-{i}.err")
                     verification_seconds += vs.elapsed_s
                     if not vs.terminated:
-                        self._fence(vs, t, task, n); outcome, reason = "environment", f"termination unverified pgid {vs.pgid}"; break
-                    if vs.timed_out: outcome, reason = "environment", f"verification timeout: {cmd}"; break
-                    if vs.returncode != 0: outcome, reason = "rejected", f"verification failed: {cmd}"; break
-                if outcome == "accepted":
-                    changed = worktree.changed_paths(wt, base)
-                    violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs)
-                    if violations: outcome, reason = "rejected", "verification introduced forbidden change: " + "; ".join(violations)
-            if outcome in ("rejected", "protocol", "blocked") or (outcome == "timeout" and violations):
-                # Diff first, then restore below.
-                pass
+                        self._fence(vs, t, task, n)
+                        verify_outcome, verify_reason = "environment", f"termination unverified pgid {vs.pgid}"
+                        break
+                    if vs.timed_out:
+                        verify_outcome, verify_reason = "environment", f"verification timeout: {cmd}"; break
+                    if vs.returncode != 0:
+                        verify_outcome, verify_reason = "rejected", f"verification failed: {cmd}"; break
+                # ALWAYS recheck the tree after verification ran, whatever its exit — a test that
+                # times out may still have executed worker code that wrote a forbidden path.
+                changed = worktree.changed_paths(wt, base)
+                violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs)
+                if violations:
+                    outcome, reason = "rejected", "verification introduced forbidden change: " + "; ".join(violations)
+                else:
+                    outcome, reason = verify_outcome, verify_reason
+        restore = outcome in ("rejected", "protocol", "blocked") or (outcome == "timeout" and violations)
         diff = subprocess.run(["git", "-C", str(wt), "diff", base, worktree.snapshot(wt)], capture_output=True, text=True).stdout
         self._write_artifact(adir / "diff.patch", diff)
-        if outcome in ("rejected", "protocol", "blocked") or (outcome == "timeout" and 'violations' in locals() and violations):
+        if restore:
             worktree.restore(wt, base)
         row = {"run_id": self.run_id, "ticket": t.key, "task_id": task.id, "stage": "implement", "agent": rung.agent,
                "model": agent.model, "tier": rung.tier, "arm": arm, "attempt": n, "start_utc": started, "end_utc": _now(),

@@ -27,6 +27,9 @@ def snapshot(wt) -> str:
     try:
         os.unlink(idx)
         env = {**os.environ, "GIT_INDEX_FILE": idx}
+        # A new index otherwise has no tracked ignored entries, causing an ignored
+        # file that is nevertheless tracked to disappear from a snapshot.
+        _git(wt, "read-tree", "HEAD", env=env)
         _git(wt, "add", "-A", env=env)
         return _git(wt, "write-tree", env=env).strip()
     finally:
@@ -38,8 +41,12 @@ def snapshot(wt) -> str:
 
 def changed_paths(wt, base_tree: str) -> list:
     now = snapshot(wt)
-    out = _git(wt, "diff", "--no-renames", "--name-only", base_tree, now)
-    return [l.strip() for l in out.splitlines() if l.strip()]
+    # -z is required: quoted line output loses the exact repository pathname.
+    r = subprocess.run(["git", "-C", str(wt), "diff", "--no-renames", "--name-only", "-z", base_tree, now],
+                       capture_output=True)
+    if r.returncode:
+        raise RuntimeError(f"git diff failed: {r.stderr.decode(errors='replace').strip()}")
+    return [p.decode("utf-8", "surrogateescape") for p in r.stdout.split(b"\0") if p]
 
 
 def restore(wt, tree: str) -> None:

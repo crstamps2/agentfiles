@@ -1,6 +1,7 @@
 """Machine-pressure probes and the admission decision for heavy stages."""
 from __future__ import annotations
 import dataclasses
+import math
 import re
 import subprocess
 
@@ -54,12 +55,24 @@ def parse_therm(text: str) -> bool:
 def parse_df(text: str) -> float:
     lines = [l for l in text.splitlines() if l.strip()]
     if len(lines) < 2:
-        return 0.0
-    parts = lines[1].split()
-    try:
-        return int(parts[3]) / (1024 ** 2)   # 1024-blocks → GB
-    except (IndexError, ValueError):
-        return 0.0
+        return float("nan")
+    # Scan all lines after the header for the first line with 4+ fields where fields 1-3 are integers
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) >= 4:
+            # Try: device, total, used, available, ... (normal case: fields 1-3 are integers)
+            try:
+                int(parts[1]); int(parts[2]); int(parts[3])  # Validate fields 1-3 are integers
+                return int(parts[3]) / (1024 ** 2)   # 1024-blocks → GB
+            except (ValueError, IndexError):
+                pass
+            # Try: total, used, available, ... (wrapped device case: fields 0-2 are integers)
+            try:
+                int(parts[0]); int(parts[1]); int(parts[2])  # Validate fields 0-2 are integers
+                return int(parts[2]) / (1024 ** 2)   # 1024-blocks → GB
+            except (ValueError, IndexError):
+                continue
+    return float("nan")
 
 
 def probe(state_root) -> Reading:
@@ -85,6 +98,8 @@ def decide(r: Reading, th) -> Decision:
         reasons.append("on battery power")
     if r.therm_limited:
         reasons.append("thermal: CPU speed limited")
-    if r.disk_free_gb < th.disk_free_gb_min:
+    if math.isnan(r.disk_free_gb):
+        reasons.append("disk: unparseable df output")
+    elif r.disk_free_gb < th.disk_free_gb_min:
         reasons.append(f"disk free {r.disk_free_gb:.1f}GB < {th.disk_free_gb_min}GB")
     return Decision(ok=not reasons, reasons=reasons)

@@ -38,6 +38,23 @@ class SnapshotTests(unittest.TestCase):
     def test_head(self):
         self.assertEqual(worktree.head(self.wt), git(self.wt, "rev-parse", "HEAD").strip())
 
+    def test_rename_of_protected_file_reports_old_path(self):
+        """When a protected file is renamed, git diff must report both old and new paths."""
+        # Create AGENTS.md and commit it
+        (self.wt/"AGENTS.md").write_text("agents list\n")
+        git(self.wt, "add", "AGENTS.md")
+        git(self.wt, "commit", "-qm", "add AGENTS.md")
+        base = worktree.snapshot(self.wt)
+        # Enable renames in git config so git would normally hide the old path
+        git(self.wt, "config", "diff.renames", "true")
+        # Rename the file
+        (self.wt/"app").mkdir(exist_ok=True)
+        os.rename(str(self.wt/"AGENTS.md"), str(self.wt/"app"/"notes.md"))
+        # changed_paths must report both old and new paths (due to --no-renames)
+        changed = worktree.changed_paths(self.wt, base)
+        self.assertIn("AGENTS.md", changed, "Old path must be reported")
+        self.assertIn("app/notes.md", changed, "New path must be reported")
+
 class AllowlistTests(unittest.TestCase):
     PROT = ["bin/", ".github/", "AGENTS.md"]
     TESTS = ["test/**", "**/fixtures/**"]
@@ -61,6 +78,14 @@ class AllowlistTests(unittest.TestCase):
         self.assertEqual(v, [])
     def test_dir_prefix_pattern(self):
         self.assertEqual(worktree.check_allowlist(["app/x/y/z.rb"], self.task(["app/x/"]), self.PROT, self.TESTS), [])
+    def test_literal_pattern_does_not_prefix_match(self):
+        """Literal allowlist entry 'app/well.rb' must not match 'app/well.rb.bak' or 'app/well.rbx'."""
+        # Should reject .bak variant
+        v = worktree.check_allowlist(["app/well.rb.bak"], self.task(["app/well.rb"]), self.PROT, self.TESTS)
+        self.assertEqual(len(v), 1); self.assertIn("not in allowed_files", v[0])
+        # Should accept exact match
+        v = worktree.check_allowlist(["app/well.rb"], self.task(["app/well.rb"]), self.PROT, self.TESTS)
+        self.assertEqual(v, [])
 
 if __name__ == "__main__":
     unittest.main()

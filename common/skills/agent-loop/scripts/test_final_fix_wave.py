@@ -74,6 +74,20 @@ class RunnerFinalFixTests(RunnerHarness):
         self.assertEqual(runner.Runner(self.cfg, pi_launcher=self.launcher).implement_task(t, altered, 0, self.wt), "accepted")
         self.assertEqual(self.launches, 2)
 
+    def test_verification_timeout_with_forbidden_change_is_rejected_and_restored(self):
+        tasks = self.tasks_with(verification_commands=["mkdir -p bin && touch bin/oops && sleep 60"])
+        outcome, rows = self.run_task("pass", tasks=tasks)
+        self.assertEqual(rows[0]["outcome"], "rejected")
+        self.assertIn("forbidden change", rows[0]["reason"])
+        self.assertFalse((self.wt / "bin" / "oops").exists())
+
+    def test_verification_timeout_with_clean_tree_is_environment_and_keeps_edit(self):
+        tasks = self.tasks_with(verification_commands=["sleep 60"])
+        outcome, rows = self.run_task("pass", "pass", tasks=tasks)   # env does not consume a rung; 2nd env pauses
+        self.assertEqual(rows[0]["outcome"], "environment")
+        self.assertIn("verification timeout", rows[0]["reason"])
+        self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())
+
     def test_recovery_marks_live_attempt_interrupted_and_uses_new_dir(self):
         t=self._fresh_ticket(); root=self.cfg.state_root/"attempts"/"ZIP-7873"/"001"/"1"; root.mkdir(parents=True)
         p=subprocess.Popen(["sleep", "60"], start_new_session=True); pgid=os.getpgid(p.pid)

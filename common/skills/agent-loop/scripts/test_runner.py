@@ -1,6 +1,6 @@
 import re
 # test_runner.py
-import json, os, pathlib, subprocess, sys, tempfile, unittest
+import json, os, pathlib, re, subprocess, sys, tempfile, unittest
 from unittest.mock import patch
 import config, contracts, metrics, procs, runner, state, worktree
 
@@ -65,14 +65,37 @@ class RunnerHarness(unittest.TestCase):
         fake_argv = [sys.executable, str(FAKE), *argv[2:]]
         return _real_run_stage(fake_argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
 
-    def run_task(self, *scenarios, ticket_key="ZIP-7873"):
+    def run_task(self, *scenarios, tasks=None, ticket_key="ZIP-7873"):
         self.scenarios = list(scenarios)
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
         t = state.load(self.cfg.ticket_dir(ticket_key)); t.worktree = str(self.wt)
         for s in ("spinup", "plan", "plan-review", "implement"):
             t = state.transition(t, s)
         state.save(self.cfg.ticket_dir(ticket_key), t)
-        return r.implement_task(t, self.tasks[0], 0, self.wt), metrics.read_all(self.cfg.state_root)
+        task = (tasks or self.tasks)[0]
+        return r.implement_task(t, task, 0, self.wt), metrics.read_all(self.cfg.state_root)
+
+    def tasks_with(self, **overrides):
+        """Write a TASKS variant with the given [[tasks]] fields overridden and load it."""
+        root = self.cfg.state_root.parent
+        text = TASKS
+        for key, val in overrides.items():
+            if isinstance(val, list):
+                rendered = "[" + ", ".join(json.dumps(v) for v in val) + "]"
+            elif isinstance(val, bool):
+                rendered = "true" if val else "false"
+            elif isinstance(val, (int, float)):
+                rendered = str(val)
+            else:
+                rendered = json.dumps(val)
+            pattern = re.compile(rf"^{re.escape(key)} = .*$", re.MULTILINE)
+            if pattern.search(text):
+                text = pattern.sub(f"{key} = {rendered}", text)
+            else:
+                text = text + f"\n{key} = {rendered}\n"
+        path = root / ("tasks_with_" + "_".join(overrides) + ".toml")
+        path.write_text(text)
+        return contracts.load_tasks(path)
 
     def test_pass_first_attempt_is_accepted(self):
         outcome, rows = self.run_task("pass")

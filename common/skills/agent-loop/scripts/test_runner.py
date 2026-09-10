@@ -174,5 +174,77 @@ class RunnerHarness(unittest.TestCase):
                           "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml")])
         self.assertEqual(rc, 3)
 
+    # ----- Fix round 1: six controller-ruled fixes -----------------------------
+
+    def _fresh_ticket(self, key="ZIP-7873"):
+        t = state.load(self.cfg.ticket_dir(key)); t.worktree = str(self.wt)
+        for s in ("spinup", "plan", "plan-review", "implement"):
+            t = state.transition(t, s)
+        return t
+
+    def test_pass_claim_with_failing_verification_is_rejected(self):
+        root = self.cfg.state_root.parent
+        bad = TASKS.replace('verification_commands = ["true"]', 'verification_commands = ["false"]')
+        (root / "tasks_bad_verify.toml").write_text(bad)
+        tasks = contracts.load_tasks(root / "tasks_bad_verify.toml")
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        self.scenarios = ["pass"]
+        t = self._fresh_ticket(); state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        r.implement_task(t, tasks[0], 0, self.wt)
+        rows = metrics.read_all(self.cfg.state_root)
+        self.assertEqual(rows[0]["outcome"], "rejected")
+        self.assertIn("verification failed", rows[0]["reason"])
+
+    def test_task_md_points_result_at_attempt_dir(self):
+        outcome, rows = self.run_task("pass")
+        adir = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"
+        md = (adir / "task.md").read_text()
+        self.assertIn(str(adir / "result.md"), md)
+
+    def test_attempt_numbers_continue_from_persisted_history(self):
+        t = self._fresh_ticket()
+        t.attempts["001"] = [
+            {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 1}, "outcome": "rejected", "reason": "r1", "n": 1},
+            {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 2}, "outcome": "rejected", "reason": "r2", "n": 2},
+        ]
+        state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        self.scenarios = ["pass"]
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        r.implement_task(t, self.tasks[0], 0, self.wt)
+        rows = metrics.read_all(self.cfg.state_root)
+        self.assertEqual(rows[-1]["attempt"], 3)
+        self.assertTrue((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "3").exists())
+
+    def test_env_then_reject_then_env_does_not_pause(self):
+        outcome, rows = self.run_task("env", "fail", "env", "pass")
+        self.assertEqual(outcome, "accepted"); self.assertEqual(self.launches, 4)
+
+    def test_env_count_survives_restart(self):
+        t = self._fresh_ticket()
+        t.attempts["001"] = [
+            {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 1}, "outcome": "environment", "reason": "e1", "n": 1},
+        ]
+        state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        self.scenarios = ["env"]
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        outcome = r.implement_task(t, self.tasks[0], 0, self.wt)
+        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 1)
+
+    def test_environment_keeps_clean_partial_edits(self):
+        outcome, rows = self.run_task("env_partial", "env_partial")
+        self.assertEqual(outcome, "paused")
+        self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())
+
+    def test_fake_worker_honors_glob_tail(self):
+        root = self.cfg.state_root.parent
+        variant = TASKS.replace('allowed_files = ["app/components/**", "test/**"]', 'allowed_files = ["docs/**/*.md"]')
+        (root / "tasks_docs.toml").write_text(variant)
+        tasks = contracts.load_tasks(root / "tasks_docs.toml")
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        self.scenarios = ["pass"]
+        t = self._fresh_ticket(); state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        outcome = r.implement_task(t, tasks[0], 0, self.wt)
+        self.assertEqual(outcome, "accepted")
+
 if __name__ == "__main__":
     unittest.main()

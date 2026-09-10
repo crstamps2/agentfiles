@@ -99,7 +99,15 @@ class Runner:
         # "blocked" records are kept in t.attempts for history but never fed back into the ladder.
         attempts = [ladder.Attempt(ladder.Rung(**a["rung"]), a["outcome"])
                     for a in t.attempts.get(task.id, []) if a["outcome"] in ladder.OUTCOMES]
+        # Ruling 4: env_failures counts TRAILING persisted "environment" records so a restart
+        # resumes the same consecutive-failure count instead of starting over at 0.
+        persisted = t.attempts.get(task.id, [])
         env_failures = 0
+        for rec in reversed(persisted):
+            if rec["outcome"] == "environment":
+                env_failures += 1
+            else:
+                break
 
         while True:
             rung = ladder.next_rung(attempts, arm)
@@ -122,17 +130,28 @@ class Runner:
             if not lease.acquire():
                 self._save(tdir, state.transition(t, "paused", reason="heavy lane held by a live owner")); return "paused"
             try:
-                n = len(attempts) + 1
+                # Ruling 3: attempt number counts ALL persisted records for this task (including
+                # blocked/environment), not just the ladder-eligible in-memory `attempts` list.
+                n = len(t.attempts.get(task.id, [])) + 1
                 outcome, reason, row = self._attempt(t, task, wt, arm, rung, n)
             finally:
                 lease.release()
 
+            # Ruling 3: persist the record and save state BEFORE appending metrics, so a crash
+            # between the two leaves the persisted history authoritative and the attempt is not
+            # re-executed on restart.
             t.attempts.setdefault(task.id, []).append({"rung": dataclasses.asdict(rung), "outcome": outcome, "reason": reason, "n": n})
+            self._save(tdir, t)
             metrics.append(self.cfg.state_root, row)
+
+            # Ruling 4: reset the consecutive-environment counter on any non-environment outcome.
+            if outcome == "environment":
+                env_failures += 1
+            else:
+                env_failures = 0
 
             if outcome == "accepted":
                 attempts.append(ladder.Attempt(rung, outcome))
-                self._save(tdir, t)
                 return "accepted"
             if outcome == "blocked":
                 # Ruling E: blocked is not a ladder outcome; record metrics/state and stop, do not
@@ -141,12 +160,9 @@ class Runner:
                 return "blocked"
 
             attempts.append(ladder.Attempt(rung, outcome))
-            self._save(tdir, t)
 
-            if outcome == "environment":
-                env_failures += 1
-                if env_failures >= 2:
-                    self._save(tdir, state.transition(t, "paused", reason=f"task {task.id}: repeated environment failure: {reason}")); return "paused"
+            if outcome == "environment" and env_failures >= 2:
+                self._save(tdir, state.transition(t, "paused", reason=f"task {task.id}: repeated environment failure: {reason}")); return "paused"
             if outcome in ("rejected", "protocol"):
                 ladder.append_feedback(self._attempt_root(t, task), n, reason)
 
@@ -159,7 +175,9 @@ class Runner:
         # feedback.md lives at the task level so every attempt sees the accumulated history
         task_level = self._attempt_root(t, task)
         (adir / "task.toml").write_text(_task_toml(task))
-        (adir / "task.md").write_text(_task_md(task, task_level, wt))
+        # Ruling 2: _task_md tells the worker to write result.md (and read feedback.md) at the
+        # ATTEMPT dir (adir), matching where the runner actually parses result.md below.
+        (adir / "task.md").write_text(_task_md(task, adir, wt))
         if (task_level / "feedback.md").exists():
             (adir / "feedback.md").write_text((task_level / "feedback.md").read_text())
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
@@ -186,10 +204,23 @@ class Runner:
         violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs)
         outcome, reason = _classify(res, stage, violations)
 
+        # Ruling 1: a clean allowlist + STATUS: pass is not accepted on the worker's word alone;
+        # the runner still runs task.verification_commands, in the worktree, while still holding
+        # the heavy lease, before the task is truly "accepted".
+        if outcome == "accepted":
+            for i, cmd in enumerate(task.verification_commands):
+                vres = procs.run_stage(["/bin/sh", "-c", cmd], wt, timeout, env,
+                                        adir / f"verify-{i}.out", adir / f"verify-{i}.err")
+                if vres.timed_out or vres.returncode != 0:
+                    outcome, reason = "rejected", f"verification failed: {cmd}"
+                    break
+
         # Preserve the diff for every attempt, then decide whether the tree keeps it.
         diff = subprocess.run(["git", "-C", str(wt), "diff", base, worktree.snapshot(wt)], capture_output=True, text=True).stdout
         (adir / "diff.patch").write_text(diff)
-        if outcome in ("rejected", "protocol", "blocked", "environment") or (outcome == "timeout" and violations):
+        # Ruling 5: a clean "environment" outcome keeps legitimate partial edits; only
+        # rejected/protocol/blocked, and timeout-with-violations, discard the tree.
+        if outcome in ("rejected", "protocol", "blocked") or (outcome == "timeout" and violations):
             worktree.restore(wt, base)
 
         row = {"run_id": self.run_id, "ticket": t.key, "task_id": task.id, "stage": "implement",

@@ -8,8 +8,14 @@ wt = pathlib.Path.cwd()
 
 # The runner writes task.toml (the single task) next to task.md for machine reading.
 task = tomllib.loads((task_dir / "task.toml").read_text())
-first_allowed = task["allowed_files"][0].split("*")[0].rstrip("/")
-target = wt / (first_allowed if first_allowed and not (wt / first_allowed).is_dir() else f"{first_allowed}/worker_touch.rb")
+first_allowed = task["allowed_files"][0]
+# Ruling 6: derive both the directory prefix and the extension from the glob itself, so a
+# glob like "docs/**/*.md" produces a file under docs/ with a .md extension instead of always
+# writing worker_touch.rb (which can land outside the allowlist).
+_prefix = first_allowed.split("*")[0].rstrip("/")
+_tail = first_allowed.rsplit("*", 1)[-1] if "*" in first_allowed else ""
+_ext = _tail if _tail.startswith(".") and "/" not in _tail else (pathlib.Path(_tail).suffix or ".rb")
+target = (wt / _prefix / f"worker_touch{_ext}") if _prefix else (wt / f"worker_touch{_ext}")
 target.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -26,6 +32,9 @@ if scenario == "owner":
     result("blocked", "owner", [], "Is the close control part of the header slot?"); sys.exit(0)
 if scenario == "env":
     result("fail", "environment", [], "dev DB unreachable"); sys.exit(0)
+if scenario == "env_partial":
+    target.write_text(f"edited by fake worker ({scenario})\n")
+    result("fail", "environment", [str(target.relative_to(wt))], "dev DB unreachable"); sys.exit(0)
 if scenario == "pass_on_feedback" and not (task_dir / "feedback.md").exists():
     target.write_text("wrong\n"); result("fail", "test", [str(target.relative_to(wt))], "see failing assertion"); sys.exit(0)
 

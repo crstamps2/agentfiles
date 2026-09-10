@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+import math
 import admission
 from config import AdmissionThresholds
 
@@ -30,6 +31,18 @@ class ParserTests(unittest.TestCase):
         self.assertFalse(admission.parse_therm(THERM_OK))
         self.assertTrue(admission.parse_therm(THERM_HOT))
         self.assertFalse(admission.parse_therm(""))  # no data → not limited
+    def test_df_wrapped_device_name_parses_second_line(self):
+        # Long device name wraps to next line; numbers are on the line after
+        text = "Filesystem 1024-blocks Used Available Capacity Mounted\n" + \
+               "very_long_device_name_that_wraps_filesystem\n" + \
+               "100 50 52428800 50% /\n"
+        result = admission.parse_df(text)
+        self.assertAlmostEqual(result, 50.0, places=1)
+    def test_df_unparseable_is_nan_and_distinct_reason(self):
+        # Header only, no data lines
+        text = "Filesystem 1024-blocks Used Available Capacity Mounted\n"
+        result = admission.parse_df(text)
+        self.assertTrue(math.isnan(result))
 
 class DecideTests(unittest.TestCase):
     def r(self, **kw):
@@ -48,6 +61,11 @@ class DecideTests(unittest.TestCase):
     def test_battery_ok_when_not_required(self):
         th = AdmissionThresholds(25.0, 1.0, 20.0, False, 60)
         self.assertTrue(admission.decide(self.r(on_ac=False), th).ok)
+    def test_df_unparseable_distinct_reason(self):
+        # NaN disk_free_gb should produce "unparseable" reason, not numeric comparison
+        d = admission.decide(self.r(disk_free_gb=float("nan")), TH)
+        self.assertFalse(d.ok)
+        self.assertIn("unparseable", d.reasons[0])
 
 class ProbeTests(unittest.TestCase):
     @patch("admission.subprocess.run")

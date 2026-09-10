@@ -1,4 +1,3 @@
-import re
 # test_runner.py
 import json, os, pathlib, re, subprocess, sys, tempfile, unittest
 from unittest.mock import patch
@@ -286,6 +285,20 @@ class RunnerHarness(unittest.TestCase):
         outcome = r.implement_task(t, tasks[0], 0, self.wt)
         self.assertEqual(outcome, "accepted")
         self.assertTrue((self.wt / "app" / "components" / "exact.rb").exists())
+
+    def test_verification_timeout_with_forbidden_change_is_rejected_and_restored(self):
+        tasks = self.tasks_with(verification_commands=["mkdir -p bin && touch bin/oops && sleep 60"])
+        outcome, rows = self.run_task("pass", tasks=tasks)
+        self.assertEqual(rows[0]["outcome"], "rejected")
+        self.assertIn("forbidden change", rows[0]["reason"])
+        self.assertFalse((self.wt / "bin" / "oops").exists())
+
+    def test_verification_timeout_with_clean_tree_is_environment_and_keeps_edit(self):
+        tasks = self.tasks_with(verification_commands=["sleep 60"])
+        outcome, rows = self.run_task("pass", "pass", tasks=tasks)   # env does not consume a rung; 2nd env pauses
+        self.assertEqual(rows[0]["outcome"], "environment")
+        self.assertIn("verification timeout", rows[0]["reason"])
+        self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,13 +72,16 @@ _REQ_LIST = ("allowed_files", "verification_commands", "acceptance")
 def validate_tasks(data: dict) -> list:
     errs = []
     tasks = data.get("tasks") if isinstance(data, dict) else None
-    if not tasks:
+    if not isinstance(tasks, list) or not tasks:
         return ["tasks: manifest must contain at least one [[tasks]] entry"]
     seen = set()
     prev = ""
     allowed_keys = {f.name for f in dataclasses.fields(Task)}
     for i, t in enumerate(tasks):
         p = f"tasks[{i}]"
+        if not isinstance(t, dict):
+            errs.append(f"{p}: must be a table/dict")
+            continue
         for k in _REQ_STR:
             if not isinstance(t.get(k), str) or not t.get(k).strip():
                 errs.append(f"{p}.{k}: required non-empty string")
@@ -86,6 +89,15 @@ def validate_tasks(data: dict) -> list:
             v = t.get(k)
             if not isinstance(v, list) or not v:
                 errs.append(f"{p}.{k}: required non-empty list")
+        for k in ("allowed_files", "verification_commands", "acceptance", "invariants", "out_of_scope", "stop_when", "figma_nodes"):
+            if k in t and (not isinstance(t[k], list) or any(not isinstance(x, str) or not x.strip() for x in t[k])):
+                errs.append(f"{p}.{k}: every entry must be a non-empty string")
+        for path in t.get("allowed_files", []) if isinstance(t.get("allowed_files"), list) else []:
+            if not isinstance(path, str):
+                continue
+            parts = path.replace("\\", "/").split("/")
+            if path.startswith("/") or ".." in parts:
+                errs.append(f"{p}.allowed_files: must be relative and contain no .. segment ({path!r})")
         for k in t:
             if k not in allowed_keys:
                 errs.append(f"{p}: unknown key {k!r}")
@@ -101,7 +113,7 @@ def validate_tasks(data: dict) -> list:
         for k in ("may_edit_tests", "visual"):
             if k in t and not isinstance(t[k], bool):
                 errs.append(f"{p}.{k}: must be boolean")
-        if "timeout_s" in t and (not isinstance(t["timeout_s"], int) or t["timeout_s"] <= 0):
+        if "timeout_s" in t and (isinstance(t["timeout_s"], bool) or not isinstance(t["timeout_s"], int) or t["timeout_s"] <= 0):
             errs.append(f"{p}.timeout_s: must be positive int")
     return errs
 

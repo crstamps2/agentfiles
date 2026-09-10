@@ -1,0 +1,68 @@
+# Agent loop configuration. Source of truth for what the runner may touch.
+# Retrieval-dated values are labeled; re-check them when they age.
+
+[hopper]
+epic = "ZIP-6774"
+owned_epics = ["ZIP-6774"]          # cmux listener skips children of these
+
+# Dependency graph. Order here is also the tie-break order.
+[[hopper.tickets]]
+key = "ZIP-7872"   # Nav Link
+[[hopper.tickets]]
+key = "ZIP-7873"   # Well — pilot ticket
+[[hopper.tickets]]
+key = "ZIP-4293"   # Section
+[[hopper.tickets]]
+key = "ZIP-7877"   # Card Header Start
+[[hopper.tickets]]
+key = "ZIP-7876"   # Card Spotlight
+[[hopper.tickets]]
+key = "ZIP-4281"   # Nav Tabs
+deps = ["ZIP-7872"]
+[[hopper.tickets]]
+key = "ZIP-4282"   # Nav Pills
+deps = ["ZIP-7872"]
+[[hopper.tickets]]
+key = "ZIP-7875"   # Stepper
+[[hopper.tickets]]
+key = "ZIP-4294"   # Modal
+[[hopper.tickets]]
+key = "ZIP-7874"   # Dropzone
+
+[paths]
+state_root = "~/.local/state/agent-loop"
+cmux_chain_dir = "~/.claude/skills/spinup/scripts"     # LIVE copy (dotfiles), not common/
+pi_agents_dir = "~/.pi/agent/agents"
+
+[timeouts]
+heavy_stage_s = 4500        # 75 min, per field guide; calibrate in slice 4
+light_stage_s = 1800
+
+[admission]
+compressor_pct_max = 25.0    # compressor-occupied pages / physical pages
+load_per_core_max = 1.0
+disk_free_gb_min = 20.0
+require_ac_power = true
+defer_max_s = 1800
+
+[budgets]                    # USD; premium + total ENFORCE, others alert (Plan 2 wires alerts)
+premium_daily_usd = 5.0
+premium_monthly_usd = 40.0
+total_unattended_daily_usd = 15.0
+cloud_starter_credit_usd = 0.0   # fill from ollama.com usage page in slice 1
+ci_rerun_max = 5
+
+[protection]
+# Never editable by workers, regardless of allowed_files.
+protected_paths = ["bin/", ".github/", ".circleci/", "AGENTS.md", "CLAUDE.md", "config/ci/"]
+# Editable only when the task manifest sets may_edit_tests = true.
+test_path_globs = ["test/**", "spec/**", "**/fixtures/**", "**/__snapshots__/**"]
+
+[arms]
+# Cheap arms alternate by task index unless a ticket pins one. Values: cloud | local
+alternate = ["cloud", "local"]
+
+[outcomes]
+# Pre-registered before the first real run; the dashboard shows these verbatim.
+primary = "first-attempt acceptance rate per arm (cloud, local, premium)"
+secondary = ["wall time per accepted task per arm", "escalation rate per arm", "estimated cost per accepted ticket", "human-wait time per approval class"]

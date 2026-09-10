@@ -25,8 +25,8 @@ def _split_frontmatter(text: str):
     if not lines or lines[0].strip() != "---":
         raise AgentDefError("agent file has no frontmatter")
     try:
-        end = lines.index("---", 1)
-    except ValueError:
+        end = next(i for i,l in enumerate(lines[1:],1) if l.strip()=="---")
+    except StopIteration:
         raise AgentDefError("unterminated frontmatter")
     fm = {}
     for l in lines[1:end]:
@@ -66,7 +66,8 @@ def assert_worker_safe(a: AgentDef) -> None:
 
 def pi_argv(a: AgentDef, prompt_file, session_dir, body_file) -> list:
     return ["pi", "-p",
-            "--model", f"{a.model}:{a.thinking}",
+            "--model", a.model,
+            "--thinking", a.thinking,
             "--tools", ",".join(a.tools),
             "--append-system-prompt", str(body_file),
             "--session-dir", str(session_dir),

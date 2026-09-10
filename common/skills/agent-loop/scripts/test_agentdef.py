@@ -44,11 +44,22 @@ class LoadTests(unittest.TestCase):
         a = agentdef.load(self.d, "cloud-worker")
         argv = agentdef.pi_argv(a, self.d/"prompt.md", self.d/"sess", self.d/"body.md")
         self.assertEqual(argv[:2], ["pi", "-p"])
-        self.assertIn("--model", argv); self.assertEqual(argv[argv.index("--model")+1], "ollama-cloud/deepseek-v4-flash:medium")
+        self.assertIn("--model", argv); self.assertEqual(argv[argv.index("--model")+1], "ollama-cloud/deepseek-v4-flash")
+        self.assertIn("--thinking", argv); self.assertEqual(argv[argv.index("--thinking")+1], "medium")
         self.assertEqual(argv[argv.index("--tools")+1], "read,grep,find,ls,bash,edit,write")
         self.assertEqual(argv[argv.index("--append-system-prompt")+1], str(self.d/"body.md"))
         self.assertEqual(argv[argv.index("--session-dir")+1], str(self.d/"sess"))
         self.assertEqual(argv[-1], f"@{self.d/'prompt.md'}")
+    def test_pi_argv_model_with_colon_is_not_mangled(self):
+        (self.d/"colon-model.md").write_text(WORKER.replace("ollama-cloud/deepseek-v4-flash", "ollama-local/gpt-oss:20b"))
+        a = agentdef.load(self.d, "colon-model")
+        argv = agentdef.pi_argv(a, self.d/"prompt.md", self.d/"sess", self.d/"body.md")
+        self.assertEqual(argv[argv.index("--model")+1], "ollama-local/gpt-oss:20b")
+        self.assertEqual(argv[argv.index("--thinking")+1], "medium")
+    def test_worker_without_tools_line_rejected(self):
+        (self.d/"no-tools.md").write_text(WORKER.split("tools:")[0] + "---\n\nBody without tools.\n")
+        with self.assertRaisesRegex(agentdef.AgentDefError, "explicit tools allowlist"):
+            agentdef.assert_worker_safe(agentdef.load(self.d, "no-tools"))
 
 if __name__ == "__main__":
     unittest.main()

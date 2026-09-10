@@ -38,7 +38,7 @@ def snapshot(wt) -> str:
 
 def changed_paths(wt, base_tree: str) -> list:
     now = snapshot(wt)
-    out = _git(wt, "diff", "--name-only", base_tree, now)
+    out = _git(wt, "diff", "--no-renames", "--name-only", base_tree, now)
     return [l.strip() for l in out.splitlines() if l.strip()]
 
 
@@ -56,7 +56,7 @@ def _match(path: str, pattern: str) -> bool:
     if "**" in pattern:
         rx = re.escape(pattern).replace(r"\*\*/", "(?:.*/)?").replace(r"/\*\*", "(?:/.*)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
         return re.fullmatch(rx, path) is not None
-    return fnmatch.fnmatchcase(path, pattern) or path.startswith(pattern.rstrip("*"))
+    return fnmatch.fnmatchcase(path, pattern)
 
 
 def check_allowlist(paths: list, task, protected_paths: list, test_globs: list) -> list:

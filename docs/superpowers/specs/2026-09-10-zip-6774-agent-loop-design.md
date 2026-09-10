@@ -100,8 +100,8 @@ extended).
 | Role | Model tier | Model(s) | Responsibility |
 | --- | --- | --- | --- |
 | Flagship planner | `flagship-author` / `flagship-critic` | `anthropic/claude-fable-5-1`, `openai-codex/gpt-6-astra` | Evidence-backed plan, design decisions, adversarial plan review, PR-comment judgment. One authors, the other critiques. Assignment is deterministic: tickets are numbered in hopper order; odd tickets get Fable as author and Astra as critic, even tickets the reverse. The assignment is recorded in `state.json` and reused for that ticket's PR-comment judgment, so the critic is always the vendor that did not write the plan. |
-| Cloud cheap worker | `cloud-worker` | Ollama Cloud (visual: `glm-5.3-flash`; non-visual: `deepseek-v4-flash`; exact IDs verified in slice 1) | Implement one bounded task from an approved plan. Never makes design decisions. |
-| Local cheap worker | `local-worker` | Local Ollama, one model within the residency budget (candidate class: 14B coder at Q4; exact model chosen in slice 1) | Same contract as the cloud worker. Runs only when the heavy lane is idle; unloaded before gates. |
+| Cloud cheap worker | `cloud-worker` | Ollama Cloud on the **Free plan**. Candidates: `glm-5.3-flash` (visual), `deepseek-v4-flash` (non-visual), `gpt-oss:20b` (cheapest, and identical weights to a local candidate). Which of these the free starter set actually exposes is discovered in slice 1. | Implement one bounded task from an approved plan. Never makes design decisions. |
+| Local cheap worker | `local-worker` | Local Ollama, one model within the residency budget. Candidate pool: `gpt-oss:20b` (preferred if it fits: same weights as a cloud candidate gives a like-for-like local-vs-cloud comparison), else a 14B-class coder at Q4 (`qwen3-coder` / `devstral` class). Chosen in slice 1 by measured fit and tool-calling reliability; reason recorded. | Same contract as the cloud worker. Runs only when the heavy lane is idle; unloaded before gates. |
 | Premium fallback | `specialist` | `openai-codex/gpt-5.6-terra` -> `anthropic/claude-sonnet-5` | One attempt per task after cheap attempts fail. Budget-enforced. |
 | Runner | none (deterministic Python) | -- | Selects tickets, dispatches stages, runs gates, decides pass/fail, checkpoints, logs, pauses. |
 | Comms | existing `comms-coordinator` | per its definition | Authors every GitHub comment. Appends the AI-disclosure footer. |
@@ -123,7 +123,16 @@ Two Ollama providers are declared in `~/.pi/agent/models.json`, both
 `openai-completions`:
 
 - `ollama-cloud` at `https://ollama.com/v1`, key read from Keychain at request
-  time (see "Secrets and identity").
+  time (see "Secrets and identity"). **Free plan constraints** (from
+  ollama.com/pricing, 2026-09-10): a starter credit amount per month for a
+  subset of "starter" models; **1 concurrent request** (excess queued, then
+  rejected); prompts and responses not logged or trained on; hosted primarily
+  in the US with zero-data-retention partner terms. Buying credits unlocks all
+  models. The runner therefore never runs two cloud-worker attempts
+  concurrently, treats a 429 or queue rejection as an `environment` failure
+  (backoff, never escalate to premium for it), and tracks remaining starter
+  credit as a budget line that **enforces** (pause cloud-worker when exhausted;
+  local-worker and premium continue under their own caps).
 - `ollama-local` at `http://localhost:11434/v1`, placeholder `apiKey`
   (Ollama ignores it; pi requires a value). Requires the Ollama daemon
   installed locally (Homebrew) and the chosen model pulled. The daemon is
@@ -133,6 +142,12 @@ Two Ollama providers are declared in `~/.pi/agent/models.json`, both
 Each model entry declares `contextWindow`, `maxTokens`, `reasoning`, `cost`
 (rate card for cloud; all-zero with `cost_source: local` for local, see
 Observability), and any `compat` flags discovered in slice 1.
+
+**Peak pricing.** `deepseek-v4-flash` and `deepseek-v4-pro` cost double
+between 12:00 and 18:00 UTC on weekdays (08:00-14:00 Eastern). In that window
+the runner routes non-visual cloud tasks to `gpt-oss:20b` or `glm-5.3-flash`
+instead, or defers them if `hopper.toml` says so. The ledger records the rate
+actually in force for each stage.
 
 **Task assignment across cheap tiers.** To compare the arms fairly, the runner
 assigns each task to `local-worker` or `cloud-worker` by alternating task
@@ -525,7 +540,11 @@ decision_tier (plan stages only)
 Token counts are read from pi's session JSONL for the child run (the same
 approach `cost-ledger/ledger.py` uses on Claude transcripts). Cost is computed
 from `common/skills/agent-loop/rate_card.json`, which gains Ollama Cloud
-entries, and is labeled **estimate**. `cost_source` is one of `rate-card`,
+entries taken from ollama.com/pricing on 2026-09-10 (per million tokens,
+input / cached input / output): `deepseek-v4-flash` 0.22 / 0.007 / 0.66 (peak
+0.44 / 0.014 / 1.32); `glm-5.3-flash` 0.15 / 0.03 / 0.50; `gpt-oss:20b` 0.07 /
+0.035 / 0.30; `gemma4` 0.14 / 0.05 / 0.40; `nemotron-3-nano` 0.06 / - / 0.24.
+The card carries its retrieval date and is labeled **estimate**. `cost_source` is one of `rate-card`,
 `provider-reported`, `local`, `unknown`; unknown is never rendered as zero.
 Local inference has zero API cost; the ledger records its wall time,
 model-load time, and the machine-pressure readings taken during the stage so
@@ -663,7 +682,12 @@ begins.
      worker model completes a trivial tool-using edit in a scratch worktree,
      honoring the tool allowlist. Records actual model IDs, context windows,
      `compat` needs, and whether usage metadata is returned (a stop condition
-     if not).
+     if not). Also records **which candidate models the Free plan's starter
+     set actually serves**, the starter credit amount shown in the account's
+     usage page, and the observed behavior on a second concurrent request
+     (expect queue, then 429). If none of the three candidates is in the
+     starter set, Cody decides whether to buy a small credit pack or run the
+     pilot with local + premium only.
    - Ollama installed locally; one candidate model within the residency
      budget pulled; `ollama-local` in `models.json`; the same hand-run probe
      passes; measured: resident memory while loaded (`ollama ps`), load and
@@ -723,6 +747,12 @@ Unit tests live beside the runner (`test_agent_loop.py`, `unittest`, mirroring
   protects the gates but costs throughput (load/unload per attempt). If slice
   1 shows thermal throttling or poor tool calling, the local arm is dropped
   and the pilot proceeds with cloud-cheap vs. premium.
+- **Free-plan starter set is undocumented.** ollama.com/pricing says Free
+  includes "starter models" without naming them. The intended cheap cloud
+  models may require purchased credits; slice 1 discovers this and Cody
+  decides. The 1-concurrent-request ceiling is compatible with the one-heavy-lane
+  design but rules out any future cloud-worker parallelism without a plan
+  upgrade.
 - **Cheap-tier tool-calling quality is unverified.** If `deepseek-v4-flash` or
   `glm-5.3-flash` cannot drive pi's tools reliably, the pilot's result may be
   "cheap tier cannot hold this harness." That is a valid result and ends the

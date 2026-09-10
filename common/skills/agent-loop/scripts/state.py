@@ -55,7 +55,9 @@ def load(ticket_dir) -> Ticket:
     p = ticket_dir / "state.json"
     if not p.exists():
         return Ticket(key=ticket_dir.name, updated_utc=_now())
-    return Ticket(**json.loads(p.read_text()))
+    data = json.loads(p.read_text())
+    fields = {f.name for f in dataclasses.fields(Ticket)}
+    return Ticket(**{k: v for k, v in data.items() if k in fields})
 
 
 def save(ticket_dir, t: Ticket) -> None:
@@ -73,7 +75,9 @@ def transition(t: Ticket, to: str, reason: str = "") -> Ticket:
     allowed = {t.previous} if t.state == "paused" else EDGES[t.state]
     if to not in allowed:
         raise IllegalTransition(f"{t.key}: {t.state} -> {to} not allowed (allowed: {sorted(allowed)})")
-    return dataclasses.replace(t, state=to, previous=t.state, reason=reason, updated_utc=_now())
+    return dataclasses.replace(t, state=to, previous=t.state, reason=reason, updated_utc=_now(),
+                               attempts={k: list(v) for k, v in t.attempts.items()},
+                               decisions=list(t.decisions))
 
 
 def paused(state_root) -> bool:

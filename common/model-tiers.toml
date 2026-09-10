@@ -44,14 +44,14 @@ pi_thinking = "low"
 claude = "sonnet"                    # workers are pi-only; other tools get a sane default
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "ollama-cloud/deepseek-v4-flash"
+pi_model = "ollama-cloud/gpt-oss:20b"   # Free-plan starter set; deepseek/glm are 402 without credits
 pi_thinking = "medium"
 
 [worker-local]
 claude = "sonnet"
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "ollama-local/gpt-oss:20b"
+pi_model = "ollama-local/gpt-oss-ctx32k:20b"   # ctx-pinned derived model; stock 4K ctx truncates pi's system prompt
 pi_thinking = "medium"
 
 [worker-premium]

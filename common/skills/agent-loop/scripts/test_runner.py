@@ -54,12 +54,12 @@ class RunnerHarness(unittest.TestCase):
     def tearDown(self):
         self.adm.stop(); self.dec.stop(); self.tmp.cleanup()
 
-    def launcher(self, argv, cwd, timeout_s, env, stdout_path, stderr_path):
+    def launcher(self, argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=None):
         self.launches += 1
         scenario = self.scenarios.pop(0) if self.scenarios else "pass"
         env = {**(env or os.environ), "AL_SCENARIO": scenario}
         fake_argv = [sys.executable, str(FAKE), *argv[2:]]
-        return _real_run_stage(fake_argv, cwd, timeout_s, env, stdout_path, stderr_path)
+        return _real_run_stage(fake_argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
 
     def run_task(self, *scenarios, ticket_key="ZIP-7873"):
         self.scenarios = list(scenarios)
@@ -203,10 +203,12 @@ class RunnerHarness(unittest.TestCase):
 
     def test_attempt_numbers_continue_from_persisted_history(self):
         t = self._fresh_ticket()
-        t.attempts["001"] = [
+        t.attempts[runner.Runner(self.cfg)._history_key(self.tasks[0], self.wt)] = [
             {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 1}, "outcome": "rejected", "reason": "r1", "n": 1},
             {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 2}, "outcome": "rejected", "reason": "r2", "n": 2},
         ]
+        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001"
+        (root / "1").mkdir(parents=True); (root / "2").mkdir()
         state.save(self.cfg.ticket_dir("ZIP-7873"), t)
         self.scenarios = ["pass"]
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
@@ -221,7 +223,7 @@ class RunnerHarness(unittest.TestCase):
 
     def test_env_count_survives_restart(self):
         t = self._fresh_ticket()
-        t.attempts["001"] = [
+        t.attempts[runner.Runner(self.cfg)._history_key(self.tasks[0], self.wt)] = [
             {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 1}, "outcome": "environment", "reason": "e1", "n": 1},
         ]
         state.save(self.cfg.ticket_dir("ZIP-7873"), t)

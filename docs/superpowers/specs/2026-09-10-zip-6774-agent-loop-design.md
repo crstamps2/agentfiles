@@ -3,7 +3,8 @@
 Status: Approved design, revised after self-review and a two-lane adversarial
 review (OpenAI `cto` + `security-analyst` against a Claude-authored draft);
 pending Cody's written-spec review. Written 2026-09-10 from a brainstorming
-session with Cody. Findings accepted, pushed back, or deferred are listed under
+session with Cody. Revised same day to add a local-model worker tier at Cody's
+request (see "Substrate" and "Resources"). Findings accepted, pushed back, or deferred are listed under
 "Adversarial review disposition" at the end. Source material: the "Strong reviewer,
 inexpensive workers" field guide (`~/Downloads/agent-loop-field-guide-2026-09-08/`),
 the existing cmux spinup workflow (`common/skills/spinup/`), and the ZIP-6774 epic.
@@ -32,8 +33,10 @@ Secondary goals, in priority order:
   controlled A/B: historical interactive tickets differ in scope, guidance, and
   repository state. Outcomes and ticket classes are pre-registered in
   `hopper.toml` before the first run so results are not cherry-picked.
-- Lower per-ticket inference cost by using Ollama Cloud models for
-  implementation while reserving flagship models for judgment.
+- Lower per-ticket inference cost by using Ollama Cloud models and local
+  Ollama models for implementation while reserving flagship models for
+  judgment, and measure how the three worker arms (local, cloud-cheap,
+  premium) compare on acceptance, wall time, and cost.
 - Track token consumption, dollar spend, model usage, and pipeline state in one
   continuously updated, self-contained HTML dashboard.
 - Keep the MacBook Air (M4, 24 GB, fanless) responsive and healthy while the
@@ -41,7 +44,10 @@ Secondary goals, in priority order:
 
 ## Non-goals
 
-- Running local model weights. All inference is cloud-hosted in this pilot.
+- Local models larger than the residency budget (see "Resources"). Local
+  inference *is* in the pilot as a third worker tier, but only for models that
+  fit alongside the machine's baseline load; it never runs concurrently with
+  Rails, the test suite, or Chrome.
 - 24/7 operation while the machine is asleep or closed. The loop works only
   while macOS is awake; it holds a wake lease when work is eligible.
 - Merging, assigning reviewers, or communicating through Slack or Jira. The
@@ -94,7 +100,8 @@ extended).
 | Role | Model tier | Model(s) | Responsibility |
 | --- | --- | --- | --- |
 | Flagship planner | `flagship-author` / `flagship-critic` | `anthropic/claude-fable-5-1`, `openai-codex/gpt-6-astra` | Evidence-backed plan, design decisions, adversarial plan review, PR-comment judgment. One authors, the other critiques. Assignment is deterministic: tickets are numbered in hopper order; odd tickets get Fable as author and Astra as critic, even tickets the reverse. The assignment is recorded in `state.json` and reused for that ticket's PR-comment judgment, so the critic is always the vendor that did not write the plan. |
-| Cheap worker | `worker` | Ollama Cloud (visual: `glm-5.3-flash`; non-visual: `deepseek-v4-flash`; exact IDs verified in slice 1) | Implement one bounded task from an approved plan. Never makes design decisions. |
+| Cloud cheap worker | `cloud-worker` | Ollama Cloud (visual: `glm-5.3-flash`; non-visual: `deepseek-v4-flash`; exact IDs verified in slice 1) | Implement one bounded task from an approved plan. Never makes design decisions. |
+| Local cheap worker | `local-worker` | Local Ollama, one model within the residency budget (candidate class: 14B coder at Q4; exact model chosen in slice 1) | Same contract as the cloud worker. Runs only when the heavy lane is idle; unloaded before gates. |
 | Premium fallback | `specialist` | `openai-codex/gpt-5.6-terra` -> `anthropic/claude-sonnet-5` | One attempt per task after cheap attempts fail. Budget-enforced. |
 | Runner | none (deterministic Python) | -- | Selects tickets, dispatches stages, runs gates, decides pass/fail, checkpoints, logs, pauses. |
 | Comms | existing `comms-coordinator` | per its definition | Authors every GitHub comment. Appends the AI-disclosure footer. |
@@ -112,11 +119,27 @@ makes the cheap-vs-premium comparison one of model tiers under identical
 tooling; the comparison against the *interactive* baseline remains observational
 (different harness, supervision, and ticket population) and is labeled so.
 
-The `ollama-cloud` provider is declared in `~/.pi/agent/models.json` as an
-`openai-completions` provider at `https://ollama.com/v1` with
-`apiKey: "$OLLAMA_API_KEY"`. No local Ollama daemon is installed or required.
+Two Ollama providers are declared in `~/.pi/agent/models.json`, both
+`openai-completions`:
+
+- `ollama-cloud` at `https://ollama.com/v1`, key read from Keychain at request
+  time (see "Secrets and identity").
+- `ollama-local` at `http://localhost:11434/v1`, placeholder `apiKey`
+  (Ollama ignores it; pi requires a value). Requires the Ollama daemon
+  installed locally (Homebrew) and the chosen model pulled. The daemon is
+  configured with `OLLAMA_KEEP_ALIVE=0` so a model is resident only while a
+  request is in flight, and `OLLAMA_MAX_LOADED_MODELS=1`.
+
 Each model entry declares `contextWindow`, `maxTokens`, `reasoning`, `cost`
-(rate card, see Observability), and any `compat` flags discovered in slice 1.
+(rate card for cloud; all-zero with `cost_source: local` for local, see
+Observability), and any `compat` flags discovered in slice 1.
+
+**Task assignment across cheap tiers.** To compare the arms fairly, the runner
+assigns each task to `local-worker` or `cloud-worker` by alternating task
+index within the ticket, stratified by the task's visual flag so both arms see
+visual and non-visual work. The assignment is fixed for that task's two cheap
+attempts; the premium rung is shared. `hopper.toml` can pin a ticket to one arm
+when the comparison is not the point.
 
 Worker agent definitions share the body of `rails-engineer` /
 `frontend-engineer` but declare:
@@ -126,6 +149,9 @@ model: ollama-cloud/<worker-model>
 thinking: <verified in slice 1>
 tools: read, grep, find, ls, bash, edit, write     # no gh/acli, no MCP write servers
 ```
+
+The same applies to `local-worker`, whose frontmatter names the
+`ollama-local/<model>` id.
 
 **No `fallbackModels` on worker definitions.** Harness-level fallback would let
 a "cheap" attempt silently invoke Terra or Sonnet, bypassing the runner's
@@ -441,7 +467,14 @@ The machine is an M4 MacBook Air, 24 GB, fanless, with many long-lived pi and
 Claude processes already resident.
 
 - **Heavy lane, capacity 1, global**: worktree setup, Rails boot, dev server,
-  test suites, Playwright/Chrome, `lens-review` runs. Held via an `flock`-based
+  test suites, Playwright/Chrome, `lens-review` runs, **and any local-model
+  inference stage**. A loaded local model and a running Rails/Chrome stack
+  cannot fit in 24 GB together with the machine's ~10 GB baseline, so they
+  are mutually exclusive in time: a `local-worker` attempt takes the heavy
+  lane, runs inference, then the runner calls the Ollama API to unload the
+  model and verifies via `ollama ps` and `vm_stat` that memory was released
+  before the lane is handed to a gate. Reload cost is logged as
+  `wait_seconds`. Held via an `flock`-based
   lock under `~/.local/state/agent-loop/locks/heavy` whose contents record
   owner PID, boot ID, and a heartbeat timestamp; a lock is reclaimable only
   when the PID is dead or the boot ID differs, never on age alone.
@@ -455,6 +488,13 @@ Claude processes already resident.
   free disk is below 20 GB; when 1-minute load exceeds core count. Maximum
   defer is 30 minutes, after which the ticket is paused with reason
   `resource` and the runner tries a light-lane task instead.
+- **Local model residency budget**: ~10 GB resident (14B-class at Q4 or
+  smaller). Larger models are not eligible in the pilot. The dashboard shows
+  peak compressor pages and thermal state during local-inference stages; if
+  either trips the admission thresholds repeatedly, the runner pins the ticket
+  to `cloud-worker` and alerts. The Ollama daemon itself is stopped
+  (`brew services stop ollama` or `launchctl`) while the hopper is idle so it
+  does not hold memory overnight for nothing.
 - **Process budget**: each heavy stage runs in its own process group; the
   runner records the group and, on completion or timeout, kills the group and
   verifies no member survives before releasing the lane. Dev server and Chrome
@@ -486,7 +526,10 @@ Token counts are read from pi's session JSONL for the child run (the same
 approach `cost-ledger/ledger.py` uses on Claude transcripts). Cost is computed
 from `common/skills/agent-loop/rate_card.json`, which gains Ollama Cloud
 entries, and is labeled **estimate**. `cost_source` is one of `rate-card`,
-`provider-reported`, `unknown`; unknown is never rendered as zero. Cody may
+`provider-reported`, `local`, `unknown`; unknown is never rendered as zero.
+Local inference has zero API cost; the ledger records its wall time,
+model-load time, and the machine-pressure readings taken during the stage so
+the comparison is not distorted by treating local as free in every dimension. Cody may
 paste a provider-dashboard monthly figure into `reconcile.json`; the dashboard
 shows estimate vs. reconciled.
 
@@ -508,7 +551,8 @@ launchd idle tick every 5 minutes. Panels:
 - Spend: today / 7d / 30d by provider, model, and tier; per-accepted-ticket
   cost; estimate vs. reconciled.
 - Model efficacy (observational comparison): first-attempt acceptance, escalation rate, wall
-  time per accepted task, per model; a baseline column mined from existing pi
+  time per accepted task, per model and per arm (local / cloud-cheap /
+  premium), with local additionally showing load time and pressure readings; a baseline column mined from existing pi
   session directories of recent interactive tickets (ZIP-4272, 7506, 7009 and
   similar).
 - Pipeline: each ZIP-6774 ticket as a row through the lifecycle states with PR
@@ -620,6 +664,13 @@ begins.
      honoring the tool allowlist. Records actual model IDs, context windows,
      `compat` needs, and whether usage metadata is returned (a stop condition
      if not).
+   - Ollama installed locally; one candidate model within the residency
+     budget pulled; `ollama-local` in `models.json`; the same hand-run probe
+     passes; measured: resident memory while loaded (`ollama ps`), load and
+     unload time, peak compressor pages, and `pmset -g therm` during a
+     five-minute tool-calling session. If tool calling is unreliable or the
+     model exceeds the budget, try one smaller candidate, then drop the local
+     arm for the pilot and record why.
    - The `create-pull-request` skill is located or restored, its provenance
      reviewed, and a dry run against a scratch branch succeeds with the
      existing hook still blocking direct `gh pr create`.
@@ -666,6 +717,12 @@ Unit tests live beside the runner (`test_agent_loop.py`, `unittest`, mirroring
 - **The loop uses Cody's GitHub identity.** Every autonomous write is
   attributable to Cody plus the footer. A dedicated bot identity with
   narrower scopes is the correct fix and is deferred.
+- **Local-model arm may not be viable on this hardware.** A 14B-class model
+  in ~10 GB leaves thin headroom on a fanless 24 GB machine; sustained
+  inference is also the loop's largest thermal load. The mutual-exclusion rule
+  protects the gates but costs throughput (load/unload per attempt). If slice
+  1 shows thermal throttling or poor tool calling, the local arm is dropped
+  and the pilot proceeds with cloud-cheap vs. premium.
 - **Cheap-tier tool-calling quality is unverified.** If `deepseek-v4-flash` or
   `glm-5.3-flash` cannot drive pi's tools reliably, the pilot's result may be
   "cheap tier cannot hold this harness." That is a valid result and ends the

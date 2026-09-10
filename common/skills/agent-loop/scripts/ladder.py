@@ -5,6 +5,7 @@ import pathlib
 
 CHEAP_ARMS = ("cloud", "local")
 ADVANCING = {"rejected", "timeout", "protocol", "unusable"}
+OUTCOMES = ADVANCING | {"accepted", "environment"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -25,6 +26,8 @@ def assign_arm(task_index: int, visual: bool, pin: str | None, alternate: list) 
         if pin not in CHEAP_ARMS:
             raise ValueError(f"pin_arm must be one of {CHEAP_ARMS}, got {pin!r}")
         return pin
+    if not alternate:
+        raise ValueError("arms.alternate must be non-empty")
     return alternate[task_index % len(alternate)]
 
 
@@ -33,6 +36,10 @@ def _sequence(arm: str) -> list:
 
 
 def next_rung(attempts: list, arm: str) -> Rung | None:
+    for a in attempts:
+        if a.outcome not in OUTCOMES:
+            raise ValueError(f"unknown attempt outcome {a.outcome!r}")
+    # attempts are appended in call order; an accepted outcome is always last
     if attempts and attempts[-1].outcome == "accepted":
         return None
     consumed = sum(1 for a in attempts if a.outcome in ADVANCING)

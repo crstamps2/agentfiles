@@ -51,5 +51,37 @@ class LeaseTests(unittest.TestCase):
         l.heartbeat()
         self.assertGreaterEqual(locks.owner(self.path)["heartbeat_utc"], t0)
 
+    def test_write_is_atomic_no_tmp_left_and_valid_json_always(self):
+        """Verify _write() is atomic: no .tmp files left and owner() always returns valid JSON with all keys."""
+        l = locks.Lease(self.path, "heavy"); l.acquire()
+        l.heartbeat()
+        # Check no .tmp sibling remains
+        tmp_files = list(self.path.parent.glob(self.path.name + ".tmp*"))
+        self.assertEqual(len(tmp_files), 0, f"Found leftover temp files: {tmp_files}")
+        # Check owner() returns dict with all four keys
+        rec = locks.owner(self.path)
+        self.assertIsNotNone(rec)
+        self.assertIsInstance(rec, dict)
+        self.assertIn("pid", rec)
+        self.assertIn("boot_id", rec)
+        self.assertIn("heartbeat_utc", rec)
+        self.assertIn("name", rec)
+
+    def test_record_without_pid_is_reclaimable(self):
+        """Records with missing or malformed pid should be reclaimable."""
+        # Test 1: missing pid
+        self.path.write_text(json.dumps({"boot_id": locks.boot_id(), "heartbeat_utc": "2999-01-01T00:00:00Z", "name": "heavy"}))
+        self.assertTrue(locks.Lease(self.path, "heavy").acquire())
+        
+        # Test 2: malformed pid (garbage string)
+        self.path.unlink()
+        self.path.write_text(json.dumps({"pid": "garbage", "boot_id": locks.boot_id(), "heartbeat_utc": "2999-01-01T00:00:00Z", "name": "heavy"}))
+        self.assertTrue(locks.Lease(self.path, "heavy").acquire())
+        
+        # Test 3: pid is None
+        self.path.unlink()
+        self.path.write_text(json.dumps({"pid": None, "boot_id": locks.boot_id(), "heartbeat_utc": "2999-01-01T00:00:00Z", "name": "heavy"}))
+        self.assertTrue(locks.Lease(self.path, "heavy").acquire())
+
 if __name__ == "__main__":
     unittest.main()

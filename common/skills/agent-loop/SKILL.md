@@ -14,22 +14,29 @@ All run from anywhere; `--config` defaults to this skill's `hopper.toml`.
 
 - **Status** -- `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py status`
   Prints pause state, heavy-lane holder, and each hopper ticket's state and reason.
-- **Run-once** (stub) -- `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py run-once`
-  Selects and attempts one ticket from the hopper (not yet wired to ticket selection logic).
+- **Run-once** (Plan 1 stub) -- `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py run-once`
+  performs no work; ticket selection is not wired until Plan 3.
 - **Dry run** (no models, no Jira, fake worker):
-  `AL_SCENARIO=pass python3 .../runner.py dry-run --worktree <path> --tasks <tasks.toml> [--scenario <name>] [--ticket <KEY>]`
-  Scenarios: `pass fail malformed escape tests timeout owner env pass_on_feedback`.
-  Requires the fake worker to be substituted for `pi`; see `test_runner.py` for the launcher hook.
-  In this plan the dry-run CLI uses the real `pi` argv unless patched -- it exists to exercise
-  state, locks, and metrics plumbing on a scratch worktree, not to call models.
+  `python3 .../runner.py dry-run --worktree <path> --tasks <tasks.toml> [--scenario <name>] [--ticket <KEY>]`
+  Scenarios: `pass fail malformed escape env_escape tests timeout owner env pass_on_feedback`.
+  The CLI always replaces `pi` with the bundled fake worker; it never launches a real model.
+  Manifest verification commands still run in the scratch worktree.
 
 ## State on disk
 
 `~/.local/state/agent-loop/` (mode 0700):
 `tickets/<KEY>/state.json`, `attempts/<KEY>/<task>/<n>/{task.md,task.toml,prompt.md,body.md,result.md,diff.patch,base_tree,stdout.log,stderr.log,session/}`,
-`attempts/<KEY>/<task>/feedback.md`, `locks/heavy`, `locks/runner`, `metrics.jsonl`, `PAUSE`.
+`attempts/<KEY>/<task>/feedback.md`, `locks/heavy`, `locks/heavy.fence`, `locks/runner`, `metrics.jsonl`, `PAUSE`.
 
 - `locks/runner` -- global runner lease; a second instance exits with code 3.
+- `locks/heavy.fence` -- an unverified worker process group. The lane remains fenced until its PGID is dead.
+
+## Pause, resume, and takeover
+
+- Pause new atomic steps: `touch ~/.local/state/agent-loop/PAUSE`; resume: `rm ~/.local/state/agent-loop/PAUSE`.
+- Take over one ticket: `touch ~/.local/state/agent-loop/tickets/<KEY>/HUMAN`; resume it by removing that file.
+  The runner completes its current atomic step, releases the heavy lane, and never touches that worktree while `HUMAN` exists.
+- `~/.pi/agent/skills/agent-loop` exists only after `bootstrap.sh --tool pi`.
 
 ## What is NOT wired yet (Plans 2-3)
 

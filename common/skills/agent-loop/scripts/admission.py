@@ -8,12 +8,13 @@ import subprocess
 
 @dataclasses.dataclass(frozen=True)
 class Reading:
-    compressor_pct: float
-    load1: float
+    compressor_pct: float | None
+    load1: float | None
     cores: int
     on_ac: bool
     therm_limited: bool
-    disk_free_gb: float
+    disk_free_gb: float | None
+    pressure_level: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,6 +53,19 @@ def parse_therm(text: str) -> bool:
     return bool(m) and int(m.group(1)) < 100
 
 
+def parse_memory_pressure(text: str) -> str | None:
+    text = text or ""
+    low = text.lower()
+    for level in ("critical", "warn", "normal"):
+        if re.search(rf"\b{level}\b", low):
+            return level
+    m = re.search(r"System-wide memory free percentage:\s*(\d+(?:\.\d+)?)%", text, re.I)
+    if not m:
+        return None
+    free = float(m.group(1))
+    return "critical" if free < 5 else "warn" if free < 10 else "normal"
+
+
 def parse_df(text: str) -> float:
     lines = [l for l in text.splitlines() if l.strip()]
     if len(lines) < 2:
@@ -78,28 +92,41 @@ def parse_df(text: str) -> float:
 def probe(state_root) -> Reading:
     memsize = int((_out(["sysctl", "-n", "hw.memsize"]) or "0").strip() or 0)
     cores = int((_out(["sysctl", "-n", "hw.ncpu"]) or "1").strip() or 1)
+    vm, up = _out(["vm_stat"]), _out(["uptime"])
+    disk, pressure = _out(["df", "-k", str(state_root)]), _out(["memory_pressure"])
+    disk_free = parse_df(disk)
     return Reading(
-        compressor_pct=parse_vm_stat(_out(["vm_stat"]), memsize),
-        load1=parse_uptime(_out(["uptime"])),
+        compressor_pct=parse_vm_stat(vm, memsize) if vm and memsize else None,
+        load1=parse_uptime(up) if up else None,
         cores=cores,
         on_ac=parse_batt(_out(["pmset", "-g", "batt"])),
         therm_limited=parse_therm(_out(["pmset", "-g", "therm"])),
-        disk_free_gb=parse_df(_out(["df", "-k", str(state_root)])),
+        disk_free_gb=None if math.isnan(disk_free) else disk_free,
+        pressure_level=parse_memory_pressure(pressure),
     )
 
 
 def decide(r: Reading, th) -> Decision:
     reasons = []
-    if r.compressor_pct > th.compressor_pct_max:
+    # defer timing is wired by the Plan 3 tick.
+    if r.compressor_pct is None:
+        reasons.append("compressor: unknown")
+    elif r.compressor_pct > th.compressor_pct_max:
         reasons.append(f"compressor {r.compressor_pct:.1f}% > {th.compressor_pct_max}%")
-    if r.cores and r.load1 / r.cores > th.load_per_core_max:
+    if r.load1 is None:
+        reasons.append("load: unknown")
+    elif r.cores and r.load1 / r.cores > th.load_per_core_max:
         reasons.append(f"load {r.load1:.2f} on {r.cores} cores > {th.load_per_core_max}/core")
+    if r.pressure_level is None:
+        reasons.append("pressure: unknown")
+    elif r.pressure_level in {"warn", "critical"}:
+        reasons.append(f"pressure: {r.pressure_level}")
     if th.require_ac_power and not r.on_ac:
         reasons.append("on battery power")
     if r.therm_limited:
         reasons.append("thermal: CPU speed limited")
-    if math.isnan(r.disk_free_gb):
-        reasons.append("disk: unparseable df output")
+    if r.disk_free_gb is None or (isinstance(r.disk_free_gb, float) and math.isnan(r.disk_free_gb)):
+        reasons.append("disk: unknown")
     elif r.disk_free_gb < th.disk_free_gb_min:
         reasons.append(f"disk free {r.disk_free_gb:.1f}GB < {th.disk_free_gb_min}GB")
     return Decision(ok=not reasons, reasons=reasons)

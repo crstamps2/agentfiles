@@ -47,23 +47,31 @@ def kill_group(pgid: int, grace_s: float = 5.0, reap: subprocess.Popen | None = 
 
 
 def run_stage(argv: list, cwd, timeout_s: float, env: dict | None,
-              stdout_path, stderr_path) -> StageResult:
+              stdout_path, stderr_path, on_start=None) -> StageResult:
+    """Run and always fence off the process group, including on interrupts."""
     t0 = time.monotonic()
-    with open(stdout_path, "wb") as so, open(stderr_path, "wb") as se:
-        p = subprocess.Popen(argv, cwd=str(cwd), env=env, stdout=so, stderr=se,
-                             start_new_session=True)   # new session ⇒ new process group, pgid == pid
-        pgid = os.getpgid(p.pid)
-        try:
-            rc = p.wait(timeout=timeout_s)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            kill_group(pgid, reap=p)
+    p = None
+    pgid = 0
+    rc = None
+    timed_out = False
+    try:
+        with open(stdout_path, "wb") as so, open(stderr_path, "wb") as se:
+            p = subprocess.Popen(argv, cwd=str(cwd), env=env, stdout=so, stderr=se,
+                                 start_new_session=True)
+            pgid = os.getpgid(p.pid)
+            if on_start is not None:
+                on_start(pgid)
             try:
-                p.wait(timeout=2)
+                rc = p.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+    finally:
+        # This is deliberately in finally: Ctrl-C must not leave a worker group behind.
+        terminated = kill_group(pgid, grace_s=0.5, reap=p) if pgid else True
+        if p is not None:
+            try:
+                p.wait(timeout=0)
             except subprocess.TimeoutExpired:
                 pass
-            rc, timed_out = None, True
-    # Reap any stragglers that re-parented; verified by group_alive below.
-    terminated = kill_group(pgid, grace_s=0.5, reap=p)
     return StageResult(returncode=rc, timed_out=timed_out, elapsed_s=time.monotonic() - t0, pgid=pgid,
-                        terminated=terminated)
+                       terminated=terminated)

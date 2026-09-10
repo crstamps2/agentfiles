@@ -30,6 +30,7 @@ def result(status, reason="none", files=None, nxt="none"):
 
 
 if scenario == "timeout":
+    target.write_text(f"edited by fake worker ({scenario})\n")
     time.sleep(30)
     sys.exit(0)
 if scenario == "owner":
@@ -46,6 +47,8 @@ target.write_text(f"edited by fake worker ({scenario})\n")
 rel = str(target.relative_to(wt))
 if scenario == "escape":
     (wt / "bin").mkdir(exist_ok=True); (wt / "bin" / "oops").write_text("x\n"); result("pass", files=[rel, "bin/oops"])
+elif scenario == "env_escape":
+    (wt / "bin").mkdir(exist_ok=True); (wt / "bin" / "oops").write_text("x\n"); result("fail", "environment", [rel, "bin/oops"], "network unavailable")
 elif scenario == "tests":
     (wt / "test").mkdir(exist_ok=True); (wt / "test" / "x_test.rb").write_text("assert true\n"); result("pass", files=[rel, "test/x_test.rb"])
 elif scenario == "malformed":

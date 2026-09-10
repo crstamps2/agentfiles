@@ -20,4 +20,16 @@ def read_all(state_root) -> list:
     p = pathlib.Path(state_root) / "metrics.jsonl"
     if not p.exists():
         return []
-    return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+    rows = []
+    lines = p.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            # A crash can tear only the final append; retain prior durable rows.
+            if i == len(lines) - 1:
+                break
+            raise
+    return rows

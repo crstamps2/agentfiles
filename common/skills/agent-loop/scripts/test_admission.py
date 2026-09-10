@@ -46,7 +46,7 @@ class ParserTests(unittest.TestCase):
 
 class DecideTests(unittest.TestCase):
     def r(self, **kw):
-        base = dict(compressor_pct=10.0, load1=2.0, cores=10, on_ac=True, therm_limited=False, disk_free_gb=100.0)
+        base = dict(compressor_pct=10.0, load1=2.0, cores=10, on_ac=True, therm_limited=False, disk_free_gb=100.0, pressure_level="normal")
         base.update(kw)
         return admission.Reading(**base)
     def test_ok(self):
@@ -65,7 +65,7 @@ class DecideTests(unittest.TestCase):
         # NaN disk_free_gb should produce "unparseable" reason, not numeric comparison
         d = admission.decide(self.r(disk_free_gb=float("nan")), TH)
         self.assertFalse(d.ok)
-        self.assertIn("unparseable", d.reasons[0])
+        self.assertIn("disk: unknown", d.reasons)
 
 class ProbeTests(unittest.TestCase):
     @patch("admission.subprocess.run")

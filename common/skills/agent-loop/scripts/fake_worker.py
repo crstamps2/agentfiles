@@ -12,10 +12,14 @@ first_allowed = task["allowed_files"][0]
 # Ruling 6: derive both the directory prefix and the extension from the glob itself, so a
 # glob like "docs/**/*.md" produces a file under docs/ with a .md extension instead of always
 # writing worker_touch.rb (which can land outside the allowlist).
-_prefix = first_allowed.split("*")[0].rstrip("/")
-_tail = first_allowed.rsplit("*", 1)[-1] if "*" in first_allowed else ""
-_ext = _tail if _tail.startswith(".") and "/" not in _tail else (pathlib.Path(_tail).suffix or ".rb")
-target = (wt / _prefix / f"worker_touch{_ext}") if _prefix else (wt / f"worker_touch{_ext}")
+# For literal allowlist entries (no "*"), target the file directly.
+if "*" not in first_allowed:
+    target = wt / first_allowed
+else:
+    _prefix = first_allowed.split("*")[0].rstrip("/")
+    _tail = first_allowed.rsplit("*", 1)[-1]
+    _ext = _tail if _tail.startswith(".") and "/" not in _tail else (pathlib.Path(_tail).suffix or ".rb")
+    target = (wt / _prefix / f"worker_touch{_ext}") if _prefix else (wt / f"worker_touch{_ext}")
 target.parent.mkdir(parents=True, exist_ok=True)
 
 

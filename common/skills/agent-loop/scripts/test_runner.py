@@ -246,5 +246,17 @@ class RunnerHarness(unittest.TestCase):
         outcome = r.implement_task(t, tasks[0], 0, self.wt)
         self.assertEqual(outcome, "accepted")
 
+    def test_fake_worker_literal_allowlist_entry(self):
+        root = self.cfg.state_root.parent
+        variant = TASKS.replace('allowed_files = ["app/components/**", "test/**"]', 'allowed_files = ["app/components/exact.rb"]')
+        (root / "tasks_literal.toml").write_text(variant)
+        tasks = contracts.load_tasks(root / "tasks_literal.toml")
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        self.scenarios = ["pass"]
+        t = self._fresh_ticket(); state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        outcome = r.implement_task(t, tasks[0], 0, self.wt)
+        self.assertEqual(outcome, "accepted")
+        self.assertTrue((self.wt / "app" / "components" / "exact.rb").exists())
+
 if __name__ == "__main__":
     unittest.main()

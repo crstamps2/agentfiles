@@ -1,3 +1,4 @@
+import re
 # test_runner.py
 import json, os, pathlib, subprocess, sys, tempfile, unittest
 from unittest.mock import patch
@@ -42,6 +43,9 @@ class RunnerHarness(unittest.TestCase):
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{agents}"')
         toml = toml.replace("heavy_stage_s = 4500", "heavy_stage_s = 3")
+        # Pin the arm order the ladder tests assume (index 0 -> cloud). The production default is an
+        # operator preference (local-first since 2026-09-10) and must not silently flip these assertions.
+        toml = re.sub(r'alternate = \[[^\]]*\][^\n]*', 'alternate = ["cloud", "local"]', toml)
         (root / "hopper.toml").write_text(toml)
         self.cfg = config.load(root / "hopper.toml"); self.cfg.ensure_dirs()
         (root / "tasks.toml").write_text(TASKS)

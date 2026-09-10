@@ -1,7 +1,6 @@
 """Worker result.md parsing (lenient format, strict meaning) and tasks.toml validation."""
 from __future__ import annotations
 import dataclasses
-import pathlib
 import re
 import tomllib
 
@@ -35,11 +34,14 @@ def parse_result(text: str) -> Result:
     for line in text.splitlines():
         m = _KEY_RE.match(line)
         if m:
+            # first occurrence wins; later duplicates are ignored
             found.setdefault(m.group(1).lower(), m.group(2).strip())
     status = found.get("status", "").lower()
     if status not in STATUSES:
         raise ProtocolError(f"result.md missing or invalid STATUS (got {found.get('status')!r})")
     reason = found.get("reason", "").lower()
+    if reason not in REASONS:
+        reason = ""
     files = [f.strip() for f in re.split(r"[,\s]+", found.get("files", "")) if f.strip()]
     return Result(status=status, reason=reason, base=found.get("base", ""), files=files,
                   evidence=found.get("evidence", ""), unverified=found.get("unverified", ""),
@@ -74,6 +76,7 @@ def validate_tasks(data: dict) -> list:
         return ["tasks: manifest must contain at least one [[tasks]] entry"]
     seen = set()
     prev = ""
+    allowed_keys = {f.name for f in dataclasses.fields(Task)}
     for i, t in enumerate(tasks):
         p = f"tasks[{i}]"
         for k in _REQ_STR:
@@ -83,6 +86,9 @@ def validate_tasks(data: dict) -> list:
             v = t.get(k)
             if not isinstance(v, list) or not v:
                 errs.append(f"{p}.{k}: required non-empty list")
+        for k in t:
+            if k not in allowed_keys:
+                errs.append(f"{p}: unknown key {k!r}")
         tid = str(t.get("id", ""))
         if tid and not _ID_RE.match(tid):
             errs.append(f"{p}.id: must match ^\\d{{3}}$ (got {tid!r})")

@@ -438,6 +438,7 @@ def main(argv=None) -> int:
             state.save(cfg.ticket_dir(a.ticket), t)
         seen = {False: 0, True: 0}
         for task in tasks:
+            t = state.load(cfg.ticket_dir(a.ticket)); t.worktree = a.worktree
             index = seen[task.visual]; seen[task.visual] += 1
             out = r.implement_task(t, task, index, a.worktree); print(f"{a.ticket} task {task.id}: {out}")
             if out != "accepted": return 1

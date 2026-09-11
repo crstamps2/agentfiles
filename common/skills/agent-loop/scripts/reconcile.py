@@ -6,7 +6,9 @@ these functions recompute each projection idempotently from a CLASSIFIED/FINALIZ
 from __future__ import annotations
 import dataclasses
 import json
+import os
 import pathlib
+import stat
 import subprocess
 import tomllib
 
@@ -225,7 +227,13 @@ def fence(cfg, rec: attempt_mod.Record, reason: str) -> None:
     fp = _fence_path(cfg)
     fp.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"attempt_dir": str(rec.path), "proc": rec.proc, "reason": reason})
-    attempt_mod.safe_write(fp, payload)
+    try:
+        attempt_mod.safe_write(fp, payload)
+    except OSError as e:
+        # The FENCING record already guarantees the next run exits 3 (see
+        # _reconcile_one's FENCING-with-no-fence-file branch), so a write failure here is
+        # safe to surface as an ordinary FenceExit rather than a raw exception.
+        raise FenceExit(f"fence write failed: {e}")
     attempt_mod.transition(rec, "ORPHANED")
     raise FenceExit(reason)
 
@@ -261,12 +269,28 @@ def interrupt(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
         raise FenceExit(f"{rec.attempt_id}: restore did not converge to base_tree")
     rec = attempt_mod.transition(rec, "INTERRUPTED", observed_tree=observed, outcome="interrupted",
                                  next_action="none", tree="restored")
+    _ensure_diff_patch(rec)
     return project_all(cfg, rec)
 
 
+def _ensure_diff_patch(rec: attempt_mod.Record) -> None:
+    """Any INTERRUPTED record found without a diff.patch (an interrupt() written before this
+    fix existed, or a hand-built test record) gets it regenerated -- it is always derivable
+    from base_tree/observed_tree, so writing it late is always safe."""
+    patch_path = pathlib.Path(rec.path) / "diff.patch"
+    if patch_path.exists():
+        return
+    wt = pathlib.Path(rec.worktree)
+    patch = _diff_patch(wt, rec.base_tree, rec.observed_tree)
+    attempt_mod.safe_rewrite(patch_path, patch)
+
+
 def _load_task(adir: pathlib.Path) -> contracts.Task:
-    with open(adir / "task.toml", "rb") as f:
-        d = tomllib.load(f)
+    try:
+        text = attempt_mod.safe_read(adir / "task.toml")
+        d = tomllib.loads(text)
+    except (attempt_mod.UnsafePath, tomllib.TOMLDecodeError, OSError) as e:
+        raise FenceExit(f"corrupt task.toml: {adir}: {e}")
     field_names = {f.name for f in dataclasses.fields(contracts.Task)}
     return contracts.Task(**{k: v for k, v in d.items() if k in field_names})
 
@@ -354,9 +378,12 @@ def _reconcile_one(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
         return project_all(cfg, rec)
     if rec.status == "ORPHANED":
         return _reconcile_orphaned(cfg, rec)
-    if rec.status in ("INTERRUPTED", "PROJECTED"):
+    if rec.status == "INTERRUPTED":
+        _ensure_diff_patch(rec)
         return project_all(cfg, rec)
-    return rec
+    if rec.status == "PROJECTED":
+        return project_all(cfg, rec)
+    raise FenceExit(f"{rec.attempt_id}: unhandled status {rec.status}")
 
 
 def _check_global_fence(cfg) -> None:
@@ -374,11 +401,22 @@ def _check_global_fence(cfg) -> None:
         return
     try:
         data = json.loads(text)
-        attempt_dir_str = data["attempt_dir"]
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except json.JSONDecodeError:
         raise FenceExit("corrupt fence: unparseable")
-    proc = data.get("proc")
-    status = procid_mod.classify(procid_mod.ProcId.from_dict(proc) if proc else None)
+    if not isinstance(data, dict):
+        raise FenceExit("corrupt fence: not an object")
+    required = ("attempt_dir", "proc", "reason")
+    if any(k not in data for k in required):
+        raise FenceExit(f"corrupt fence: missing required key(s), need {required}")
+    attempt_dir_str = data["attempt_dir"]
+    proc = data["proc"]
+    if proc is None or not isinstance(proc, dict):
+        raise FenceExit("corrupt fence: proc must be a dict, not null")
+    try:
+        proc_id = procid_mod.ProcId.from_dict(proc)
+    except (KeyError, TypeError) as e:
+        raise FenceExit(f"corrupt fence: invalid proc shape: {e}")
+    status = procid_mod.classify(proc_id)
     if status in ("ours-alive", "unknown"):
         raise FenceExit(f"fenced: referenced proc is {status}")
     attempts_root = (pathlib.Path(cfg.state_root) / "attempts").resolve()
@@ -394,20 +432,65 @@ def _check_global_fence(cfg) -> None:
         rec = attempt_mod.load(adir)
     except attempt_mod.UnreadableRecord as e:
         raise FenceExit(f"corrupt fence: unreadable referenced attempt: {e}")
-    if rec.status != "ORPHANED":
-        raise FenceExit(f"corrupt fence: referenced attempt is not ORPHANED (status={rec.status})")
-    interrupt(cfg, rec)
+    if rec.status == "ORPHANED":
+        interrupt(cfg, rec)
+    elif rec.status == "INTERRUPTED":
+        # Idempotent: a crash between the INTERRUPTED write and the fence unlink in a prior
+        # run leaves exactly this state on the next run. Project (no-op if already done)
+        # and unlink the fence; do not reject an already-recovered attempt.
+        project_all(cfg, rec)
+    else:
+        raise FenceExit("corrupt fence: referenced attempt is neither ORPHANED nor "
+                        f"INTERRUPTED (status={rec.status})")
     fp.unlink()
 
 
+def _leaf_dirs(attempts_root) -> list:
+    r"""Every attempt leaf directory under `attempts_root`, found by walking the tree rather
+    than assuming a fixed `*/*/*` depth (a ticket key may itself contain `/`, per
+    `_ticket_key`'s docstring, which would otherwise make a fixed-depth glob miss it -- or
+    miss an attempt dir created before `attempt.json` existed at all, since a glob on
+    `attempt.json` can't see a dir that never got one).
+
+    A leaf is any all-digits-named directory (an attempt number `n`) that has no further
+    all-digits-named subdirectory to descend into -- this is what distinguishes the actual
+    `n` dir from the task-id dir one level up (task ids are also all-digits, matching
+    `^\d{3}$`, so naming alone can't tell them apart; the task-id dir always has a further
+    digit-named child -- the `n` dir -- while the `n` dir itself never does)."""
+    attempts_root = pathlib.Path(attempts_root)
+    if not attempts_root.is_dir():
+        return []
+    leaves = []
+    for dirpath, dirnames, _filenames in os.walk(attempts_root):
+        p = pathlib.Path(dirpath)
+        if p == attempts_root:
+            continue
+        if not p.name.isdigit():
+            continue
+        if any(d.isdigit() for d in dirnames):
+            continue  # a digit-named subdir remains (the real n dir); this is the task-id dir
+        leaves.append(p)
+    return leaves
+
+
 def _sweep(cfg) -> None:
-    """Step 2 of recovery: every attempt dir under `attempts/`, all tickets, all tasks,
-    sorted by mtime. A record this recovery cannot understand (unreadable/corrupt/legacy)
-    is never skipped -- it exits 3 and waits for an operator."""
-    paths = sorted(pathlib.Path(cfg.state_root).glob("attempts/*/*/*/attempt.json"),
-                   key=lambda p: p.stat().st_mtime)
-    for p in paths:
-        adir = p.parent
+    """Step 2 of recovery: every attempt leaf dir under `attempts/`, all tickets, all tasks,
+    sorted by leaf mtime. A record this recovery cannot understand (unreadable/corrupt/
+    legacy), or a leaf directory with no `attempt.json` at all (or a non-regular one -- e.g.
+    a crash between mkdir and the first write, or a booby-trapped symlink), is never
+    skipped -- it exits 3 and waits for an operator."""
+    attempts_root = pathlib.Path(cfg.state_root) / "attempts"
+    leaves = _leaf_dirs(attempts_root)
+    for leaf in leaves:
+        record_path = leaf / "attempt.json"
+        try:
+            st = os.lstat(record_path)
+        except FileNotFoundError:
+            raise FenceExit(f"attempt dir without record: {leaf}")
+        if not stat.S_ISREG(st.st_mode):
+            raise FenceExit(f"attempt dir without record: {leaf}")
+    leaves.sort(key=lambda p: p.stat().st_mtime)
+    for adir in leaves:
         try:
             rec = attempt_mod.load(adir)
         except attempt_mod.UnreadableRecord as e:

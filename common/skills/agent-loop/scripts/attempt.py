@@ -278,6 +278,8 @@ def from_json(text: str, path=None) -> Record:
         rec = Record(**kwargs)
     except TypeError as e:
         raise UnreadableRecord(f"malformed record: {e}")
+    if rec.status not in STATES:
+        raise UnreadableRecord(f"unknown status: {rec.status!r}")
     rec.path = pathlib.Path(path) if path is not None else None
     return rec
 

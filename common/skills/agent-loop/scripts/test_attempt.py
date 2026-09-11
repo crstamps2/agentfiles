@@ -330,6 +330,17 @@ class LoadTests(AttemptTestCase):
         with self.assertRaises(attempt.UnreadableRecord):
             attempt.load(adir)
 
+    def test_unknown_status_raises_unreadable(self):
+        adir = attempt.attempt_dir(self.cfg, "TICK-1", "001", 1)
+        attempt.safe_mkdir(adir)
+        (adir / "attempt.json").write_text(json.dumps({
+            "attempt_id": "x@TICK-1/001/1", "lineage": "TICK-1/001", "generation": "g",
+            "n": 1, "status": "NOT_A_REAL_STATUS", "worktree": str(self.wt),
+            "repo_id": "r", "base_tree": "b",
+        }))
+        with self.assertRaises(attempt.UnreadableRecord):
+            attempt.load(adir, validate_worktree=False)
+
     def test_non_utf8_bytes_raise_unreadable(self):
         adir = attempt.attempt_dir(self.cfg, "TICK-1", "001", 1)
         attempt.safe_mkdir(adir)

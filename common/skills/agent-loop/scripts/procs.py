@@ -74,7 +74,8 @@ def run_stage(argv: list, cwd, timeout_s: float, env: dict | None,
     process creation and journaling would leave a live, un-journaled worker that `_recover`
     cannot find. If `on_start` raises, the gate is never released (the child's `read` fails
     and it exits 97 without ever exec'ing the real command), the group is killed, and the
-    exception is re-raised to the caller.
+    exception is re-raised to the caller. Note the shell may exit 97 (saw EOF first) or be
+    killed by the parent's `kill_group` (SIGTERM/SIGKILL) -- either way it never exec'd.
     """
     t0 = time.monotonic()
     p = None

@@ -55,5 +55,8 @@ elif scenario == "malformed":
     (task_dir / "result.md").write_text("I did the thing.\nFILES: " + rel + "\n")
 elif scenario == "fail":
     result("fail", "test", [rel], "assertion mismatch")
+elif scenario == "plant_verify_symlink":
+    result("pass", files=[rel])
+    os.symlink(os.environ["AL_OUTSIDE"], task_dir / "verify-0.out")
 else:
     result("pass", files=[rel])

@@ -346,8 +346,12 @@ class Runner:
             if outcome == "accepted":
                 verify_outcome, verify_reason = "accepted", "none"
                 for i, cmd in enumerate(task.verification_commands):
-                    vs = procs.run_stage(["/bin/sh", "-c", cmd], wt, timeout, env, adir / f"verify-{i}.out", adir / f"verify-{i}.err",
-                                          on_start=on_verify_start)
+                    try:
+                        vs = procs.run_stage(["/bin/sh", "-c", cmd], wt, timeout, env, adir / f"verify-{i}.out", adir / f"verify-{i}.err",
+                                              on_start=on_verify_start)
+                    except procs.LogPathExists as e:
+                        verify_outcome, verify_reason = "protocol", f"worker pre-created verification artifact: {e}"
+                        break
                     verification_seconds += vs.elapsed_s
                     if not vs.terminated:
                         self._fence(vs, t, task, n)

@@ -65,6 +65,18 @@ visual = true
 figma_nodes = ["9281-1211"]
 """
 
+class ManifestFieldValidationTests(unittest.TestCase):
+    def test_manifest_rejects_each_bad_field(self):
+        good = {"id": "001", "slug": "s", "summary": "s", "allowed_files": ["a/**"],
+                "verification_commands": ["true"], "acceptance": ["a"]}
+        for k, v in [("allowed_files", [7]), ("verification_commands", [""]), ("acceptance", [None]), ("timeout_s", True),
+                     ("figma_nodes", [1]), ("allowed_files", ["/abs"]), ("allowed_files", ["../x"]), ("invariants", "notalist")]:
+            with self.subTest(field=k, value=v):
+                errs = contracts.validate_tasks({"tasks": [{**good, k: v}]})
+                self.assertTrue(any(k in e for e in errs), errs)
+        self.assertTrue(contracts.validate_tasks({"tasks": "notalist"}))
+
+
 class TasksTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.p = pathlib.Path(self.tmp.name) / "tasks.toml"

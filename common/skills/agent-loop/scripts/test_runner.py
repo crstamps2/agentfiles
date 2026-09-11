@@ -134,9 +134,17 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rows[0]["outcome"], "rejected"); self.assertIn("may_edit_tests", rows[0]["reason"])
         self.assertFalse((self.wt / "test" / "x_test.rb").exists())
 
-    def test_timeout_kills_and_advances_keeping_clean_tree(self):
-        outcome, rows = self.run_task("timeout", "pass")
-        self.assertEqual(rows[0]["outcome"], "timeout"); self.assertEqual(outcome, "accepted")
+    def test_timeout_keeps_partial_edit_and_advances(self):
+        outcome, rows = self.run_task("timeout", "fail", "fail")
+        self.assertEqual(rows[0]["outcome"], "timeout"); self.assertEqual(outcome, "blocked")
+        self.assertIn("app/components/worker_touch.rb", rows[0]["changed_paths"])
+        diff = (self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "diff.patch").read_text()
+        self.assertIn("edited by fake worker (timeout)", diff)
+
+    def test_no_result_with_429_stderr_is_environment(self):
+        # scenario `transport_429`: fake writes "HTTP 429 Too Many Requests" to stderr, no result.md, exits 1
+        outcome, rows = self.run_task("transport_429", "transport_429")
+        self.assertEqual([r["outcome"] for r in rows], ["environment", "environment"]); self.assertEqual(outcome, "paused")
 
     def test_owner_block_returns_blocked_without_consuming_ladder(self):
         outcome, rows = self.run_task("owner")
@@ -478,6 +486,69 @@ class RunnerHarness(unittest.TestCase):
         runner.Runner._rewrite_artifact(p, '{"ok":1}')
         self.assertEqual(json.loads(p.read_text()), {"ok": 1})
         self.assertFalse(list(self.cfg.state_root.glob("x.json.*tmp*")))
+
+    # ----- Re-review regression tests: C1, C3, I6 -------------------------------
+
+    def test_dry_run_cli_subprocess_never_calls_pi(self):
+        shim = self.cfg.state_root.parent / "shim"; shim.mkdir()
+        sentinel = shim / "PI_WAS_CALLED"
+        (shim / "pi").write_text(f"#!/bin/sh\ntouch {sentinel}\nexit 1\n"); (shim / "pi").chmod(0o755)
+        env = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "AL_SCENARIO": "pass"}
+        r = subprocess.run([sys.executable, str(HERE / "runner.py"), "--config", str(self.cfg.state_root.parent / "hopper.toml"),
+                            "dry-run", "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml")],
+                           capture_output=True, text=True, env=env, cwd=HERE, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(sentinel.exists())
+        self.assertEqual(metrics.read_all(self.cfg.state_root)[-1]["outcome"], "accepted")
+
+    def test_fence_with_dead_pgid_is_cleared_and_run_proceeds(self):
+        # A subprocess.run() child normally shares the caller's process group (no new
+        # session), so its pgid is our own live pgid, not a dead one. Start a real session
+        # leader, let it exit and be reaped, and use *its* now-dead pgid.
+        dead = subprocess.Popen(["true"], start_new_session=True); pgid = dead.pid; dead.wait()
+        (self.cfg.state_root / "locks").mkdir(exist_ok=True)
+        (self.cfg.state_root / "locks" / "heavy.fence").write_text(json.dumps({"pgid": pgid}))
+        outcome, rows = self.run_task("pass")
+        self.assertEqual(outcome, "accepted"); self.assertFalse((self.cfg.state_root / "locks" / "heavy.fence").exists())
+
+    def test_fence_with_live_pgid_pauses(self):
+        sleeper = subprocess.Popen(["sleep", "60"], start_new_session=True); pgid = os.getpgid(sleeper.pid)
+        (self.cfg.state_root / "locks").mkdir(exist_ok=True)
+        (self.cfg.state_root / "locks" / "heavy.fence").write_text(json.dumps({"pgid": pgid}))
+        outcome, rows = self.run_task("pass")
+        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
+        procs.kill_group(pgid)
+        sleeper.wait()
+
+    def test_stratified_arms_for_mixed_visual_flags(self):
+        toml = TASKS
+        for i, vis in (("002", "true"), ("003", "false"), ("004", "true")):
+            toml += TASKS.replace('id = "001"', f'id = "{i}"').replace("touch", f"touch{i}").replace('acceptance = ["AC-1"]', f'acceptance = ["AC-1"]\nvisual = {vis}')
+        tasks_toml = self.cfg.state_root.parent / "tasks4.toml"; tasks_toml.write_text(toml)
+        with patch("runner.procs.run_stage", side_effect=self.launcher):
+            self.scenarios = ["pass"] * 4
+            runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--worktree", str(self.wt), "--tasks", str(tasks_toml)])
+        arms = [r["arm"] for r in metrics.read_all(self.cfg.state_root) if r["stage"] == "implement"]
+        # RunnerHarness.setUp pins arms.alternate = ["cloud", "local"]; strata are F,T,F,T (non-visual
+        # stratum indices 0,1 and visual stratum indices 0,1), so arms are cloud,cloud,local,local.
+        self.assertEqual(arms, ["cloud", "cloud", "local", "local"])
+
+    def test_arm_persists_across_alternate_change(self):
+        # "owner" blocks on attempt 1 without consuming the ladder, so a second implement_task
+        # call on the SAME history can be issued after mutating the config -- run_task() itself
+        # can't be called twice on one ticket (it re-drives the full spinup..implement chain,
+        # which is illegal once the ticket has already reached "implement").
+        outcome, rows = self.run_task("owner")                     # attempt 1 on the stratum-0 arm (cloud)
+        self.assertEqual(outcome, "blocked"); self.assertEqual(rows[0]["arm"], "cloud")
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        t = state.transition(state.load(tdir), "implement"); state.save(tdir, t)
+        object.__setattr__(self.cfg, "arms_alternate", ["local", "cloud"])
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        self.scenarios = ["pass"]
+        outcome2 = r.implement_task(t, self.tasks[0], 0, self.wt)
+        rows = metrics.read_all(self.cfg.state_root)
+        self.assertEqual(outcome2, "accepted")
+        self.assertEqual({row["arm"] for row in rows}, {"cloud"})
 
 if __name__ == "__main__":
     unittest.main()

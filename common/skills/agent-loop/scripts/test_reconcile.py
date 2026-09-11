@@ -471,7 +471,11 @@ class GlobalFenceCheckTests(ReconcilePart2TestCase):
         rec = attempt.transition(rec, "ORPHANED")
         fence_path = self.cfg.state_root / "locks" / "heavy.fence"
         fence_path.parent.mkdir(parents=True, exist_ok=True)
-        fence_path.write_text(json.dumps({"attempt_dir": str(rec.path), "proc": None, "reason": "t"}))
+        # The fence schema requires a real (non-null) proc dict (C2): a genuinely dead proc
+        # is one that classifies as dead, not one that's simply absent from the fence file.
+        dead_proc = {"boot_id": locks.boot_id(), "pgid": 999999, "pid": 999999,
+                     "start_time": "x", "cmd": "y"}
+        fence_path.write_text(json.dumps({"attempt_dir": str(rec.path), "proc": dead_proc, "reason": "t"}))
 
         ctx = reconcile.reconcile(self.cfg, "run-x")
         try:
@@ -639,6 +643,250 @@ class TwoTicketGlobalSweepTests(ReconcilePart2TestCase):
             t2 = state.load(self.cfg.ticket_dir("TICK-2"))
             self.assertEqual(len(t1.attempts[rec1.lineage]), 1)
             self.assertEqual(len(t2.attempts[rec2.lineage]), 1)
+        finally:
+            ctx.close()
+
+
+class SweepWalksLeavesTests(ReconcilePart2TestCase):
+    """C1: the sweep walks the attempts tree looking for leaf dirs (any all-digit dir at
+    least two levels below attempts_root) rather than globbing a fixed `*/*/*` depth, so it
+    catches both a leaf created before attempt.json existed and a ticket key containing
+    `/`."""
+
+    def test_leaf_dir_without_attempt_json_raises_fence_exit(self):
+        leaf = self.cfg.state_root / "attempts" / "T" / "001" / "1"
+        leaf.mkdir(parents=True)
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+
+    def test_ticket_key_with_slash_is_swept(self):
+        rec = self._create_in("team/TICK", self.wt, n=1)
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        ctx = reconcile.reconcile(self.cfg, "run-x")
+        try:
+            reloaded = attempt.load(rec.path)
+            self.assertEqual(reloaded.status, "INTERRUPTED")
+        finally:
+            ctx.close()
+
+
+class CorruptFenceSchemaTests(ReconcilePart2TestCase):
+    """C2: the fence file must have `attempt_dir`, `proc` (a non-null dict), and `reason`;
+    a fence missing `proc` (or with a null `proc`) must never be silently classified as
+    `dead` and used to restore a possibly-still-live group."""
+
+    def _write_fence(self, payload):
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence_path.parent.mkdir(parents=True, exist_ok=True)
+        fence_path.write_text(json.dumps(payload))
+        return fence_path
+
+    def test_fence_missing_proc_key_raises_fence_exit(self):
+        rec = self._create()
+        self._write_fence({"attempt_dir": str(rec.path), "reason": "t"})
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+
+    def test_fence_with_null_proc_raises_fence_exit(self):
+        rec = self._create()
+        self._write_fence({"attempt_dir": str(rec.path), "proc": None, "reason": "t"})
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+
+    def test_fence_missing_attempt_dir_key_raises_fence_exit(self):
+        self._write_fence({"proc": {"boot_id": "x", "pgid": 1, "pid": 1, "start_time": "x", "cmd": "y"},
+                          "reason": "t"})
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+
+    def test_fence_missing_reason_key_raises_fence_exit(self):
+        rec = self._create()
+        self._write_fence({"attempt_dir": str(rec.path),
+                          "proc": {"boot_id": "x", "pgid": 1, "pid": 1, "start_time": "x", "cmd": "y"}})
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+
+
+class UnknownStatusDefenseTests(ReconcilePart2TestCase):
+    """C3: attempt.from_json validates status in STATES; reconcile also fails closed if it
+    is ever handed a record whose status it has no dispatch branch for."""
+
+    def test_unknown_status_in_record_raises_fence_exit_via_unreadable(self):
+        rec = self._create()
+        raw = json.loads((rec.path / "attempt.json").read_text())
+        raw["status"] = "NOT_A_REAL_STATUS"
+        (rec.path / "attempt.json").write_text(json.dumps(raw))
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+
+    def test_reconcile_one_defense_in_depth_raises_fence_exit_for_unhandled_status(self):
+        rec = self._create()
+        rec.status = "NOT_A_REAL_STATUS"
+        with self.assertRaises(reconcile.FenceExit):
+            reconcile._reconcile_one(self.cfg, rec)
+
+
+class DeadFenceReferencingInterruptedTests(ReconcilePart2TestCase):
+    """I1: a dead fence whose referenced attempt is already INTERRUPTED (a crash between the
+    INTERRUPTED write and the fence unlink) must be accepted idempotently, not rejected."""
+
+    def test_dead_fence_referencing_already_interrupted_attempt_is_idempotent(self):
+        rec = self._create()
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "INTERRUPTED", observed_tree=rec.base_tree,
+                                 outcome="interrupted", next_action="none", tree="restored")
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence_path.parent.mkdir(parents=True, exist_ok=True)
+        dead_proc = {"boot_id": locks.boot_id(), "pgid": 999999, "pid": 999999,
+                    "start_time": "x", "cmd": "y"}
+        fence_path.write_text(json.dumps({"attempt_dir": str(rec.path), "proc": dead_proc, "reason": "t"}))
+
+        ctx = reconcile.reconcile(self.cfg, "run-x")
+        try:
+            self.assertFalse(fence_path.exists())
+            reloaded = attempt.load(rec.path)
+            self.assertEqual(reloaded.status, "INTERRUPTED")
+            self.assertTrue(reloaded.history and reloaded.published and reloaded.lifecycle)
+        finally:
+            ctx.close()
+
+
+class FenceWriteFailureTests(ReconcilePart2TestCase):
+    """I2: a failure writing the fence file after the FENCING transition must not propagate
+    as a raw OSError -- the FENCING record already guarantees the next run exits 3."""
+
+    def test_fence_write_failure_raises_fence_exit_and_leaves_fencing(self):
+        rec = self._create()
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING",
+                                 proc={"boot_id": "other-boot", "pgid": 999999, "pid": 999999,
+                                       "start_time": "x", "cmd": "y"})
+        # Only the fence-file write fails -- the FENCING transition itself (which also
+        # goes through safe_write, via safe_rewrite's temp file) must still succeed, so the
+        # test isolates the failure to `locks/heavy.fence` specifically.
+        original_safe_write = attempt.safe_write
+
+        def fake_safe_write(path, text):
+            if pathlib.Path(path).name == "heavy.fence":
+                raise OSError("disk full")
+            return original_safe_write(path, text)
+
+        with mock.patch.object(attempt, "safe_write", side_effect=fake_safe_write):
+            with self.assertRaises(reconcile.FenceExit) as cm:
+                reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+        reloaded = attempt.load(rec.path, validate_worktree=False)
+        self.assertEqual(reloaded.status, "FENCING")
+
+
+class InterruptWritesDiffPatchTests(ReconcilePart2TestCase):
+    """I3: interrupt() writes diff.patch capturing the pre-restore tree, and the sweep
+    regenerates it for any INTERRUPTED record found without one."""
+
+    def test_interrupt_via_sweep_writes_diff_patch_and_restores_tree(self):
+        p, pid = spawn_sleep()
+        try:
+            rec = self._create()
+            (self.wt / "app" / "bin").mkdir()
+            (self.wt / "app" / "bin" / "oops").write_text("oops\n")
+            rec = attempt.transition(rec, "LAUNCHING")
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+
+            ctx = reconcile.reconcile(self.cfg, "run-x")
+            try:
+                self.assertFalse((self.wt / "app" / "bin" / "oops").exists())
+                reloaded = attempt.load(rec.path)
+                self.assertEqual(reloaded.status, "INTERRUPTED")
+                patch_path = rec.path / "diff.patch"
+                self.assertTrue(patch_path.exists())
+                self.assertIn("bin/oops", patch_path.read_text())
+            finally:
+                ctx.close()
+        finally:
+            reap(p)
+
+    def test_sweep_regenerates_missing_diff_patch_for_interrupted_record(self):
+        rec = self._create()
+        (self.wt / "app" / "junk.rb").write_text("junk\n")
+        observed = worktree.snapshot(self.wt)
+        worktree.restore(self.wt, rec.base_tree)
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "INTERRUPTED", observed_tree=observed,
+                                 outcome="interrupted", next_action="none", tree="restored")
+        self.assertFalse((rec.path / "diff.patch").exists())
+
+        ctx = reconcile.reconcile(self.cfg, "run-x")
+        try:
+            patch_path = rec.path / "diff.patch"
+            self.assertTrue(patch_path.exists())
+            self.assertIn("junk.rb", patch_path.read_text())
+        finally:
+            ctx.close()
+
+
+class TimeoutRecoveryTaskReadTests(ReconcilePart2TestCase):
+    """I4: the timeout-recovery path reads task.toml through attempt.safe_read + tomllib,
+    never a raw open() that would follow a symlink."""
+
+    def test_symlinked_task_toml_raises_fence_exit(self):
+        rec = self._create()
+        (self.wt / "app" / "b.rb").write_text("b\n")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        stages = [{"kind": "worker", "idx": 0, "proc": None, "terminated": True,
+                  "timed_out": True, "rc": None, "elapsed_s": 999.0}]
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages)
+
+        real_toml = rec.path / "task.toml"
+        text = real_toml.read_text()
+        real_toml.unlink()
+        target = rec.path / "task.toml.real"
+        target.write_text(text)
+        real_toml.symlink_to(target)
+
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+
+
+class StageDoneTimedOutCleanTests(ReconcilePart2TestCase):
+    """M1: a STAGE_DONE record whose last stage timed out with a clean allowed edit is
+    classified `timeout` by the sweep and finalized with the tree KEPT (not restored)."""
+
+    def test_timed_out_clean_edit_is_classified_finalized_and_projected_with_tree_kept(self):
+        rec = self._create()
+        (self.wt / "app" / "b.rb").write_text("b\n")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        stages = [{"kind": "worker", "idx": 0, "proc": None, "terminated": True,
+                  "timed_out": True, "rc": None, "elapsed_s": 999.0}]
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages)
+
+        ctx = reconcile.reconcile(self.cfg, "run-x")
+        try:
+            reloaded = attempt.load(rec.path)
+            self.assertEqual(reloaded.status, "PROJECTED")
+            self.assertEqual(reloaded.outcome, "timeout")
+            self.assertEqual(reloaded.tree, "kept")
+            self.assertTrue((self.wt / "app" / "b.rb").exists())
+            self.assertTrue(reloaded.history and reloaded.published and reloaded.lifecycle)
+
+            t = state.load(self.cfg.ticket_dir("TICK-1"))
+            self.assertEqual(len(t.attempts[rec.lineage]), 1)
+            self.assertEqual(t.attempts[rec.lineage][0]["outcome"], "timeout")
+
+            rows = metrics.read_all(self.cfg.state_root)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["stage_kind"], "worker")
         finally:
             ctx.close()
 

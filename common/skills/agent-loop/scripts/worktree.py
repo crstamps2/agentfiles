@@ -38,7 +38,9 @@ def snapshot(wt) -> str:
         # HEAD (no commits yet) there is nothing to seed.
         if _has_head(wt):
             _git(wt, "read-tree", "HEAD", env=env)
-        _git(wt, "add", "-A", env=env)
+        # --force: capture untracked-but-ignored paths a worker may have written (e.g. tmp/x),
+        # not just tracked-ignored content already seeded from HEAD above.
+        _git(wt, "add", "-A", "--force", env=env)
         return _git(wt, "write-tree", env=env).strip()
     finally:
         try:
@@ -58,13 +60,36 @@ def changed_paths(wt, base_tree: str) -> list:
 
 
 def restore(wt, tree: str) -> None:
-    """Make the working tree match `tree` exactly for tracked-or-added content; ignored files survive."""
+    """Make the working tree match `tree` exactly for tracked-or-added content; ignored files
+    present in `tree` survive, but ignored files a worker wrote that are NOT in `tree` are
+    removed too (snapshot() now captures ignored writes via --force, so "restored to base"
+    must actually mean it for ignored content as well)."""
+    before = snapshot(wt)
     _git(wt, "read-tree", "--reset", "-u", tree)
     _git(wt, "clean", "-fd")            # remove untracked (non-ignored) leftovers
+    # Paths present before restore but absent from the target tree: read-tree/clean -fd never
+    # touch ignored paths (clean -fd skips them by design), so remove any such leftovers
+    # directly. -z is required for exact repository pathnames.
+    r = subprocess.run(["git", "-C", str(wt), "diff", "--no-renames", "--diff-filter=A", "--name-only", "-z", tree, before],
+                       capture_output=True)
+    if r.returncode:
+        raise RuntimeError(f"git diff failed: {r.stderr.decode(errors='replace').strip()}")
+    extras = [p.decode("utf-8", "surrogateescape") for p in r.stdout.split(b"\0") if p]
+    for extra in extras:
+        fp = pathlib.Path(wt) / extra
+        try:
+            fp.unlink()
+        except (FileNotFoundError, IsADirectoryError):
+            pass
     # read-tree left the real index pointing at `tree`; put it back to HEAD so status is sane.
     # On an unborn HEAD, `git reset` fails (there is no HEAD to reset to) and is unneeded.
     if _has_head(wt):
         _git(wt, "reset", "-q")
+
+
+def verify_restored(wt, tree: str) -> bool:
+    """True iff the working tree's current snapshot matches `tree` exactly."""
+    return snapshot(wt) == tree
 
 
 def _match(path: str, pattern: str) -> bool:

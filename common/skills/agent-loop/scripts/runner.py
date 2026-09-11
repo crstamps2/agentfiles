@@ -4,6 +4,7 @@ in attempt.py; `implement_task` requires a `reconcile.RunContext` obtained from 
 that lives entirely in reconcile.py (Plan 1c Tasks 4/5)."""
 from __future__ import annotations
 import argparse
+import dataclasses
 import datetime as dt
 import json
 import os
@@ -72,8 +73,9 @@ class Runner:
         return None
 
     def implement_task(self, ctx, t: state.Ticket, task: contracts.Task, stratum_index: int, wt) -> str:
-        if not isinstance(ctx, reconcile.RunContext):
-            raise TypeError("implement_task requires a RunContext produced by reconcile.reconcile()")
+        if (not isinstance(ctx, reconcile.RunContext) or ctx.cfg is not self.cfg
+                or ctx.closed or ctx._token is not reconcile._TOKEN):
+            raise TypeError("RunContext must come from reconcile() and be open")
         wt, tdir = pathlib.Path(wt), self.cfg.ticket_dir(t.key)
         if t.state == "blocked":
             return "blocked"
@@ -127,9 +129,25 @@ class Runner:
             task_root = self.cfg.state_root / "attempts" / t.key / task.id
             try:
                 n = attempt.next_n(task_root)
-                outcome, reason = self._attempt(t, task, wt, arm, rung, n, attempts, env_failures)
+                outcome, reason, rec = self._attempt(t, task, wt, arm, rung, n, attempts, env_failures)
             finally:
                 lease.release()
+
+            if rec is None:
+                # No attempt record was ever created (e.g. attempt.create() refused a
+                # symlinked task-level feedback.md) -- there is no attempt_id/rung dir to
+                # write feedback into, and ladder.append_feedback would just re-read the
+                # same booby-trapped feedback.md and raise uncaught. Advance the ladder by
+                # hand: a synthetic history entry with no attempt/n, so the next loop
+                # iteration's next_rung() sees this rung as consumed.
+                print(f"task {task.id}: attempt {n} produced no record ({outcome}: {reason}); "
+                      f"advancing the ladder without an attempt directory", file=sys.stderr)
+                t = state.load(tdir)
+                entries = t.attempts.setdefault(lineage, [])
+                entries.append({"n": None, "rung": dataclasses.asdict(rung), "outcome": outcome,
+                                "reason": reason, "arm": arm, "attempt_id": None})
+                state.save(tdir, t)
+                continue
 
             if outcome in ("rejected", "protocol"):
                 ladder.append_feedback(task_root, n, reason)
@@ -147,7 +165,7 @@ class Runner:
         except attempt.UnsafePath as e:
             print(f"task {task.id}: unsafe task-level feedback.md, refusing to create attempt {n}: {e}",
                   file=sys.stderr)
-            return "protocol", f"unsafe feedback.md: {e}"
+            return "protocol", f"unsafe feedback.md: {e}", None
 
         timeout = min(float(task.timeout_s), float(self.cfg.heavy_stage_timeout_s))
         env = {**os.environ, "AL_TASK_DIR": str(rec.path), "AL_TICKET": t.key, "AL_TASK": task.id}
@@ -170,7 +188,8 @@ class Runner:
         rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
 
         if not stage.terminated:
-            reconcile.fence(self.cfg, rec, f"termination unverified pgid {stage.pgid}")
+            reconcile.fence(self.cfg, rec, f"termination unverified pgid {stage.pgid}",
+                            proc=stages[-1]["proc"])
             raise AssertionError("unreachable: fence() always raises FenceExit")
 
         # Peek at the worker's claim and the tree without any state transition yet -- the
@@ -181,6 +200,7 @@ class Runner:
         violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs)
         res = None
         symlinked_result = False
+        symlinked_stderr = False
         try:
             text = attempt.safe_read(rec.path / "result.md")
             res = contracts.parse_result(text)
@@ -191,11 +211,18 @@ class Runner:
         except attempt.UnsafePath:
             symlinked_result = True
         try:
-            stderr = (rec.path / "stderr.log").read_text(errors="replace")
-        except OSError:
+            stderr = attempt.safe_read(rec.path / "stderr.log")
+        except FileNotFoundError:
+            stderr = ""
+        except (OSError, UnicodeDecodeError):
+            stderr = ""
+        except attempt.UnsafePath:
+            symlinked_stderr = True
             stderr = ""
         if symlinked_result:
             outcome, reason = "protocol", "result.md is not a safe regular file (symlink?)"
+        elif symlinked_stderr:
+            outcome, reason = "protocol", "worker replaced stderr.log"
         else:
             outcome, reason = _classify(res, stage, violations, stderr)
 
@@ -240,7 +267,8 @@ class Runner:
                               "rc": vs.returncode, "elapsed_s": vs.elapsed_s}
                 rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
                 if not vs.terminated:
-                    reconcile.fence(self.cfg, rec, f"termination unverified pgid {vs.pgid}")
+                    reconcile.fence(self.cfg, rec, f"termination unverified pgid {vs.pgid}",
+                                    proc=stages[-1]["proc"])
                     raise AssertionError("unreachable: fence() always raises FenceExit")
                 if vs.timed_out:
                     verify_outcome, verify_reason = "environment", f"verification timeout: {cmd}"
@@ -273,7 +301,7 @@ class Runner:
                                  observed_tree=final_tree)
         rec = reconcile.finalize(self.cfg, rec)
         rec = reconcile.project_all(self.cfg, rec)
-        return rec.outcome, rec.reason
+        return rec.outcome, rec.reason, rec
 
     def status(self) -> int:
         tickets_dir = self.cfg.state_root / "tickets"; heavy = locks.owner(self.cfg.state_root / "locks" / "heavy")

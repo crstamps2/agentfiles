@@ -1,7 +1,7 @@
 # test_runner.py
 import json, os, pathlib, re, subprocess, sys, tempfile, unittest
 from unittest.mock import patch
-import config, contracts, metrics, procs, reconcile, runner, state, worktree
+import attempt, config, contracts, metrics, procs, reconcile, runner, state, worktree
 
 HERE = pathlib.Path(__file__).resolve().parent
 FAKE = HERE / "fake_worker.py"
@@ -459,7 +459,6 @@ class RunnerHarness(unittest.TestCase):
     # Reason: Runner._write_artifact/_rewrite_artifact are deleted per the brief; the no-follow
     # create/rewrite discipline they implemented now lives in attempt.safe_write/safe_rewrite,
     # already covered by test_attempt.py.
-        self.assertFalse(list(self.cfg.state_root.glob("x.json.*tmp*")))
 
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
@@ -544,6 +543,114 @@ class RunnerHarness(unittest.TestCase):
         rows = metrics.read_all(self.cfg.state_root)
         self.assertEqual(outcome2, "accepted")
         self.assertEqual({row["arm"] for row in rows}, {"cloud"})
+
+    # ----- Fix round 1, finding 3: attempt.create() UnsafePath -> no record; ladder
+    # advances by hand, append_feedback is skipped, and a later attempt (once the trap is
+    # gone) proceeds normally. --------------------------------------------------------
+
+    def test_unsafe_task_feedback_advances_ladder_without_attempt_dir_then_recovers(self):
+        # A pre-existing bare task-level directory with nothing but a planted symlink (no
+        # attempt subdir yet) is ambiguous to reconcile.reconcile()'s sweep (a task-id dir
+        # with zero attempt children is indistinguishable from an attempt-number leaf with a
+        # missing record -- a separate, pre-existing limitation, not this fix's concern), so
+        # this test instead models an attacker/operator swapping a *real* feedback.md (left
+        # behind by a normal first attempt) for a symlink in between two attempts -- the
+        # scenario attempt.create()'s no-follow read is actually guarding against.
+        outside = self.cfg.state_root.parent / "outside_feedback.md"
+        outside.write_text("sneaky")
+        task_level = self.cfg.state_root / "attempts" / "ZIP-7873" / "001"
+        real_create = attempt.create
+        calls = {"n": 0}
+
+        def trap_second_create(cfg, ticket_key, task, wt, n, agent, arm, rung, run_id):
+            calls["n"] += 1
+            if calls["n"] != 2:
+                return real_create(cfg, ticket_key, task, wt, n, agent, arm, rung, run_id)
+            fb = task_level / "feedback.md"
+            if fb.exists() or fb.is_symlink():
+                fb.unlink()
+            fb.symlink_to(outside)
+            try:
+                return real_create(cfg, ticket_key, task, wt, n, agent, arm, rung, run_id)
+            except attempt.UnsafePath:
+                fb.unlink()   # the trap is discovered and cleared before the next attempt
+                raise
+
+        t = self._fresh_ticket()
+        state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        self.scenarios = ["fail", "pass"]
+        with patch("attempt.create", side_effect=trap_second_create):
+            outcome = self._implement(r, t, self.tasks[0], 0)
+
+        self.assertEqual(outcome, "accepted")
+        dirs = sorted(p.name for p in task_level.iterdir() if p.is_dir() and p.name.isdigit())
+        # Attempt 1 (real, rejected) and the eventual accepted attempt reuse n=2, since the
+        # trapped create() cleaned up (rmtree'd) its own leaf dir before raising.
+        self.assertEqual(dirs, ["1", "2"])
+        self.assertEqual(outside.read_text(), "sneaky")  # create() never wrote through the trap
+
+        saved = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        entries = saved.attempts[f"ZIP-7873/{self.tasks[0].id}"]
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(entries[0]["outcome"], "rejected")
+        self.assertEqual(entries[1]["n"], None)
+        self.assertEqual(entries[1]["outcome"], "protocol")
+        self.assertEqual(entries[1]["attempt_id"], None)
+        self.assertIn("unsafe feedback.md", entries[1]["reason"])
+        self.assertEqual(entries[2]["outcome"], "accepted")
+        # append_feedback was skipped for the no-record outcome: the trapped iteration never
+        # touched feedback.md content (only the symlink itself, already cleaned up above).
+        self.assertFalse((task_level / "feedback.md").is_symlink())
+
+    # ----- Fix round 1, finding 4: implement_task requires a RunContext actually produced
+    # by reconcile.reconcile() -- closed or hand-built contexts are refused. ------------
+
+    def test_closed_run_context_raises_type_error(self):
+        t = self._fresh_ticket()
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        ctx = reconcile.reconcile(self.cfg, "test")
+        ctx.close()
+        with self.assertRaises(TypeError):
+            r.implement_task(ctx, t, self.tasks[0], 0, self.wt)
+
+    def test_hand_built_run_context_raises_type_error(self):
+        t = self._fresh_ticket()
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        lease = reconcile.locks.Lease(self.cfg.state_root / "locks" / "runner", "runner")
+        ctx = reconcile.RunContext(self.cfg, "x", lease)
+        try:
+            with self.assertRaises(TypeError):
+                r.implement_task(ctx, t, self.tasks[0], 0, self.wt)
+        finally:
+            pass  # never acquired the lease; nothing to release
+
+    # ----- Fix round 1, finding 5: stderr.log is read via attempt.safe_read; a worker that
+    # replaces it with a symlink is protocol, and the outside target is never touched. -----
+
+    def test_worker_replaced_stderr_log_is_protocol_and_leaves_outside_file(self):
+        outside = self.cfg.state_root.parent / "outside_stderr.txt"
+        outside.write_text("keep")
+        real_launcher = self.launcher
+
+        def corrupting_launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=None):
+            result = real_launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
+            stderr_path = pathlib.Path(stderr_path)
+            if stderr_path.exists():
+                stderr_path.unlink()
+            stderr_path.symlink_to(outside)
+            return result
+
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=corrupting_launcher)
+        self.scenarios = ["pass"]
+        t = self._fresh_ticket()
+        state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        self._implement(r, t, self.tasks[0], 0)
+
+        rows = metrics.read_all(self.cfg.state_root)
+        self.assertEqual(rows[0]["outcome"], "protocol")
+        self.assertIn("stderr.log", rows[0]["reason"])
+        self.assertEqual(outside.read_text(), "keep")
 
 if __name__ == "__main__":
     unittest.main()

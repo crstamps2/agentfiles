@@ -16,6 +16,7 @@ class Reading:
     disk_free_gb: float | None
     pressure_level: str | None = None
     thermal_level: int | None = None
+    thermal_state: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,6 +55,18 @@ def parse_therm(text: str) -> bool | None:
     if not m:
         return None
     return int(m.group(1)) < 100
+
+
+def parse_thermal_state(text: str) -> int | None:
+    """Parse NSProcessInfo.thermalState from osascript output. Valid range: 0-3."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        val = int(text)
+        return val if 0 <= val <= 3 else None
+    except ValueError:
+        return None
 
 
 def parse_memory_pressure(text: str) -> str | None:
@@ -105,6 +118,7 @@ def probe(state_root) -> Reading:
             thermal_level = int(thermal_str)
         except ValueError:
             pass
+    thermal_state = parse_thermal_state(_out(["osascript", "-l", "JavaScript", "-e", "ObjC.import('Foundation'); $.NSProcessInfo.processInfo.thermalState"]))
     return Reading(
         compressor_pct=parse_vm_stat(vm, memsize) if vm and memsize else None,
         load1=parse_uptime(up) if up else None,
@@ -114,6 +128,7 @@ def probe(state_root) -> Reading:
         disk_free_gb=None if math.isnan(disk_free) else disk_free,
         pressure_level=parse_memory_pressure(pressure),
         thermal_level=thermal_level,
+        thermal_state=thermal_state,
     )
 
 
@@ -136,10 +151,14 @@ def decide(r: Reading, th) -> Decision:
         reasons.append("on battery power")
     if r.therm_limited is True:
         reasons.append("thermal: CPU speed limited")
-    elif r.therm_limited is None and r.thermal_level is None:
+    elif r.thermal_state is not None:
+        if r.thermal_state >= 2:
+            reasons.append(f"thermal: NSProcessInfo state {r.thermal_state}")
+    elif r.thermal_level is not None:
+        if r.thermal_level > 0:
+            reasons.append(f"thermal: xcpm level {r.thermal_level}")
+    elif r.therm_limited is None and r.thermal_state is None and r.thermal_level is None:
         reasons.append("thermal: unknown")
-    elif r.thermal_level is not None and r.thermal_level > 0:
-        reasons.append(f"thermal: xcpm level {r.thermal_level}")
     if r.disk_free_gb is None or (isinstance(r.disk_free_gb, float) and math.isnan(r.disk_free_gb)):
         reasons.append("disk: unknown")
     elif r.disk_free_gb < th.disk_free_gb_min:

@@ -11,11 +11,13 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import uuid
 
 import contracts
+import locks
 import worktree as worktree_mod
 
 
@@ -28,6 +30,12 @@ class UnreadableRecord(ValueError):
 
 
 class IllegalAttemptTransition(ValueError):
+    pass
+
+
+class StaleRecord(IllegalAttemptTransition):
+    """Raised when the in-memory record is stale relative to the on-disk record (a
+    concurrent writer has already advanced status/n). Never overwrite a newer record."""
     pass
 
 
@@ -61,28 +69,42 @@ def safe_rewrite(path, text: str) -> None:
             raise UnsafePath(f"unsafe artifact path: {path}")
     except FileNotFoundError:
         return safe_write(path, text)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     try:
         safe_write(tmp, text)
         os.replace(tmp, path)
     finally:
         if tmp.exists():
             tmp.unlink()
-    for stale in path.parent.glob(f"{path.name}.*tmp"):      # sweep predecessors' leftovers
+    prefix = f"{path.name}.tmp-"
+    for stale in path.parent.glob(f"{prefix}*"):      # sweep predecessors' leftovers, scoped
+        if stale == tmp or not stale.name.startswith(prefix):
+            continue
+        pid = _temp_owner_pid(stale.name, prefix)
+        if pid is not None and locks.pid_alive(pid):
+            continue    # a live writer's in-flight temp; leave it alone
         try:
             stale.unlink()
         except OSError:
             pass
 
 
+def _temp_owner_pid(tmp_name: str, prefix: str) -> int | None:
+    """Extract the pid embedded in a `<name>.tmp-<pid>-<hex8>` temp filename. Returns None
+    if the suffix doesn't parse (so it's treated as unowned and swept)."""
+    suffix = tmp_name[len(prefix):]
+    pid_str, _, rest = suffix.partition("-")
+    if not pid_str.isdigit() or not rest:
+        return None
+    return int(pid_str)
+
+
 def safe_read(path) -> str:
     """Read a worker-writable path without ever traversing a symlink. Raises UnsafePath for
-    a symlink, a missing file, or anything that is not a regular file."""
+    a symlink or anything that is not a regular file. A missing file raises the ordinary
+    FileNotFoundError (uncaught) so callers can distinguish "absent" from "unsafe"."""
     path = pathlib.Path(path)
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        raise UnsafePath(f"missing: {path}")
+    st = os.lstat(path)
     if not stat.S_ISREG(st.st_mode):
         raise UnsafePath(f"not a regular file: {path}")
     flags = os.O_RDONLY
@@ -250,19 +272,58 @@ def from_json(text: str, path=None) -> Record:
     return rec
 
 
-def load(adir) -> Record:
+def _validate_worktree(rec: Record) -> None:
+    """Guard against a record whose `worktree` no longer exists, isn't absolute, or whose
+    `repo_id` no longer matches that worktree's git-common-dir (e.g. the worktree was
+    removed and the path recycled for an unrelated repo)."""
+    wt = pathlib.Path(rec.worktree) if rec.worktree else None
+    if wt is None or not wt.is_absolute() or not wt.is_dir():
+        raise UnreadableRecord(f"{rec.attempt_id}: worktree/repo mismatch: worktree {rec.worktree!r} "
+                                f"does not exist or is not absolute")
+    try:
+        actual_repo_id = _repo_id(wt)
+    except ValueError as e:
+        raise UnreadableRecord(f"{rec.attempt_id}: worktree/repo mismatch: {e}")
+    if actual_repo_id != rec.repo_id:
+        raise UnreadableRecord(f"{rec.attempt_id}: worktree/repo mismatch: recorded repo_id "
+                                f"{rec.repo_id!r} != actual {actual_repo_id!r} for {wt}")
+
+
+def load(adir, validate_worktree: bool = True) -> Record:
+    """Load and validate the attempt record at `adir`. Always raises UnreadableRecord (never
+    lets a decode/IO error escape as-is) for a corrupt/unsafe/missing file, and -- unless the
+    caller opts out with `validate_worktree=False` (used by the internal CAS re-load, which
+    must not require git/filesystem access just to detect staleness) -- for a record whose
+    worktree/repo_id no longer resolve consistently."""
     adir = pathlib.Path(adir)
     try:
         text = safe_read(adir / "attempt.json")
-    except UnsafePath as e:
-        raise UnreadableRecord(str(e))
-    return from_json(text, path=adir)
+        rec = from_json(text, path=adir)
+        if validate_worktree:
+            _validate_worktree(rec)
+        return rec
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError,
+            ValueError, UnsafePath) as e:
+        raise UnreadableRecord(str(e)) from e
+
+
+def _check_not_stale(rec: Record) -> None:
+    """Compare-and-swap guard: re-read the on-disk record (skipping worktree validation --
+    this is a same-process freshness check, not a trust check) and refuse to overwrite it if
+    it has moved on since `rec` was loaded. Prevents a stale in-memory copy (e.g. held across
+    two overlapping recovery passes) from clobbering a newer on-disk write."""
+    on_disk = load(rec.path, validate_worktree=False)
+    if on_disk.status != rec.status or on_disk.n != rec.n:
+        raise StaleRecord(
+            f"{rec.attempt_id}: stale record -- on-disk is status={on_disk.status!r} n={on_disk.n!r}, "
+            f"in-memory is status={rec.status!r} n={rec.n!r}")
 
 
 def transition(rec: Record, to: str, **fields) -> Record:
     allowed = NEXT.get(rec.status, set())
     if to not in allowed:
         raise IllegalAttemptTransition(f"{rec.attempt_id}: {rec.status} -> {to} is not a legal transition")
+    _check_not_stale(rec)
     new_rec = dataclasses.replace(rec, status=to, **fields)
     new_rec.path = rec.path
     safe_rewrite(pathlib.Path(rec.path) / "attempt.json", to_json(new_rec))
@@ -272,6 +333,7 @@ def transition(rec: Record, to: str, **fields) -> Record:
 def set_flags(rec: Record, **flags) -> Record:
     """Rewrite the record with updated projection flags (history/published/lifecycle) or
     other non-state fields, without a state transition."""
+    _check_not_stale(rec)
     new_rec = dataclasses.replace(rec, **flags)
     new_rec.path = rec.path
     safe_rewrite(pathlib.Path(rec.path) / "attempt.json", to_json(new_rec))
@@ -340,36 +402,44 @@ def create(cfg, ticket_key: str, task: contracts.Task, worktree, n: int, agent, 
     adir = attempt_dir(cfg, ticket_key, task.id, n)
     safe_mkdir(adir)
 
-    safe_write(adir / "task.toml", task_toml(task))
-    safe_write(adir / "task.md", task_md(task, adir, wt))
+    try:
+        safe_write(adir / "task.toml", task_toml(task))
+        safe_write(adir / "task.md", task_md(task, adir, wt))
 
-    task_level = adir.parent
-    feedback = task_level / "feedback.md"
-    if feedback.exists():
+        task_level = adir.parent
+        feedback = task_level / "feedback.md"
+        # No exists() pre-check (that's a TOCTOU race against a symlink swap); safe_read
+        # itself does the no-follow check and raises UnsafePath for a symlink/non-regular
+        # file, which we deliberately let propagate -- a booby-trapped feedback.md must
+        # fail attempt creation, not be silently skipped. A genuinely absent file raises
+        # the ordinary FileNotFoundError, which is the only thing "no feedback" means.
         try:
             text = safe_read(feedback)
-        except UnsafePath:
+        except FileNotFoundError:
             text = None
         if text is not None:
             safe_write(adir / "feedback.md", text)
 
-    body = getattr(agent, "body", "") if not isinstance(agent, str) else ""
-    safe_write(adir / "body.md", body)
-    safe_write(adir / "prompt.md",
-               f"Your task file is {adir / 'task.md'}. Read it, then begin. Write result.md to {adir}.\n")
+        body = getattr(agent, "body", "") if not isinstance(agent, str) else ""
+        safe_write(adir / "body.md", body)
+        safe_write(adir / "prompt.md",
+                   f"Your task file is {adir / 'task.md'}. Read it, then begin. Write result.md to {adir}.\n")
 
-    base_tree = worktree_mod.snapshot(wt)
-    safe_write(adir / "base_tree", base_tree)
+        base_tree = worktree_mod.snapshot(wt)
+        safe_write(adir / "base_tree", base_tree)
 
-    agent_name = agent if isinstance(agent, str) else getattr(agent, "name", None)
-    rung_dict = dataclasses.asdict(rung) if dataclasses.is_dataclass(rung) else rung
+        agent_name = agent if isinstance(agent, str) else getattr(agent, "name", None)
+        rung_dict = dataclasses.asdict(rung) if dataclasses.is_dataclass(rung) else rung
 
-    rec = Record(
-        attempt_id=attempt_id, lineage=lineage, generation=generation, n=n, status="CREATED",
-        worktree=str(wt), repo_id=repo_id, base_tree=base_tree,
-        agent=agent_name, arm=arm, rung=rung_dict, run_id=run_id, started_utc=_now(),
-        proc=None, stages=[],
-    )
-    rec.path = adir
-    safe_write(adir / "attempt.json", to_json(rec))
-    return rec
+        rec = Record(
+            attempt_id=attempt_id, lineage=lineage, generation=generation, n=n, status="CREATED",
+            worktree=str(wt), repo_id=repo_id, base_tree=base_tree,
+            agent=agent_name, arm=arm, rung=rung_dict, run_id=run_id, started_utc=_now(),
+            proc=None, stages=[],
+        )
+        rec.path = adir
+        safe_write(adir / "attempt.json", to_json(rec))
+        return rec
+    except BaseException:
+        shutil.rmtree(adir, ignore_errors=True)
+        raise

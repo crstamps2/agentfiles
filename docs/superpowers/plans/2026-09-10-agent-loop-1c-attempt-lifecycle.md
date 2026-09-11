@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the runner's patched recovery with the designed attempt state machine: one durable `attempt.json` per attempt as the source of truth, three idempotent projections, global pre-dispatch reconciliation under a held lease, process identity that fences instead of killing on any doubt, and a 40-row crash-window test table as the acceptance contract.
+**Goal:** Replace the runner's patched recovery with the designed attempt state machine: one durable `attempt.json` per attempt as the source of truth, three idempotent projections, global pre-dispatch reconciliation under a held lease, process identity that fences instead of killing on any doubt, and a 38-row crash-window test table as the acceptance contract.
 
 **Architecture:** Three new modules carry the design — `procid.py` (process identity classification), `attempt.py` (the record, its states, and atomic transitions), `reconcile.py` (global recovery + projections) — and `runner.py` is rewritten to drive `_attempt` through `attempt.py` transitions and to require a `RunContext` from `reconcile.py`. `worktree.py`, `metrics.py`, `locks.py`, and `ladder.py` get the contract changes the design names. No new external dependencies.
 
@@ -32,7 +32,7 @@ Create (all under `common/skills/agent-loop/scripts/`):
 - `procid.py` — `ProcId` dataclass; `capture(pid) -> ProcId`; `classify(recorded: ProcId | None) -> "ours-alive" | "dead" | "unknown"`.
 - `attempt.py` — `STATES`, `Record` dataclass, `load/create/transition`, path helpers, `safe_open_read/safe_write/safe_rewrite` (moves the no-follow helpers out of `runner.py`), `attempt_id/lineage/generation`.
 - `reconcile.py` — `reconcile(cfg, run_id) -> RunContext`; the fence check, the sweep, INTERRUPTED/CLASSIFIED/FENCING handling; `project_history/project_metrics/project_lifecycle`; `finalize(record)`.
-- `test_procid.py`, `test_attempt.py`, `test_reconcile.py`, `test_crash_windows.py` (the 40-row table).
+- `test_procid.py`, `test_attempt.py`, `test_reconcile.py`, `test_crash_windows.py` (the 38-row table).
 
 Modify:
 
@@ -291,9 +291,9 @@ return rec.outcome, rec.reason
 
 Implement **every row** of the spec's Acceptance table as one test, in table order, named `test_cw_NN_<slug>`. Technique per row: drive the runner through `RunnerHarness` (or a subprocess for the CLI rows) to the named boundary using a kill hook (`raise reconcile.SimulatedCrash` from a patched function at the boundary), then call `reconcile.reconcile` and assert the post-condition. Rows requiring a live group use a real `sleep` under `start_new_session=True` and kill it in `tearDown`. For "recorded pgid now belongs to an unrelated process" spawn a new session, record its `ProcId`, kill it, spawn another session and patch `procid._ps` to return the new pid's `lstart` for the old pid — assert classify → `unknown` and nothing signaled (spy `os.killpg`).
 
-- [ ] **Step 1:** Write all 40 tests (they fail or error until the earlier tasks are complete — this task runs LAST; write the file, run it, fix any production defect the table exposes minimally and name it).
-- [ ] **Step 2:** `python3 -m unittest test_crash_windows -v` → 40 PASS; full suite → PASS twice consecutively.
-- [ ] **Step 3: Commit** `agent-loop: crash-window acceptance table (40 rows)`
+- [ ] **Step 1:** Write all 38 tests (they fail or error until the earlier tasks are complete — this task runs LAST; write the file, run it, fix any production defect the table exposes minimally and name it).
+- [ ] **Step 2:** `python3 -m unittest test_crash_windows -v` → 38 PASS; full suite → PASS twice consecutively.
+- [ ] **Step 3: Commit** `agent-loop: crash-window acceptance table (38 rows)`
 
 ---
 

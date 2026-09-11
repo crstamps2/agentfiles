@@ -1,8 +1,12 @@
 # Agent Loop — Plan 1c Design: Attempt Lifecycle and Recovery
 
-Status: Approved by Cody 2026-09-10; revised after a two-lane adversarial review
-(OpenAI `cto` + `security-analyst`). Disposition of every finding is in
-"Adversarial review disposition" at the end. Amends the *Per-ticket lifecycle*, *Escalation
+Status: **Implemented** on `agent-loop-1` (Plan 1c, 10 tasks; acceptance table
+green: 38/38 rows in `test_crash_windows.py`, full suite 420 tests OK ×2). Approved
+by Cody 2026-09-10; revised after a two-lane adversarial review (OpenAI `cto` +
+`security-analyst`) and corrected during implementation where the table
+contradicted the design text (three rows, marked † below). Disposition of
+every review finding is in "Adversarial review disposition"; the mapping from
+the Plan 1b findings R1–R11 to acceptance rows is in "Findings closed". Amends the *Per-ticket lifecycle*, *Escalation
 ladder*, *Resources and admission control*, *Observability*, and *Error handling*
 sections of `2026-09-10-zip-6774-agent-loop-design.md`. Motivated by three
 consecutive "not mergeable" whole-branch reviews of `agent-loop-1` whose
@@ -91,8 +95,10 @@ decision.
 process start time (`ps -o lstart= -p <pid>`, parsed); `proc.cmd` is the
 leader's command. A recorded group is classified:
 
-- **ours-alive**: boot_id matches, leader pid exists, start_time and cmd match
-  → may be signaled.
+- **ours-alive**: boot_id matches, leader pid exists, start_time matches
+  → may be signaled. (`cmd` is recorded for diagnostics but **not** compared:
+  the launch-gate shell execs into the real command, so the command name
+  legitimately changes between capture and classification.)
 - **dead**: boot_id matches and no process in the pgid exists
   (`killpg(pgid, 0)` → `ESRCH`) → nothing to do.
 - **unknown**: anything else — boot_id differs, leader gone but the pgid is
@@ -229,6 +235,11 @@ before joining.
 
 ## `clear-fence`
 
+`clear-fence` and `status` are the **only** subcommands that do not run
+`reconcile()` first — `clear-fence` exists precisely for the case where
+reconcile refuses (exit 3), so it cannot require it; it performs the
+record-integrity part of the sweep for the referenced attempt only.
+
 Runs **under the global runner lease**. If a runner holds the lease, it prints
 the lease owner (pid, started) and exits 3 — the break-glass sequence is
 documented in SKILL.md: verify that runner is wedged, kill it, re-run
@@ -269,14 +280,16 @@ remains for `status` and break-glass diagnostics.
 
 Each row below is a test that kills the runner (or simulates the kill by
 returning early) at the named boundary, restarts it, and asserts the listed
-post-condition. The plan is complete when every row is green.
+post-condition. The plan is complete when every row is green. **38 rows;**
+rows marked † were corrected during implementation because their original
+text contradicted the design sections above.
 
 | Kill after… | Post-condition on restart |
 | --- | --- |
 | dir + artifacts exist, before a valid CREATED record | exit 3 (unreadable record is never skipped) |
 | dir created, before LAUNCHING | attempt → INTERRUPTED, no process, row published once |
 | gated child forked, before proc committed | child never execs (gate EOF); INTERRUPTED |
-| gate released, before RUNNING persisted | worker killed or fenced; INTERRUPTED |
+| † gate released, before RUNNING persisted | *unreachable by construction*: the gate releases only after `on_start` has durably journaled RUNNING. Row is tested as the **invariant** (on_start completion time ≤ the child's first write) |
 | leader exited with a live descendant in the pgid | classified unknown → fenced, exit 3; never restored under it |
 | stage reaped, before STAGE_DONE receipt | treated as INTERRUPTED (unknown outcome) |
 | STAGE_DONE timed_out, clean allowlist, before CLASSIFYING | proceeds as `timeout`, tree KEPT |
@@ -290,7 +303,7 @@ post-condition. The plan is complete when every row is green.
 | LAUNCHING written, child gated | child exits 97 (never exec'd); INTERRUPTED |
 | RUNNING, worker alive, **different task selected next** | worker killed or fenced before any dispatch |
 | RUNNING, worker created `bin/oops`, killed before classify | `bin/oops` absent; diff.patch shows it; next attempt's base_tree == original |
-| RUNNING, recorded pgid now belongs to an unrelated process (start_time mismatch) | not signaled; treated as dead |
+| † RUNNING, recorded pgid now belongs to an unrelated process (start_time mismatch) | not signaled (no nonzero signal ever sent to that pgid); classified **unknown → fenced**, per *Process identity* |
 | CLASSIFIED `rejected`, before restore | restored on restart; row published once |
 | CLASSIFIED `accepted`, before projections | history has the record; metrics has one row; no re-run |
 | FINALIZED, history=true, before metrics | one row appears; no duplicate |
@@ -304,7 +317,7 @@ post-condition. The plan is complete when every row is green.
 | ORPHANED attempt whose fence file was deleted by hand | re-fenced on start (unless group now dead → INTERRUPTED) |
 | metrics.jsonl has a torn trailing line | next append repairs only the tail; earlier rows intact byte-for-byte |
 | metrics.jsonl has an invalid row BEFORE the tail | append fails closed with an alert; no truncation |
-| worker plants `../feedback.md` symlink | detected before write; outside target unchanged; outcome protocol |
+| † worker plants `../feedback.md` symlink | detected before write; outside target unchanged; the runner does not crash; the attempt keeps its **own** classification (the write guard fires after CLASSIFIED); ladder advances |
 | task-level `feedback.md` is a symlink at next attempt's copy/read | not read; outcome protocol; no external bytes in the prompt |
 | worker writes an ignored path (`tmp/x`) then is rejected | restore removes it; snapshot(worktree) == base_tree |
 | attempt record points at a different repo_id than the worktree | exit 3, nothing restored |
@@ -314,6 +327,22 @@ post-condition. The plan is complete when every row is green.
 
 Plus: `runner.py` recovery code path count drops (one `reconcile`, no
 `_recover`); the Plan 1b ledger's R1–R11 each map to at least one row above.
+
+## Findings closed (Plan 1b final review R1–R11 → acceptance rows)
+
+| Finding | Rows (`test_cw_NN`) |
+| --- | --- |
+| R1 orphan-before-fence ordering | 13, 14, 23, 24 (FENCING state; fence before ORPHANED) |
+| R2 recovery task-local vs global lane | 01, 16 (global sweep; different task selected next) |
+| R3 crash before classify contaminates baseline | 17, 08, 09 (interrupted restore; observed_tree diff; CLASSIFIED rejected restore) |
+| R4 unverified verify group still restored | 23 (verify stage terminated=False → fence, no restore) |
+| R5 clear-fence unlocked race | 25 (lease held → rc 3) |
+| R6 recycled PGID signaled | 18 (unknown → fenced; no signal), 05 (leader gone) |
+| R7 feedback.md follows symlink | 32, 33 (write guard; read guard) |
+| R8 clear-fence TypeError on int attempt | 26, 27, 28 (fences produced by `reconcile.fence`) |
+| R9 durable rows vs history/lifecycle | 10, 11, 12, 19, 20, 21, 22 (projections idempotent; next_action) |
+| R10 torn metrics tail | 30, 31 |
+| R11 ctx regex accepted ctx4k | 37, 38 |
 
 ## Risks
 

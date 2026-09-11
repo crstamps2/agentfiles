@@ -30,9 +30,11 @@ class ClassifyTests(unittest.TestCase):
     def test_start_time_mismatch_is_unknown(self):
         rec = procid.ProcId(**{**self.rec.to_dict(), "start_time": "Thu Jan  1 00:00:00 1970"})
         self.assertEqual(procid.classify(rec), "unknown")
-    def test_cmd_mismatch_is_unknown(self):
+    def test_cmd_mismatch_is_still_ours_alive(self):
+        # cmd is informational: the launch-gate shell execs into the real command, so the
+        # recorded cmd (sh) legitimately differs from the live one. Identity = boot_id+pid+start_time.
         rec = procid.ProcId(**{**self.rec.to_dict(), "cmd": "definitely-not-sleep"})
-        self.assertEqual(procid.classify(rec), "unknown")
+        self.assertEqual(procid.classify(rec), "ours-alive")
     def test_leader_gone_group_populated_is_unknown(self):
         # spawn a leader that forks a child then exits: group stays populated without its leader
         code = "import os,time,subprocess; subprocess.Popen(['sleep','60']); time.sleep(0.2)"

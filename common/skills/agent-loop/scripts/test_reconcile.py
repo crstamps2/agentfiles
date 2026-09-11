@@ -767,6 +767,47 @@ class CorruptFenceSchemaTests(ReconcilePart2TestCase):
             reconcile.reconcile(self.cfg, "run-x")
         self.assertEqual(cm.exception.code, 3)
 
+    def test_fence_attempt_dir_escapes_attempts_root_raises_fence_exit(self):
+        """A fence whose attempt_dir resolves outside state_root/attempts is corrupt."""
+        # Test both absolute path and relative escape
+        cases = {
+            "absolute_etc": "/etc/passwd",
+            "relative_escape": "../../etc/passwd",
+        }
+        for name, escape_path in cases.items():
+            with self.subTest(case=name):
+                self._write_fence({
+                    "attempt_dir": escape_path,
+                    "proc": {"boot_id": "x", "pgid": 1, "pid": 1, "start_time": "x", "cmd": "y"},
+                    "reason": "t"
+                })
+                with self.assertRaises(reconcile.FenceExit) as cm:
+                    reconcile.reconcile(self.cfg, "run-x")
+                self.assertEqual(cm.exception.code, 3)
+                self.assertIn("corrupt", cm.exception.reason.lower())
+                # Clean up the fence file for the next subtest
+                fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+                fence_path.unlink()
+
+    def test_clear_fence_with_escaped_attempt_dir_requires_force(self):
+        """clear_fence() treats escaped attempt_dir as corrupt and needs --force."""
+        self._write_fence({
+            "attempt_dir": "../../etc/passwd",
+            "proc": {"boot_id": "x", "pgid": 1, "pid": 1, "start_time": "x", "cmd": "y"},
+            "reason": "t"
+        })
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rc = reconcile.clear_fence(self.cfg, force=False)
+        self.assertEqual(rc, 3)
+        self.assertIn("corrupt", buf.getvalue().lower())
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        self.assertTrue(fence_path.exists())
+        # With --force, it clears the fence
+        rc = reconcile.clear_fence(self.cfg, force=True)
+        self.assertEqual(rc, 0)
+        self.assertFalse(fence_path.exists())
+
 
 class UnknownStatusDefenseTests(ReconcilePart2TestCase):
     """C3: attempt.from_json validates status in STATES; reconcile also fails closed if it

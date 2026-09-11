@@ -29,24 +29,19 @@ class StageResult:
     terminated: bool = True
 
 
-def group_state(pgid: int) -> str:
-    """Probe a process group without altering it: 'alive', 'dead', or 'zombie-or-foreign'.
-
-    'zombie-or-foreign' means killpg raised PermissionError -- the pgid exists but this
-    process cannot signal it (e.g. it belongs to another user/session, or the leader is an
-    unreapable zombie held by a foreign parent). Callers must treat this as fail-safe alive.
+def group_alive(pgid: int) -> bool:
+    """Probe a process group without altering it: return True iff the group is not provably dead.
+    
+    Returns False (group is dead) only on ProcessLookupError. PermissionError (group exists but
+    inaccessible) returns True (fail-safe alive assumption).
     """
     try:
         os.killpg(pgid, 0)
-        return "alive"
+        return True
     except ProcessLookupError:
-        return "dead"
+        return False
     except PermissionError:
-        return "zombie-or-foreign"
-
-
-def group_alive(pgid: int) -> bool:
-    return group_state(pgid) != "dead"
+        return True  # Assume alive; can't signal but group exists
 
 
 def kill_group(pgid: int, grace_s: float = 5.0, reap: subprocess.Popen | None = None) -> bool:

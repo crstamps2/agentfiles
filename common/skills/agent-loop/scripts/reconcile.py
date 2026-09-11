@@ -29,6 +29,34 @@ class FinalizeFailed(RuntimeError):
     pass
 
 
+# ---------------------------------------------------------------------------
+# Test-only crash-simulation seam (Plan 1c Task 9). `_CRASH_HOOK` is None in every
+# production path and is only ever set by a test via `unittest.mock.patch("reconcile._CRASH_HOOK",
+# "<boundary-name>")`; `_maybe_crash` is a pure no-op unless that name matches, so this seam is
+# unreachable outside tests. It lets test_crash_windows.py kill the runner/reconcile at an exact
+# instruction boundary (named below) instead of a real process kill, then run `reconcile()` (or
+# the `clear-fence` CLI) and assert the post-condition -- see the design's crash-window
+# acceptance table. Boundaries instrumented: after-created, after-launching, after-running,
+# after-stage-done, after-classifying, after-classified (all in runner.py's `_attempt`),
+# after-restore, after-finalized, after-history, after-metrics, after-lifecycle, after-fencing,
+# after-fence-write, after-orphaned (all in this module), and clear-fence-after-transition (in
+# `clear_fence`).
+_CRASH_HOOK = None
+
+
+class SimulatedCrash(BaseException):
+    """Raised by `_maybe_crash` when the test-only hook name matches `_CRASH_HOOK`. Subclasses
+    BaseException (not Exception) so it is never accidentally swallowed by an `except Exception`
+    in the code under test -- exactly like a real process kill, it must propagate all the way
+    out to the test."""
+    pass
+
+
+def _maybe_crash(name: str) -> None:
+    if _CRASH_HOOK is not None and _CRASH_HOOK == name:
+        raise SimulatedCrash(f"simulated crash at {name!r}")
+
+
 RESTORE_OUTCOMES = {"rejected", "protocol", "blocked"}
 
 
@@ -85,13 +113,16 @@ def finalize(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
             raise FinalizeFailed(
                 f"{rec.attempt_id}: worktree did not converge to base_tree after restore")
         tree = "restored"
+        _maybe_crash("after-restore")
     else:
         tree = "kept"
 
     patch = _diff_patch(wt, rec.base_tree, observed)
     attempt_mod.safe_rewrite(pathlib.Path(rec.path) / "diff.patch", patch)
 
-    return attempt_mod.transition(rec, "FINALIZED", tree=tree)
+    rec = attempt_mod.transition(rec, "FINALIZED", tree=tree)
+    _maybe_crash("after-finalized")
+    return rec
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +150,7 @@ def project_history(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
             "generation": rec.generation,
         })
         state_mod.save(tdir, t)
+    _maybe_crash("after-history")
     return attempt_mod.set_flags(rec, history=True)
 
 
@@ -154,6 +186,7 @@ def project_metrics(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
         kind, idx = stage.get("kind"), stage.get("idx")
         if not metrics_mod.has(cfg.state_root, rec.attempt_id, kind, idx):
             metrics_mod.append(cfg.state_root, _metrics_row(rec, stage))
+    _maybe_crash("after-metrics")
     return attempt_mod.set_flags(rec, published=True)
 
 
@@ -185,6 +218,7 @@ def project_lifecycle(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
             t = state_mod.transition(t, "paused", reason=rec.reason or "")
             state_mod.save(tdir, t)
     # "none" -> nothing to replay.
+    _maybe_crash("after-lifecycle")
     return attempt_mod.set_flags(rec, lifecycle=True)
 
 
@@ -233,6 +267,7 @@ def fence(cfg, rec: attempt_mod.Record, reason: str, proc: dict | None = None) -
     the fence as corrupt ("proc must be a dict, not null") forever, instead of fencing the
     actual process group."""
     rec = attempt_mod.transition(rec, "FENCING")
+    _maybe_crash("after-fencing")
     fp = _fence_path(cfg)
     fp.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"attempt_dir": str(rec.path), "proc": proc if proc is not None else rec.proc, "reason": reason})
@@ -243,7 +278,9 @@ def fence(cfg, rec: attempt_mod.Record, reason: str, proc: dict | None = None) -
         # _reconcile_one's FENCING-with-no-fence-file branch), so a write failure here is
         # safe to surface as an ordinary FenceExit rather than a raw exception.
         raise FenceExit(f"fence write failed: {e}")
+    _maybe_crash("after-fence-write")
     attempt_mod.transition(rec, "ORPHANED")
+    _maybe_crash("after-orphaned")
     raise FenceExit(reason)
 
 
@@ -276,6 +313,7 @@ def interrupt(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     worktree_mod.restore(wt, rec.base_tree)
     if not worktree_mod.verify_restored(wt, rec.base_tree):
         raise FenceExit(f"{rec.attempt_id}: restore did not converge to base_tree")
+    _maybe_crash("after-restore")
     rec = attempt_mod.transition(rec, "INTERRUPTED", observed_tree=observed, outcome="interrupted",
                                  next_action="none", tree="restored")
     _ensure_diff_patch(rec)
@@ -674,6 +712,7 @@ def clear_fence(cfg, force: bool) -> int:
         # fence file only and leave the record untouched (corrupt-fence semantics).
         if rec.status == "FENCING":
             rec = attempt_mod.transition(rec, "ORPHANED")
+            _maybe_crash("clear-fence-after-transition")
         elif rec.status != "ORPHANED":
             print(f"{rec.attempt_id}: referenced attempt is neither FENCING nor ORPHANED "
                  f"(status={rec.status}); corrupt fence, clearing fence file only",

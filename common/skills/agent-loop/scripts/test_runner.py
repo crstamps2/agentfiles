@@ -456,12 +456,19 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(outcome, "accepted")
         self.assertEqual(self.launches, 1)
         self.assertFalse(fence_path.exists())  # no new fence created
-        
+
         # Kill the sleeper
         try:
             os.kill(sleeper.pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
+
+    def test_rewrite_artifact_tolerates_leftover_tmp(self):
+        p = self.cfg.state_root / "x.json"; runner.Runner._write_artifact(p, "{}")
+        (self.cfg.state_root / "x.json.tmp").write_text("stale")
+        runner.Runner._rewrite_artifact(p, '{"ok":1}')
+        self.assertEqual(json.loads(p.read_text()), {"ok": 1})
+        self.assertFalse(list(self.cfg.state_root.glob("x.json.*tmp*")))
 
 if __name__ == "__main__":
     unittest.main()

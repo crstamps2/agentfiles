@@ -119,9 +119,14 @@ class Runner:
                 raise RuntimeError(f"unsafe artifact path: {path}")
         except FileNotFoundError:
             return Runner._write_artifact(path, text)
-        tmp = path.with_name(path.name + ".tmp")
-        Runner._write_artifact(tmp, text)
-        os.replace(tmp, path)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            Runner._write_artifact(tmp, text); os.replace(tmp, path)
+        finally:
+            if tmp.exists(): tmp.unlink()
+        for stale in path.parent.glob(f"{path.name}.*tmp"):      # sweep predecessors' leftovers
+            try: stale.unlink()
+            except OSError: pass
 
     def _fingerprint(self, task, wt) -> str:
         raw = json.dumps(dataclasses.asdict(task), sort_keys=True) + "|" + str(pathlib.Path(wt).resolve())

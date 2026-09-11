@@ -30,6 +30,10 @@ All run from anywhere; `--config` defaults to this skill's `hopper.toml`.
 
 - `locks/runner` -- global runner lease; a second instance exits with code 3.
 - `locks/heavy.fence` -- an unverified worker process group. The lane remains fenced until its PGID is dead.
+  If the group's pgid is unreachable (`PermissionError`, e.g. a foreign/unreapable zombie), recovery marks the
+  attempt `orphaned` and leaves the fence in place for an operator: run
+  `python3 .../runner.py clear-fence` to print the fence and its current process-group state, and it only
+  removes the fence when that state is `dead` (pass `--force` to clear it anyway once you've verified by hand).
 
 ## Pause, resume, and takeover
 

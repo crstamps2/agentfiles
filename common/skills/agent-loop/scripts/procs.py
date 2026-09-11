@@ -110,7 +110,7 @@ def run_stage(argv: list, cwd, timeout_s: float, env: dict | None,
             pgid = os.getpgid(p.pid)
             try:
                 if on_start is not None:
-                    on_start(pgid)
+                    on_start(pgid, p.pid)
             except BaseException:
                 os.close(w); w = None  # child's `read` fails closed -> exit 97, never execs
                 kill_group(pgid, grace_s=0.5, reap=p)

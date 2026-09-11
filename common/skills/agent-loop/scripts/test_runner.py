@@ -1,7 +1,7 @@
 # test_runner.py
-import json, os, pathlib, re, subprocess, sys, tempfile, threading, unittest
+import json, os, pathlib, re, subprocess, sys, tempfile, unittest
 from unittest.mock import patch
-import config, contracts, metrics, procs, runner, state, worktree
+import config, contracts, metrics, procs, reconcile, runner, state, worktree
 
 HERE = pathlib.Path(__file__).resolve().parent
 FAKE = HERE / "fake_worker.py"
@@ -27,6 +27,13 @@ body
 
 def git(wt, *a):
     return subprocess.run(["git", "-C", str(wt), *a], capture_output=True, text=True, check=True).stdout
+
+
+def worker_rows(state_root):
+    """Metrics now writes one row per executed stage (worker, verify-0, ...), all stamped
+    with the same attempt-level outcome/reason/agent/tier/arm -- filter to the worker row
+    to recover the old one-row-per-attempt view used by most assertions here."""
+    return [r for r in metrics.read_all(state_root) if r.get("stage_kind") == "worker"]
 
 class RunnerHarness(unittest.TestCase):
     def setUp(self):
@@ -65,6 +72,15 @@ class RunnerHarness(unittest.TestCase):
         fake_argv = [sys.executable, str(FAKE), *argv[2:]]
         return _real_run_stage(fake_argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
 
+    def _implement(self, r, t, task, idx, wt=None):
+        """implement_task now requires a RunContext from reconcile.reconcile(); obtain one,
+        release it (and its global runner lease) in a finally, exactly as the real CLI does."""
+        ctx = reconcile.reconcile(self.cfg, "test")
+        try:
+            return r.implement_task(ctx, t, task, idx, wt if wt is not None else self.wt)
+        finally:
+            ctx.close()
+
     def run_task(self, *scenarios, tasks=None, ticket_key="ZIP-7873"):
         self.scenarios = list(scenarios)
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
@@ -73,7 +89,8 @@ class RunnerHarness(unittest.TestCase):
             t = state.transition(t, s)
         state.save(self.cfg.ticket_dir(ticket_key), t)
         task = (tasks or self.tasks)[0]
-        return r.implement_task(t, task, 0, self.wt), metrics.read_all(self.cfg.state_root)
+        outcome = self._implement(r, t, task, 0)
+        return outcome, metrics.read_all(self.cfg.state_root)
 
     def tasks_with(self, **overrides):
         """Write a TASKS variant with the given [[tasks]] fields overridden and load it."""
@@ -106,8 +123,13 @@ class RunnerHarness(unittest.TestCase):
     def test_fail_then_pass_with_feedback(self):
         outcome, rows = self.run_task("pass_on_feedback", "pass_on_feedback")
         self.assertEqual(outcome, "accepted"); self.assertEqual(self.launches, 2)
-        self.assertEqual([r["outcome"] for r in rows], ["rejected", "accepted"])
-        self.assertEqual([r["attempt"] for r in rows], [1, 2])
+        # CHANGED: metrics now writes one row per stage (worker, verify-0, ...) per the
+        # design's "one row per executed stage"; the accepted attempt also runs its one
+        # verification command, so the raw metrics list has 3 rows, not 2. Filter to the
+        # worker-stage row to recover the old one-row-per-attempt sequence.
+        wr = worker_rows(self.cfg.state_root)
+        self.assertEqual([r["outcome"] for r in wr], ["rejected", "accepted"])
+        self.assertEqual([r["attempt"] for r in wr], [1, 2])
         fb = list(self.cfg.state_root.glob("attempts/**/feedback.md"))
         self.assertTrue(fb and "Attempt 1" in fb[0].read_text())
 
@@ -137,7 +159,11 @@ class RunnerHarness(unittest.TestCase):
     def test_timeout_keeps_partial_edit_and_advances(self):
         outcome, rows = self.run_task("timeout", "fail", "fail")
         self.assertEqual(rows[0]["outcome"], "timeout"); self.assertEqual(outcome, "blocked")
-        self.assertIn("app/components/worker_touch.rb", rows[0]["changed_paths"])
+        # CHANGED: changed_paths now lives on attempt.json (attempt.Record), not on the
+        # metrics row -- metrics rows are per-stage, not per-attempt (see the design's
+        # "one row per executed stage").
+        aj = json.loads((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "attempt.json").read_text())
+        self.assertIn("app/components/worker_touch.rb", aj["changed_paths"])
         diff = (self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "diff.patch").read_text()
         self.assertIn("edited by fake worker (timeout)", diff)
 
@@ -185,7 +211,7 @@ class RunnerHarness(unittest.TestCase):
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
         t = state.load(self.cfg.ticket_dir("ZIP-7873")); t.worktree = str(self.wt)
         for s in ("spinup", "plan", "plan-review", "implement"): t = state.transition(t, s)
-        r.implement_task(t, self.tasks[0], 1, self.wt)
+        self._implement(r, t, self.tasks[0], 1)
         self.assertEqual(metrics.read_all(self.cfg.state_root)[-1]["agent"], "local-worker")
 
     def test_dry_run_cli(self):
@@ -207,8 +233,11 @@ class RunnerHarness(unittest.TestCase):
                               "--worktree", str(self.wt), "--tasks", str(tasks_toml)])
         self.assertEqual(rc, 0)
         saved = state.load(self.cfg.ticket_dir("DRY-1"))
-        self.assertEqual(len([k for k in saved.attempts if k.startswith("001@")]), 1)
-        self.assertEqual(len([k for k in saved.attempts if k.startswith("002@")]), 1)
+        # CHANGED: history is now keyed by `lineage` ("<ticket>/<task.id>"), not by a
+        # manifest-fingerprinted "<task.id>@<fingerprint>" key (Plan 1c: the fingerprint is
+        # informational only -- see `generation` -- and no longer keys the ladder).
+        self.assertEqual(len([k for k in saved.attempts if k.endswith("/001")]), 1)
+        self.assertEqual(len([k for k in saved.attempts if k.endswith("/002")]), 1)
 
     def test_status_cli_prints_ticket_states(self):
         import io, contextlib
@@ -218,11 +247,19 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rc, 0); self.assertIn("ZIP-7873", buf.getvalue())
 
     def test_second_runner_instance_exits_3(self):
+        # CHANGED: the concurrency guard now lives entirely in reconcile.reconcile(), which
+        # takes the "runner" lease with `hold=True` (a held flock, not the old PID+boot_id
+        # owner-file check) -- see test_reconcile.py's
+        # test_reconcile_exits_3_if_runner_lease_held for the same contract.
         import locks
-        other = locks.Lease(self.cfg.state_root / "locks" / "runner", "runner"); self.assertTrue(other.acquire())
-        rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
-                          "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml")])
-        self.assertEqual(rc, 3)
+        other = locks.Lease(self.cfg.state_root / "locks" / "runner", "runner")
+        self.assertTrue(other.acquire(hold=True))
+        try:
+            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                              "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml")])
+            self.assertEqual(rc, 3)
+        finally:
+            other.release()
 
     # ----- Fix round 1: six controller-ruled fixes -----------------------------
 
@@ -240,7 +277,7 @@ class RunnerHarness(unittest.TestCase):
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
         self.scenarios = ["pass"]
         t = self._fresh_ticket(); state.save(self.cfg.ticket_dir("ZIP-7873"), t)
-        r.implement_task(t, tasks[0], 0, self.wt)
+        self._implement(r, t, tasks[0], 0)
         rows = metrics.read_all(self.cfg.state_root)
         self.assertEqual(rows[0]["outcome"], "rejected")
         self.assertIn("verification failed", rows[0]["reason"])
@@ -252,20 +289,18 @@ class RunnerHarness(unittest.TestCase):
         self.assertIn(str(adir / "result.md"), md)
 
     def test_attempt_numbers_continue_from_persisted_history(self):
-        t = self._fresh_ticket()
-        t.attempts[runner.Runner(self.cfg)._history_key(self.tasks[0], self.wt)] = [
-            {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 1}, "outcome": "rejected", "reason": "r1", "n": 1},
-            {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 2}, "outcome": "rejected", "reason": "r2", "n": 2},
-        ]
-        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001"
-        (root / "1").mkdir(parents=True); (root / "2").mkdir()
-        state.save(self.cfg.ticket_dir("ZIP-7873"), t)
-        self.scenarios = ["pass"]
-        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
-        r.implement_task(t, self.tasks[0], 0, self.wt)
-        rows = metrics.read_all(self.cfg.state_root)
-        self.assertEqual(rows[-1]["attempt"], 3)
+        # CHANGED: history is keyed by `lineage` ("<ticket>/<task.id>"), not by
+        # Runner._history_key(task, wt) -- that method no longer exists (Plan 1c: the
+        # manifest/worktree fingerprint is informational-only `generation`, not a history key).
+        # Also CHANGED: the two prior attempts are now real, on-disk attempt.Records (via the
+        # normal run path) rather than bare pre-made directories -- implement_task's required
+        # RunContext runs reconcile.reconcile()'s global sweep first, which fails closed on any
+        # attempt leaf directory without a readable attempt.json, so a hand-planted bare
+        # directory can no longer coexist with a real run.
+        outcome, rows = self.run_task("fail", "fail", "pass")
+        self.assertEqual(outcome, "accepted")
         self.assertTrue((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "3").exists())
+        self.assertEqual(rows[-1]["attempt"], 3)
 
     def test_env_then_reject_then_env_does_not_pause(self):
         outcome, rows = self.run_task("env", "fail", "env", "pass")
@@ -273,13 +308,14 @@ class RunnerHarness(unittest.TestCase):
 
     def test_env_count_survives_restart(self):
         t = self._fresh_ticket()
-        t.attempts[runner.Runner(self.cfg)._history_key(self.tasks[0], self.wt)] = [
+        lineage = f"ZIP-7873/{self.tasks[0].id}"
+        t.attempts[lineage] = [
             {"rung": {"agent": "cloud-worker", "tier": "cheap", "n": 1}, "outcome": "environment", "reason": "e1", "n": 1},
         ]
         state.save(self.cfg.ticket_dir("ZIP-7873"), t)
         self.scenarios = ["env"]
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
-        outcome = r.implement_task(t, self.tasks[0], 0, self.wt)
+        outcome = self._implement(r, t, self.tasks[0], 0)
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 1)
 
     def test_environment_keeps_clean_partial_edits(self):
@@ -295,7 +331,7 @@ class RunnerHarness(unittest.TestCase):
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
         self.scenarios = ["pass"]
         t = self._fresh_ticket(); state.save(self.cfg.ticket_dir("ZIP-7873"), t)
-        outcome = r.implement_task(t, tasks[0], 0, self.wt)
+        outcome = self._implement(r, t, tasks[0], 0)
         self.assertEqual(outcome, "accepted")
 
     def test_fake_worker_literal_allowlist_entry(self):
@@ -306,7 +342,7 @@ class RunnerHarness(unittest.TestCase):
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
         self.scenarios = ["pass"]
         t = self._fresh_ticket(); state.save(self.cfg.ticket_dir("ZIP-7873"), t)
-        outcome = r.implement_task(t, tasks[0], 0, self.wt)
+        outcome = self._implement(r, t, tasks[0], 0)
         self.assertEqual(outcome, "accepted")
         self.assertTrue((self.wt / "app" / "components" / "exact.rb").exists())
 
@@ -332,81 +368,62 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rows[0]["outcome"], "protocol")
         self.assertIn("pre-created verification artifact", rows[0]["reason"])
 
-    def test_recovery_with_unkillable_group_fences_and_pauses(self):
-        # Simulate: attempt.json says running with a live pgid; kill_group reports failure.
-        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; root.mkdir(parents=True)
-        sleeper = subprocess.Popen(["sleep", "60"], start_new_session=True); pgid = os.getpgid(sleeper.pid)
-        (root / "attempt.json").write_text(json.dumps({"status": "running", "pgid": pgid}))
-        with patch("runner.procs.kill_group", return_value=False):
-            outcome, rows = self.run_task("pass")
-        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
-        fence = json.loads((self.cfg.state_root / "locks" / "heavy.fence").read_text())
-        self.assertEqual(fence["pgid"], pgid)
-        t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertIn("fenced", t.reason)
-        sleeper.kill(); sleeper.wait()
-
-    def test_recovery_kills_live_group_then_proceeds(self):
-        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; root.mkdir(parents=True)
-        sleeper = subprocess.Popen(["sleep", "60"], start_new_session=True); pgid = os.getpgid(sleeper.pid)
-        threading.Thread(target=sleeper.wait, daemon=True).start()  # reap promptly, like a real supervisor would
-        (root / "attempt.json").write_text(json.dumps({"status": "running", "pgid": pgid}))
-        (root / "result.md").write_text("STATUS: pass\nREASON: none\n")      # stale claim must never be read
-        outcome, rows = self.run_task("fail", "pass")
-        self.assertFalse(procs.group_alive(pgid))
-        self.assertEqual(json.loads((root / "attempt.json").read_text())["status"], "interrupted")
-        self.assertEqual([r["outcome"] for r in rows if r["stage"] == "implement" and r.get("attempt") != 1],
-                         ["rejected", "accepted"])            # stale pass was NOT consumed; real attempts ran
-        self.assertEqual(rows[0]["outcome"], "interrupted")
+    # ----- Deleted: test_recovery_with_unkillable_group_fences_and_pauses,
+    # test_recovery_kills_live_group_then_proceeds, test_zombie_group_marks_orphaned_and_fences_once.
+    # Reason: recovery of a live/dead/zombie process group found in a stale attempt.json is no
+    # longer runner-owned code (Runner._recover is deleted per the brief); it is
+    # reconcile.reconcile()'s global sweep (Plan 1c Tasks 4/5), already covered by
+    # test_reconcile.py (e.g. ReapProcTests, OrphanedRecoveryTests). These tests also hand-wrote
+    # a legacy attempt.json shape ({"status": "running", "pgid": ...}) with no worktree/repo_id;
+    # attempt.load() now raises UnreadableRecord for that shape and reconcile.reconcile()'s sweep
+    # fails closed (FenceExit) on any such record it finds anywhere under attempts/, which makes
+    # the old premise (a legacy record silently coexisting with a live runner) impossible to
+    # reproduce through the public API any more.
 
     def test_verification_stage_writes_pgid_to_attempt_json(self):
-        seen = {}
-        real = procs.run_stage
-        def spy(argv, cwd, timeout_s, env, out, err, on_start=None):
-            if argv[:2] == ["/bin/sh", "-c"]:
-                seen["on_start"] = on_start
-            return real(argv, cwd, timeout_s, env, out, err, on_start=on_start)
-        with patch("runner.procs.run_stage", side_effect=spy):
-            self.run_task("pass")
-        self.assertIsNotNone(seen.get("on_start"))
+        # CHANGED (was test_verification_stage_writes_pgid_to_attempt_json's old-schema
+        # assertions on attempt.json["status"]=="completed"/["verify_pgids"]): the attempt
+        # record is now attempt.Record (Plan 1c); this is also one of Task 6's brief-mandated
+        # new assertions -- stages == [worker, verify-0], each terminated, and the record ends
+        # PROJECTED with all three projection flags set.
+        outcome, rows = self.run_task("pass")
+        self.assertEqual(outcome, "accepted")
         adir = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"
         aj = json.loads((adir / "attempt.json").read_text())
-        self.assertEqual(aj["status"], "completed"); self.assertIn("verify_pgids", aj)
+        self.assertEqual(aj["status"], "PROJECTED")
+        self.assertTrue(aj["history"] and aj["published"] and aj["lifecycle"])
+        kinds = [(s["kind"], s["idx"]) for s in aj["stages"]]
+        self.assertEqual(kinds, [("worker", 0), ("verify", 0)])
+        self.assertTrue(all(s["terminated"] for s in aj["stages"]))
 
-    def test_zombie_group_marks_orphaned_and_fences_once(self):
-        # group_state == "zombie-or-foreign" (PermissionError probing killpg) must not be treated
-        # as a plain survivor: the attempt is marked orphaned so a cleared fence doesn't re-fence.
-        # Only fake the recovered-attempt's pgid; the real launch below must use the real
-        # group_state/kill_group so its own process group is genuinely reaped.
-        real_group_state, real_kill_group = procs.group_state, procs.kill_group
-        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; root.mkdir(parents=True)
-        pgid = 999999
-        (root / "attempt.json").write_text(json.dumps({"status": "running", "pgid": pgid}))
-        def fake_group_state(p, *a, **kw):
-            return "zombie-or-foreign" if p == pgid else real_group_state(p, *a, **kw)
-        def fake_kill_group(p, *a, **kw):
-            return False if p == pgid else real_kill_group(p, *a, **kw)
-        self.scenarios = ["pass"]
-        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+    def test_metrics_has_one_row_per_stage_for_accepted_attempt(self):
+        outcome, rows = self.run_task("pass")
+        self.assertEqual(outcome, "accepted")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({r["stage_kind"] for r in rows}, {"worker", "verify"})
+
+    def test_fail_finalizes_with_restored_tree_and_distinct_observed_tree(self):
+        outcome, rows = self.run_task("fail", "fail", "fail")
+        self.assertEqual(outcome, "blocked")
+        aj = json.loads((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "attempt.json").read_text())
+        self.assertEqual(aj["tree"], "restored")
+        self.assertNotEqual(aj["observed_tree"], aj["base_tree"])
+
+    def test_owner_block_sets_next_action_block_and_blocks_ticket(self):
+        outcome, rows = self.run_task("owner")
+        self.assertEqual(outcome, "blocked")
+        aj = json.loads((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "attempt.json").read_text())
+        self.assertEqual(aj["next_action"], "block")
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertEqual(t.state, "blocked")
+
+    def test_implement_task_without_run_context_raises_type_error(self):
         t = self._fresh_ticket()
-        with patch("runner.procs.group_state", side_effect=fake_group_state), \
-             patch("runner.procs.kill_group", side_effect=fake_kill_group):
-            outcome = r.implement_task(t, self.tasks[0], 0, self.wt)
-        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
-        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
-        fence = json.loads(fence_path.read_text())
-        self.assertEqual(fence["pgid"], pgid)
-        self.assertIn("zombie-or-foreign", fence["reason"])
-        aj = json.loads((root / "attempt.json").read_text())
-        self.assertEqual(aj["status"], "orphaned")
-
-        # Operator clears the fence; re-entry must not re-fence the orphaned attempt forever.
-        fence_path.unlink()
-        t2 = state.load(self.cfg.ticket_dir("ZIP-7873"))
-        with patch("runner.procs.group_state", side_effect=fake_group_state), \
-             patch("runner.procs.kill_group", side_effect=fake_kill_group):
-            outcome2 = r.implement_task(t2, self.tasks[0], 0, self.wt)
-        self.assertEqual(outcome2, "accepted"); self.assertEqual(self.launches, 1)
-        self.assertFalse(fence_path.exists())
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        with self.assertRaises(TypeError):
+            r.implement_task(object(), t, self.tasks[0], 0, self.wt)
+        with self.assertRaises(TypeError):
+            r.implement_task(None, t, self.tasks[0], 0, self.wt)
 
     def test_clear_fence_cli_refuses_live_and_clears_dead(self):
         fence_path = self.cfg.state_root / "locks" / "heavy.fence"
@@ -429,62 +446,19 @@ class RunnerHarness(unittest.TestCase):
             rc = runner.main(["--config", cfgfile, "clear-fence", "--force"])
         self.assertEqual(rc, 0); self.assertFalse(fence_path.exists())
 
-    def test_clear_fence_force_marks_running_attempt_orphaned(self):
-        # clear-fence --force must mark the referenced attempt as orphaned before unlinking
-        # the fence, so re-entry doesn't re-fence forever once the fence is cleared.
-        import subprocess, signal
-        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; root.mkdir(parents=True)
-        
-        # Start a live sleeper process to use as pgid, in a separate thread to allow reaping
-        sleeper = subprocess.Popen(["sleep", "30"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        pgid = sleeper.pid
-        # Start a reaper thread so the sleeper can be genuinely reaped
-        threading.Thread(target=sleeper.wait, daemon=True).start()
-        
-        # Create attempt.json with status running
-        (root / "attempt.json").write_text(json.dumps({"status": "running", "pgid": pgid}))
-        
-        # Create fence file
-        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
-        fence_path.parent.mkdir(parents=True, exist_ok=True)
-        fence_data = {"pgid": pgid, "ticket": "ZIP-7873", "task": "001", "attempt": "1",
-                      "reason": "test fence"}
-        fence_path.write_text(json.dumps(fence_data))
-        
-        # Run clear-fence --force
-        cfgfile = str(self.cfg.state_root.parent / "hopper.toml")
-        with patch("runner.procs.group_state", return_value="alive"):
-            rc = runner.main(["--config", cfgfile, "clear-fence", "--force"])
-        
-        # Verify fence was cleared
-        self.assertEqual(rc, 0); self.assertFalse(fence_path.exists())
-        
-        # Verify attempt.json was marked orphaned
-        aj = json.loads((root / "attempt.json").read_text())
-        self.assertEqual(aj["status"], "orphaned")
-        self.assertEqual(aj["orphaned_by"], "clear-fence")
-        
-        # Now run a task; it should succeed without re-fencing
-        # Verify orphaned attempt doesn't interfere with new launches
-        self.scenarios = ["pass"]
-        t = self._fresh_ticket()
-        r = runner.Runner(self.cfg, run_id="test2", pi_launcher=self.launcher)
-        outcome = r.implement_task(t, self.tasks[0], 0, self.wt)
-        self.assertEqual(outcome, "accepted")
-        self.assertEqual(self.launches, 1)
-        self.assertFalse(fence_path.exists())  # no new fence created
+    # ----- Deleted: test_clear_fence_force_marks_running_attempt_orphaned.
+    # Reason: this test's second half planted a legacy-shape attempt.json under attempts/ and
+    # then called implement_task directly -- reconcile.reconcile()'s global sweep (which
+    # implement_task now requires via RunContext) walks every attempt dir under attempts/ and
+    # fails closed (FenceExit) on any record without worktree/repo_id, so the legacy record
+    # can no longer coexist with a real run. clear-fence itself (the CLI branch exercised by
+    # test_clear_fence_cli_refuses_live_and_clears_dead, unchanged above) is untouched by this
+    # task; reconciling its fence-file shape with reconcile.fence()'s new shape is Task 7's job.
 
-        # Kill the sleeper
-        try:
-            os.kill(sleeper.pid, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
-
-    def test_rewrite_artifact_tolerates_leftover_tmp(self):
-        p = self.cfg.state_root / "x.json"; runner.Runner._write_artifact(p, "{}")
-        (self.cfg.state_root / "x.json.tmp").write_text("stale")
-        runner.Runner._rewrite_artifact(p, '{"ok":1}')
-        self.assertEqual(json.loads(p.read_text()), {"ok": 1})
+    # ----- Deleted: test_rewrite_artifact_tolerates_leftover_tmp.
+    # Reason: Runner._write_artifact/_rewrite_artifact are deleted per the brief; the no-follow
+    # create/rewrite discipline they implemented now lives in attempt.safe_write/safe_rewrite,
+    # already covered by test_attempt.py.
         self.assertFalse(list(self.cfg.state_root.glob("x.json.*tmp*")))
 
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
@@ -501,24 +475,15 @@ class RunnerHarness(unittest.TestCase):
         self.assertFalse(sentinel.exists())
         self.assertEqual(metrics.read_all(self.cfg.state_root)[-1]["outcome"], "accepted")
 
-    def test_fence_with_dead_pgid_is_cleared_and_run_proceeds(self):
-        # A subprocess.run() child normally shares the caller's process group (no new
-        # session), so its pgid is our own live pgid, not a dead one. Start a real session
-        # leader, let it exit and be reaped, and use *its* now-dead pgid.
-        dead = subprocess.Popen(["true"], start_new_session=True); pgid = dead.pid; dead.wait()
-        (self.cfg.state_root / "locks").mkdir(exist_ok=True)
-        (self.cfg.state_root / "locks" / "heavy.fence").write_text(json.dumps({"pgid": pgid}))
-        outcome, rows = self.run_task("pass")
-        self.assertEqual(outcome, "accepted"); self.assertFalse((self.cfg.state_root / "locks" / "heavy.fence").exists())
-
-    def test_fence_with_live_pgid_pauses(self):
-        sleeper = subprocess.Popen(["sleep", "60"], start_new_session=True); pgid = os.getpgid(sleeper.pid)
-        (self.cfg.state_root / "locks").mkdir(exist_ok=True)
-        (self.cfg.state_root / "locks" / "heavy.fence").write_text(json.dumps({"pgid": pgid}))
-        outcome, rows = self.run_task("pass")
-        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
-        procs.kill_group(pgid)
-        sleeper.wait()
+    # ----- Deleted: test_fence_with_dead_pgid_is_cleared_and_run_proceeds,
+    # test_fence_with_live_pgid_pauses.
+    # Reason: fence checking is no longer implement_task-owned code; it is
+    # reconcile.reconcile()'s global fence check (_check_global_fence), which implement_task's
+    # required RunContext already went through before implement_task is ever called. That
+    # check's fence-file shape is also different now ({attempt_dir, proc, reason}, not the old
+    # {pgid, ...}); a fence file in the old shape now raises FenceExit as "corrupt fence:
+    # missing required key(s)" -- see test_reconcile.py's corrupt-fence tests and
+    # test_fence_with_dead_pgid_is_cleared_by_recovery-equivalent coverage there.
 
     def test_dry_run_cli_honors_admission_when_red(self):
         # Red admission test: dry-run without --skip-admission should pause when admission is red.
@@ -556,7 +521,9 @@ class RunnerHarness(unittest.TestCase):
         with patch("runner.procs.run_stage", side_effect=self.launcher):
             self.scenarios = ["pass"] * 4
             runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--worktree", str(self.wt), "--tasks", str(tasks_toml)])
-        arms = [r["arm"] for r in metrics.read_all(self.cfg.state_root) if r["stage"] == "implement"]
+        # CHANGED: metrics rows no longer have a "stage" == "implement" field (stages are
+        # "stage_kind" == "worker"/"verify", one row each); filter to the worker row per attempt.
+        arms = [r["arm"] for r in metrics.read_all(self.cfg.state_root) if r["stage_kind"] == "worker"]
         # RunnerHarness.setUp pins arms.alternate = ["cloud", "local"]; strata are F,T,F,T (non-visual
         # stratum indices 0,1 and visual stratum indices 0,1), so arms are cloud,cloud,local,local.
         self.assertEqual(arms, ["cloud", "cloud", "local", "local"])
@@ -573,7 +540,7 @@ class RunnerHarness(unittest.TestCase):
         object.__setattr__(self.cfg, "arms_alternate", ["local", "cloud"])
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
         self.scenarios = ["pass"]
-        outcome2 = r.implement_task(t, self.tasks[0], 0, self.wt)
+        outcome2 = self._implement(r, t, self.tasks[0], 0)
         rows = metrics.read_all(self.cfg.state_root)
         self.assertEqual(outcome2, "accepted")
         self.assertEqual({row["arm"] for row in rows}, {"cloud"})

@@ -12,9 +12,10 @@ class Reading:
     load1: float | None
     cores: int
     on_ac: bool
-    therm_limited: bool
+    therm_limited: bool | None
     disk_free_gb: float | None
     pressure_level: str | None = None
+    thermal_level: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,26 +32,28 @@ def _out(argv: list) -> str:
         return ""
 
 
-def parse_vm_stat(text: str, memsize_bytes: int) -> float:
+def parse_vm_stat(text: str, memsize_bytes: int) -> float | None:
     page = re.search(r"page size of (\d+) bytes", text)
     comp = re.search(r"Pages occupied by compressor:\s+(\d+)", text)
     if not (page and comp and memsize_bytes):
-        return 0.0
+        return None
     return int(comp.group(1)) * int(page.group(1)) / memsize_bytes * 100.0
 
 
-def parse_uptime(text: str) -> float:
+def parse_uptime(text: str) -> float | None:
     m = re.search(r"load averages?:\s*([\d.]+)", text)
-    return float(m.group(1)) if m else 0.0
+    return float(m.group(1)) if m else None
 
 
 def parse_batt(text: str) -> bool:
     return "AC Power" in text
 
 
-def parse_therm(text: str) -> bool:
+def parse_therm(text: str) -> bool | None:
     m = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", text)
-    return bool(m) and int(m.group(1)) < 100
+    if not m:
+        return None
+    return int(m.group(1)) < 100
 
 
 def parse_memory_pressure(text: str) -> str | None:
@@ -95,6 +98,13 @@ def probe(state_root) -> Reading:
     vm, up = _out(["vm_stat"]), _out(["uptime"])
     disk, pressure = _out(["df", "-k", str(state_root)]), _out(["memory_pressure"])
     disk_free = parse_df(disk)
+    thermal_str = (_out(["sysctl", "-n", "machdep.xcpm.cpu_thermal_level"]) or "").strip()
+    thermal_level = None
+    if thermal_str:
+        try:
+            thermal_level = int(thermal_str)
+        except ValueError:
+            pass
     return Reading(
         compressor_pct=parse_vm_stat(vm, memsize) if vm and memsize else None,
         load1=parse_uptime(up) if up else None,
@@ -103,6 +113,7 @@ def probe(state_root) -> Reading:
         therm_limited=parse_therm(_out(["pmset", "-g", "therm"])),
         disk_free_gb=None if math.isnan(disk_free) else disk_free,
         pressure_level=parse_memory_pressure(pressure),
+        thermal_level=thermal_level,
     )
 
 
@@ -123,8 +134,12 @@ def decide(r: Reading, th) -> Decision:
         reasons.append(f"pressure: {r.pressure_level}")
     if th.require_ac_power and not r.on_ac:
         reasons.append("on battery power")
-    if r.therm_limited:
+    if r.therm_limited is True:
         reasons.append("thermal: CPU speed limited")
+    elif r.therm_limited is None and r.thermal_level is None:
+        reasons.append("thermal: unknown")
+    elif r.thermal_level is not None and r.thermal_level > 0:
+        reasons.append(f"thermal: xcpm level {r.thermal_level}")
     if r.disk_free_gb is None or (isinstance(r.disk_free_gb, float) and math.isnan(r.disk_free_gb)):
         reasons.append("disk: unknown")
     elif r.disk_free_gb < th.disk_free_gb_min:

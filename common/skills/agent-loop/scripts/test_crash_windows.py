@@ -623,9 +623,35 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         t = self._ticket()
         task = self.tasks[0]
         r = self._runner()
-        with patch("runner.procid.capture", side_effect=RuntimeError("simulated crash: gated child, proc capture never lands")):
+        # Capture the gate-shell Popen so we can assert the exact exit code run_stage's docstring
+        # promises when on_start raises: the gate pipe closes unwritten, `read` fails, exit 97.
+        gate_procs = []
+        real_popen = subprocess.Popen
+        def spy_popen(*a, **kw):
+            proc = real_popen(*a, **kw)
+            argv = a[0] if a else kw.get("args", [])
+            if isinstance(argv, list) and len(argv) >= 3 and argv[0] == "/bin/sh" and argv[2].startswith("read _ <&"):
+                gate_procs.append(proc)          # only the launch-gate shell, not git/ps helpers
+            return proc
+        with patch("procs.subprocess.Popen", side_effect=spy_popen), \
+             patch("runner.procid.capture", side_effect=RuntimeError("simulated crash: gated child, proc capture never lands")):
             with self.assertRaises(RuntimeError):
                 self._direct_attempt(r, t, task, scenario="pass")
+        self.assertEqual(len(gate_procs), 1, "exactly one gate shell should have been spawned")
+        gate = gate_procs[0]
+        try:
+            gate.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        # Two safe terminal states, both meaning "the real command never exec'd": 97 = the gate
+        # shell saw EOF on the pipe before the parent's kill landed; -SIGTERM/-SIGKILL = the
+        # parent's exception path (`os.close(w)` then `kill_group`) won the race. Either way the
+        # child's real command was never reached (worker_touch.rb absent, asserted below). A
+        # positive non-97 code would mean the command ran and exited on its own -- that is the
+        # failure this row guards.
+        import signal as _sig
+        self.assertIn(gate.returncode, (97, -_sig.SIGTERM, -_sig.SIGKILL),
+                      f"gate shell must never exec the real command (rc={gate.returncode})")
         self.assertFalse((self.wt / "app" / "components" / "worker_touch.rb").exists())
         self._reconcile()
         rec = attempt.load(self._adir(t, task))

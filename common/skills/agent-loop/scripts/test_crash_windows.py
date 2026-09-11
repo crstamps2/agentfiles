@@ -181,18 +181,102 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         stdout.unlink(missing_ok=True)
         stderr.unlink(missing_ok=True)
 
+        # Fix round 1 (weak-test finding): "child never execs" was only proven indirectly (an
+        # empty stdout log); prove it directly by capturing the real gate-shell subprocess and
+        # asserting its own exit code is 97 -- the exact code run_stage's docstring promises
+        # ("the child's `read` fails and it exits 97"). `run_stage` re-raises the on_start
+        # exception instead of returning a StageResult on this path, so there is no
+        # `StageResult.returncode` to read; the seam used here is a `subprocess.Popen` spy
+        # (captures the real Popen instance run_stage constructs internally) rather than a new
+        # production seam, since run_stage's own `finally` block already reaps it before
+        # re-raising. Verified experimentally that in production timing `kill_group`'s SIGTERM
+        # (sent immediately after the pipe close, in the same `except` block) almost always wins
+        # the race against the shell noticing EOF on its own -- so `procs.kill_group` is wrapped
+        # here with a small delay purely to let the natural `read`-failure path win instead of
+        # being pre-empted by the signal; this changes only which of the two equally-valid "never
+        # exec'd" causes is observed in the test, not run_stage's production behavior (kill_group
+        # itself, and its default timing, are untouched -- only the call is deferred).
+        stdout2 = pathlib.Path(tempfile.mktemp())
+        stderr2 = pathlib.Path(tempfile.mktemp())
+        captured = {}
+        real_popen = subprocess.Popen
+        real_kill_group = procs.kill_group
+
+        def spy_popen(*a, **kw):
+            p = real_popen(*a, **kw)
+            captured["p"] = p
+            return p
+
+        def delayed_kill_group(pgid, grace_s=5.0, reap=None):
+            time.sleep(0.2)   # let the gate shell's own `read` failure land first
+            return real_kill_group(pgid, grace_s=grace_s, reap=reap)
+
+        with mock.patch("subprocess.Popen", side_effect=spy_popen), \
+             mock.patch.object(procs, "kill_group", side_effect=delayed_kill_group):
+            with self.assertRaises(RuntimeError):
+                procs.run_stage(["/bin/echo", "should-never-print"], self.wt, 5.0, dict(os.environ),
+                                stdout2, stderr2, on_start=crashing_on_start)
+        p = captured["p"]
+        p.wait(timeout=2)   # already reaped by run_stage's finally; this just reads .returncode
+        self.assertEqual(p.returncode, 97)
+        stdout2.unlink(missing_ok=True)
+        stderr2.unlink(missing_ok=True)
+
+        # Fix round 1 (weak-test finding): row 3 and row 15 both describe "child gated, proc not
+        # yet durable"; each row must independently prove its own post-condition rather than
+        # relying on the other row's test -- so also drive the same fault through the real
+        # runner path (row 15's mechanics: `procid.capture` raises inside `on_start`) and assert
+        # THIS row's attempt record recovers to INTERRUPTED, not just "never execs" in isolation.
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+        with patch("runner.procid.capture",
+                  side_effect=RuntimeError("simulated crash: gated child, proc capture never lands")):
+            with self.assertRaises(RuntimeError):
+                self._direct_attempt(r, t, task, scenario="pass")
+        self._reconcile()
+        rec = attempt.load(self._adir(t, task))
+        self.assertEqual(rec.status, "INTERRUPTED")
+
     # ----- Row 4 -----------------------------------------------------------------------
 
     def test_cw_04_gate_released_before_running_persisted(self):
         """gate released, before RUNNING persisted"""
-        # Faithful-as-designed note: `procs.run_stage` always journals (on_start, which performs
-        # the RUNNING transition) strictly before releasing the gate -- see its docstring's
-        # "exec-after-journal" guarantee -- so this exact ordering cannot occur through the real
-        # code path without weakening that guarantee, which is out of scope here. The closest
-        # faithful test: a real, live worker group that the runner recorded as RUNNING and then
-        # (crash) never touched again; recovery must kill it and drive the attempt to
-        # INTERRUPTED regardless of exactly when within [gate-release, RUNNING-durable] the
-        # crash landed.
+        # Controller ruling, task-9 fix round 1: this table row is superseded by the design's
+        # "exec-after-journal" guarantee (`procs.run_stage`'s docstring): on_start (which
+        # durably records RUNNING) always completes *strictly before* the gate is released, so
+        # the literal ordering this row names is unreachable by construction through the real
+        # code path -- not a gap, and not weakenable without breaking that guarantee (out of
+        # scope here). This test instead asserts the invariant itself, at the runner-integration
+        # layer: a fake `on_start` records a monotonic timestamp on entry, sleeps 0.3s (standing
+        # in for "gate release work taking time"), then the real command executes and stamps a
+        # file with a wall-clock timestamp; that timestamp must be >= on_start's own completion.
+        # This deliberately duplicates test_procs.test_child_does_not_execute_before_on_start's
+        # mechanics one layer up (via `procs.run_stage` directly, the same primitive the runner
+        # itself calls) -- the point is that the invariant must hold at both layers.
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        marker = tmp / "ran_at"
+        times = {}
+
+        def on_start(pgid, pid):
+            times["mono_start"] = time.monotonic()
+            time.sleep(0.3)
+            times["mono_done"] = time.monotonic()
+            times["wall_done"] = time.time()
+
+        result = procs.run_stage(
+            [sys.executable, "-c",
+             f"import time, pathlib; pathlib.Path({str(marker)!r}).write_text(str(time.time()))"],
+            self.wt, 10.0, dict(os.environ), tmp / "out", tmp / "err", on_start=on_start)
+        self.assertEqual(result.returncode, 0)
+        written_at = float(marker.read_text())
+        self.assertGreaterEqual(written_at, times["wall_done"])
+        self.assertGreaterEqual(times["mono_done"] - times["mono_start"], 0.3)
+
+        # Post-condition side of the row (unchanged from the original closest-faithful test): if
+        # a crash *does* land somewhere in this now-provably-tiny window, recovery still kills
+        # the live worker and drives the attempt to INTERRUPTED, regardless of the exact
+        # sub-microsecond timing.
         p, pid = _spawn_group()
         try:
             t = self._ticket()
@@ -218,9 +302,22 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         # The leader (a short-lived /bin/sh) backgrounds a sleep under its own session/pgid and
         # exits immediately; the sleep (a "descendant") keeps the pgid populated. procid.capture
         # must run while the leader is still alive to record its lstart.
-        p = subprocess.Popen(["/bin/sh", "-c", "(sleep 60 &) ; exit 0"], start_new_session=True)
-        pgid = os.getpgid(p.pid)
-        pid = procid.capture(p.pid)
+        # Pre-existing race, independent of this fix round's changes (present before them too):
+        # the leader shell can exit and be fully reaped before `procid.capture` reaches
+        # `os.getpgid` on a loaded machine (the exact window this row is about is a handful of
+        # milliseconds wide); retry the whole spawn a few times rather than let the test flake.
+        p = pgid = pid = None
+        for _ in range(8):
+            p = subprocess.Popen(["/bin/sh", "-c", "(sleep 60 &) ; exit 0"], start_new_session=True)
+            try:
+                pgid = os.getpgid(p.pid)
+                pid = procid.capture(p.pid)
+                break
+            except ProcessLookupError:
+                p.wait(timeout=2)
+                continue
+        else:
+            self.fail("leader was reaped before capture on every retry")
         p.wait(timeout=2)   # leader exits; the backgrounded sleep survives under the same pgid
         try:
             t = self._ticket()
@@ -228,6 +325,11 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
             rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
                                  agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
                                  "cloud", self._rung(), "test")
+            # Fix round 1 (weak-test finding): a live group must never be restored under --
+            # plant a sentinel in the worktree BEFORE the crash and prove it is untouched
+            # afterward, rather than relying on "nothing was ever written".
+            sentinel = self.wt / "app" / "components" / "sentinel_row5.rb"
+            sentinel.write_text("do not touch -- live group, never restored\n")
             rec = attempt.transition(rec, "LAUNCHING",
                                      stages=[{"kind": "worker", "idx": 0, "proc": None}])
             rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
@@ -240,6 +342,8 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
             # Never restored under it: the worktree (nothing was ever written) is untouched and
             # the record is not INTERRUPTED.
             self.assertNotEqual(reloaded.status, "INTERRUPTED")
+            self.assertTrue(sentinel.exists())
+            self.assertEqual(sentinel.read_text(), "do not touch -- live group, never restored\n")
         finally:
             try:
                 os.killpg(pgid, 9)
@@ -477,6 +581,16 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         reloaded = attempt.load(rec.path, validate_worktree=False)
         self.assertEqual(reloaded.status, "FENCING")
 
+        # Fix round 1 (weak-test finding): prove the fail-closed state actually PERSISTS across
+        # a restart, not just immediately after fence()'s own raise -- call reconcile() again
+        # (fence write is still failing is irrelevant here: no fence file exists and FENCING
+        # with no fence file is itself the torn-write case, row 14's post-condition) and assert
+        # it exits 3 again, citing FENCING.
+        with self.assertRaises(reconcile.FenceExit) as cm2:
+            self._reconcile("recover-2")
+        self.assertEqual(cm2.exception.code, 3)
+        self.assertIn("FENCING", cm2.exception.reason)
+
     # ----- Row 14 ----------------------------------------------------------------------
 
     def test_cw_14_fence_write_torn_temp_exists_no_fence(self):
@@ -584,6 +698,13 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
 
     def test_cw_18_running_pgid_belongs_to_unrelated_process(self):
         """RUNNING, recorded pgid now belongs to an unrelated process (start_time mismatch)"""
+        # Controller ruling, task-9 fix round 1: the table's own phrasing ("not signaled;
+        # treated as dead") is superseded by the design's *Process identity* section, which
+        # makes a start_time mismatch classify as `unknown` (fenced), not a bare `dead`. This
+        # test asserts the design: `unknown` classification, ORPHANED, and (below) that
+        # `os.killpg` is never invoked with a real signal against the shared pgid -- "not
+        # signaled" is proven directly at the syscall the table's own language refers to, not
+        # only via the higher-level `kill_group` spy.
         # Model an actual pgid reuse: `old_id` records a pid/start_time that no longer exists,
         # but shares `new_id`'s pgid (as if that pgid number were recycled to an unrelated live
         # session) -- `killpg(pgid, 0)` therefore succeeds (the group IS populated), and
@@ -618,13 +739,26 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
                     kill_calls.append(pgid)
                     return real_kill(pgid, *a, **kw)
 
-                with patch("reconcile.procs_mod.kill_group", side_effect=spy_kill):
+                killpg_calls = []
+                real_killpg = os.killpg
+
+                def spy_killpg(pgid, sig):
+                    killpg_calls.append((pgid, sig))
+                    return real_killpg(pgid, sig)
+
+                with patch("reconcile.procs_mod.kill_group", side_effect=spy_kill), \
+                     patch("os.killpg", side_effect=spy_killpg):
                     with self.assertRaises(reconcile.FenceExit) as cm:
                         self._reconcile()
                 self.assertEqual(cm.exception.code, 3)
             # Never signaled: kill_group (the only path that sends a real TERM/KILL) is never
             # invoked for an "unknown" classification -- fence() goes straight to fencing.
             self.assertEqual(kill_calls, [])
+            # Fix round 1 (controller ruling): also assert at the syscall level -- no call to
+            # `os.killpg` against the shared pgid ever used a real (nonzero) signal. `killpg(pgid,
+            # 0)` probes (group_alive/classify) are expected and harmless; only sig != 0 would
+            # mean the unrelated live process was actually signaled.
+            self.assertFalse(any(pgid == new_id.pgid and sig != 0 for pgid, sig in killpg_calls))
             reloaded = attempt.load(rec.path, validate_worktree=False)
             self.assertEqual(reloaded.status, "ORPHANED")
             self.assertEqual(procid.classify(new_id), "ours-alive")   # the real process untouched
@@ -648,6 +782,14 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         rec = attempt.load(self._adir(t, task))
         self.assertEqual(rec.tree, "restored")
         self.assertFalse((self.wt / "app" / "components" / "worker_touch.rb").exists())
+        # Fix round 1 (weak-test finding): assert the ABSOLUTE row count for this attempt
+        # (worker + N verify stages), not just that a before/after count is equal -- two counts
+        # being equal to each other says nothing if both are wrong (e.g. both zero).
+        rows_for_attempt = [row for row in metrics.read_all(self.cfg.state_root)
+                            if row["attempt_id"] == rec.attempt_id]
+        expected_stage_count = len(rec.stages)   # rejected before verification ever runs: worker only
+        self.assertGreater(expected_stage_count, 0)
+        self.assertEqual(len(rows_for_attempt), expected_stage_count)
         rows = len(metrics.read_all(self.cfg.state_root))
         self._reconcile("recover-2")
         self.assertEqual(len(metrics.read_all(self.cfg.state_root)), rows)   # published once
@@ -998,6 +1140,15 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         # attempt.create()'s read-side guard (already run, before the worker started) cannot
         # have caught it first. Defect exposed and fixed (see runner.py's append_feedback call
         # site): the runner no longer crashes -- it skips the append and continues.
+        #
+        # Controller ruling, task-9 fix round 1: this table row's literal post-condition
+        # ("outcome protocol") is superseded -- ladder.append_feedback's write-side guard fires
+        # AFTER this attempt is already CLASSIFIED, so ITS outcome is whatever the worker's own
+        # run produced (here: `rejected`, from the `fail` scenario), not `protocol`. The design's
+        # actual promise for this window is: detected before write, outside target unchanged,
+        # the runner does not crash, and the ladder keeps advancing (proven here by a second
+        # attempt actually being attempted, per the ticket's history, rather than the whole
+        # process dying). The stderr log line the fix emits is also asserted directly.
         outside2 = self.cfg.state_root.parent / "outside_ladder2.md"
         outside2.write_text("keep")
         real_task_root = self.cfg.state_root / "attempts" / "ZIP-7873" / self.tasks[0].id
@@ -1014,16 +1165,31 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         t = self._ticket()
         r = self._runner(launcher=planting_launcher)
         self.scenarios = ["fail"]
+        launches_before = self.launches
         # Once planted, the symlink is never cleared by the (correctly fail-safe) production
         # fix -- attempt.create()'s own read-side guard (row 33) then refuses every subsequent
-        # attempt the same way, exhausting the ladder to "blocked" rather than crashing. The
-        # point of this row is exactly that: no crash, no write-through, ever.
-        out = self._implement(r, t, self.tasks[0], 0)
+        # attempt the same way (no attempt directory, no worker launch, a synthetic `protocol`
+        # history entry per iteration), exhausting the ladder to "blocked" rather than crashing.
+        # The point of this row is exactly that: no crash, no write-through, ever, and the loop
+        # keeps iterating ("the ladder advances") instead of dying on the spot.
+        import io, contextlib
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf):
+            out = self._implement(r, t, self.tasks[0], 0)
         self.assertEqual(out, "blocked")
         self.assertEqual(outside2.read_text(), "keep")   # never written through
         entries = state.load(self.cfg.ticket_dir(t.key)).attempts[f"{t.key}/{self.tasks[0].id}"]
-        self.assertEqual(entries[0]["outcome"], "rejected")   # attempt 1: feedback append skipped, not crashed
+        # This attempt's OWN classification is unchanged by the guard: `rejected`, from the
+        # `fail` scenario -- not `protocol` (that outcome belongs to attempt 2+, whose
+        # attempt.create() itself refuses the now-symlinked task-level feedback.md).
+        self.assertEqual(entries[0]["outcome"], "rejected")
         self.assertTrue(all(e["outcome"] in ("rejected", "protocol") for e in entries))
+        # The ladder advanced: more than this one attempt was recorded (the loop did not stop
+        # or crash after the symlink was planted), and the worker itself was launched exactly
+        # once (attempt 2+ never launch a worker -- attempt.create() refuses them first).
+        self.assertGreater(len(entries), 1)
+        self.assertEqual(self.launches, launches_before + 1)
+        self.assertIn("unsafe feedback.md, skipping feedback append for attempt", stderr_buf.getvalue())
 
     # ----- Row 33 ----------------------------------------------------------------------
 
@@ -1031,20 +1197,62 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         """task-level `feedback.md` is a symlink at next attempt's copy/read"""
         outside = self.cfg.state_root.parent / "outside_feedback_copy.md"
         outside.write_text("secret bytes that must never reach the prompt")
-        t = self._ticket()
+        t0 = self._ticket("ZIP-9001")
         task = self.tasks[0]
-        task_level = self.cfg.state_root / "attempts" / t.key / task.id
+        task_level = self.cfg.state_root / "attempts" / t0.key / task.id
         task_level.mkdir(parents=True, exist_ok=True)
         (task_level / "feedback.md").symlink_to(outside)
 
         with self.assertRaises(attempt.UnsafePath):
-            attempt.create(self.cfg, t.key, task, self.wt, 1,
+            attempt.create(self.cfg, t0.key, task, self.wt, 1,
                            agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
                            "cloud", self._rung(), "test")
         # attempt.create()'s cleanup removed the leaf dir it made; no adir/feedback.md copy exists
         # anywhere, so the outside bytes never reached a prompt.
         self.assertFalse(list(task_level.glob("*/feedback.md")))
         self.assertEqual(outside.read_text(), "secret bytes that must never reach the prompt")
+        # Clean up the scaffold dir (a bare digit-named leaf with no attempt.json would make
+        # reconcile()'s sweep -- invoked below via implement_task -- fence closed on every
+        # subsequent test in this method, since it globally scans cfg.state_root/attempts/**).
+        import shutil as _shutil
+        _shutil.rmtree(self.cfg.state_root / "attempts" / "ZIP-9001", ignore_errors=True)
+
+        # Fix round 1 (weak-test finding): the isolated `attempt.create()` proof above is
+        # necessary but not sufficient -- also drive it THROUGH `implement_task` (the real
+        # runner loop), planting the symlink via the harness launcher BETWEEN attempt 1 and
+        # attempt 2 (mirroring row 32's technique: a worker with bash access can compute
+        # task_root from AL_TASK_DIR's parent and plant it during its own run), and assert the
+        # full set of promises: attempt 2's history entry is `protocol`, no attempt directory
+        # `2` was ever created, and the outside bytes never appear in any `prompt.md`/`task.md`
+        # under `attempts/` (not just "no feedback.md copy").
+        outside2 = self.cfg.state_root.parent / "outside_feedback_copy2.md"
+        outside2.write_text("secret bytes v2 that must never reach the prompt")
+        real_task_root = self.cfg.state_root / "attempts" / "ZIP-7873" / task.id
+
+        def planting_launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=None):
+            result = self.launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
+            if self.launches == 1:   # plant once, right after attempt 1's worker stage completes
+                fb = real_task_root / "feedback.md"
+                if fb.exists() or fb.is_symlink():
+                    fb.unlink()
+                fb.symlink_to(outside2)
+            return result
+
+        t = self._ticket()
+        r = self._runner(launcher=planting_launcher)
+        self.scenarios = ["fail"]
+        out = self._implement(r, t, task, 0)
+        self.assertEqual(out, "blocked")
+        entries = state.load(self.cfg.ticket_dir(t.key)).attempts[f"{t.key}/{task.id}"]
+        self.assertEqual(entries[0]["outcome"], "rejected")   # attempt 1: unaffected, ran normally
+        self.assertEqual(entries[1]["outcome"], "protocol")   # attempt 2: refused at create()
+        self.assertIsNone(entries[1]["n"])                    # no attempt record was ever made
+        self.assertFalse((real_task_root / "2").exists())     # no attempt dir 2 was ever created
+        for f in (self.cfg.state_root / "attempts").glob("**/prompt.md"):
+            self.assertNotIn("secret bytes v2", f.read_text())
+        for f in (self.cfg.state_root / "attempts").glob("**/task.md"):
+            self.assertNotIn("secret bytes v2", f.read_text())
+        self.assertEqual(outside2.read_text(), "secret bytes v2 that must never reach the prompt")
 
     # ----- Row 34 ----------------------------------------------------------------------
 
@@ -1100,36 +1308,58 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
 
     def test_cw_36_manifest_resliced_after_one_cheap_failure(self):
         """manifest re-sliced (same task.id, new fingerprint) after one cheap failure"""
-        # Drive two attempts directly through `_attempt` (bypassing implement_task's own ladder
-        # loop, which would otherwise silently default a second, unwanted scenario to "pass")
-        # so the ladder progression (n=1 cheap -> n=2 cheap) and the re-sliced task are both
-        # under this test's exact control.
-        t = self._ticket()
-        r = self._runner()
-        outcome1, reason1, rec1 = self._direct_attempt(
-            r, t, self.tasks[0], scenario="fail", n=1, arm="cloud",
-            rung=self._rung("cloud-worker", "cheap", 1), attempts=[])
-        self.assertEqual(rec1.outcome, "rejected")
-        gen1 = rec1.generation
+        # Fix round 1 (weak-test finding): the original version hand-fed a synthetic
+        # `ladder.Attempt(..., "rejected")` history list into a second, isolated `_attempt`
+        # call -- it never proved the REAL ladder loop (`implement_task`) reads its own
+        # persisted history back and continues correctly after a manifest re-slice. Drive it
+        # through two real runner invocations instead: attempt 1 runs to completion via the
+        # real `implement_task` loop (using a PAUSE file, planted by a wrapping launcher right
+        # after the worker stage, to stop the loop after exactly one attempt -- standing in for
+        # the process being restarted between attempts, the same boundary a manifest re-slice
+        # would actually happen across); the manifest is then re-sliced and a second, separate
+        # `implement_task` call resumes the SAME persisted ticket/ladder state.
+        pause_flag = self.cfg.state_root / "PAUSE"
+
+        def pausing_launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=None):
+            result = self.launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
+            pause_flag.touch()
+            return result
+
+        self.scenarios = ["fail"]
+        r1 = runner.Runner(self.cfg, run_id="test", pi_launcher=pausing_launcher)
+        t = state.load(self.cfg.ticket_dir("ZIP-7873")); t.worktree = str(self.wt)
+        for s in ("spinup", "plan", "plan-review", "implement"): t = state.transition(t, s)
+        state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        out1 = self._implement(r1, t, self.tasks[0], 0)
+        self.assertEqual(out1, "paused")   # stopped after exactly one attempt, not exhausted
+
+        lineage = f"ZIP-7873/{self.tasks[0].id}"
+        entries1 = state.load(self.cfg.ticket_dir("ZIP-7873")).attempts[lineage]
+        self.assertEqual(len(entries1), 1)
+        self.assertEqual(entries1[0]["outcome"], "rejected")
+        self.assertEqual(entries1[0]["rung"]["n"], 1)
+        self.assertEqual(entries1[0]["rung"]["tier"], "cheap")
+        gen1 = entries1[0]["generation"]
+        arm1 = entries1[0]["arm"]
 
         # Re-slice the manifest: same task.id, different summary (-> different generation).
+        pause_flag.unlink()
         resliced = self.tasks_with(summary="a re-sliced summary for the same task id")
         self.assertEqual(resliced[0].id, self.tasks[0].id)
 
-        prior_attempts = [ladder.Attempt(ladder.Rung("cloud-worker", "cheap", 1), "rejected")]
-        outcome2, reason2, rec2 = self._direct_attempt(
-            r, t, resliced[0], scenario="pass", n=2, arm="cloud",
-            rung=self._rung("cloud-worker", "cheap", 2), attempts=prior_attempts)
-        self.assertEqual(rec2.outcome, "accepted")
-        gen2 = rec2.generation
-        self.assertNotEqual(gen1, gen2)   # generation change is logged, not silently dropped
+        self.scenarios = ["pass"]
+        r2 = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        t2 = state.load(self.cfg.ticket_dir("ZIP-7873")); t2.worktree = str(self.wt)
+        out2 = self._implement(r2, t2, resliced[0], 0)
+        self.assertEqual(out2, "accepted")
 
-        entries = state.load(self.cfg.ticket_dir(t.key)).attempts[f"{t.key}/{self.tasks[0].id}"]
-        self.assertEqual(len(entries), 2)
+        entries2 = state.load(self.cfg.ticket_dir("ZIP-7873")).attempts[lineage]
+        self.assertEqual(len(entries2), 2)
         # Ladder continued at cheap attempt 2 (rung n=2), not reset to attempt 1 of a fresh ladder.
-        self.assertEqual(entries[-1]["rung"]["n"], 2)
-        self.assertEqual(entries[-1]["rung"]["tier"], "cheap")
-        self.assertEqual(entries[-1]["generation"], gen2)
+        self.assertEqual(entries2[-1]["rung"]["n"], 2)
+        self.assertEqual(entries2[-1]["rung"]["tier"], "cheap")
+        self.assertNotEqual(entries2[-1]["generation"], gen1)   # generation change is logged
+        self.assertEqual(entries2[-1]["arm"], arm1)             # arm assignment unchanged
 
     # ----- Row 37 ----------------------------------------------------------------------
 

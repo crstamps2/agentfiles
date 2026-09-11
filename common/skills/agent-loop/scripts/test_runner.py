@@ -495,7 +495,7 @@ class RunnerHarness(unittest.TestCase):
         (shim / "pi").write_text(f"#!/bin/sh\ntouch {sentinel}\nexit 1\n"); (shim / "pi").chmod(0o755)
         env = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "AL_SCENARIO": "pass"}
         r = subprocess.run([sys.executable, str(HERE / "runner.py"), "--config", str(self.cfg.state_root.parent / "hopper.toml"),
-                            "dry-run", "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml")],
+                            "dry-run", "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"), "--skip-admission"],
                            capture_output=True, text=True, env=env, cwd=HERE, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(sentinel.exists())
@@ -519,6 +519,34 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
         procs.kill_group(pgid)
         sleeper.wait()
+
+    def test_dry_run_cli_honors_admission_when_red(self):
+        # Red admission test: dry-run without --skip-admission should pause when admission is red.
+        # Create a hopper.toml copy with compressor_pct_max = 0.0 (forces red: all machines are > 0%).
+        root = self.cfg.state_root.parent
+        toml = (HERE.parent / "hopper.toml").read_text()
+        toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{self.cfg.state_root}"')
+        toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}/agents"')
+        toml = toml.replace("heavy_stage_s = 4500", "heavy_stage_s = 3")
+        toml = re.sub(r'alternate = \[[^\]]*\][^\n]*', 'alternate = ["cloud", "local"]', toml)
+        # Force red admission: compressor_pct_max = 0.0
+        toml = re.sub(r'compressor_pct_max = [\d.]+', 'compressor_pct_max = 0.0', toml)
+        red_toml = root / "hopper_red.toml"
+        red_toml.write_text(toml)
+        # Run dry-run WITHOUT --skip-admission; should hit real admission probe, get red decision, return rc 1, paused
+        r = subprocess.run([sys.executable, str(HERE / "runner.py"), "--config", str(red_toml),
+                            "dry-run", "--worktree", str(self.wt), "--tasks", str(root / "tasks.toml")],
+                           capture_output=True, text=True, cwd=HERE, timeout=120)
+        self.assertEqual(r.returncode, 1, f"Expected rc 1 but got {r.returncode}. stderr: {r.stderr}")
+        self.assertIn("paused", r.stdout, f"Expected 'paused' in stdout, got: {r.stdout}")
+        # Verify no attempt dirs were created
+        attempts_root = self.cfg.state_root / "attempts" / "DRY-1" / "001"
+        if attempts_root.exists():
+            attempt_nums = [d.name for d in attempts_root.iterdir() if d.is_dir() and d.name.isdigit()]
+            self.assertEqual(attempt_nums, [], f"Expected no attempt dirs but found {attempt_nums}")
+        # Verify state.json reason starts with "resource:"
+        t = state.load(self.cfg.ticket_dir("DRY-1"))
+        self.assertTrue(t.reason.startswith("resource:"), f"Expected reason to start with 'resource:' but got: {t.reason}")
 
     def test_stratified_arms_for_mixed_visual_flags(self):
         toml = TASKS

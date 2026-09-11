@@ -209,7 +209,10 @@ class Runner:
         stages = list(rec.stages)
         stages[-1] = {**stages[-1], "proc": rec.proc, "terminated": stage.terminated,
                       "timed_out": stage.timed_out, "rc": stage.returncode, "elapsed_s": stage.elapsed_s}
-        rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+        # C1: keep the live group's identity on the record while its termination is unverified,
+        # so a crash between this receipt and fence() still lets recovery see the live stage.
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages,
+                                 proc=None if stage.terminated else stages[-1]["proc"])
         reconcile._maybe_crash("after-stage-done")
 
         if not stage.terminated:
@@ -290,7 +293,8 @@ class Runner:
                 stages = list(rec.stages)
                 stages[-1] = {**stages[-1], "terminated": vs.terminated, "timed_out": vs.timed_out,
                               "rc": vs.returncode, "elapsed_s": vs.elapsed_s}
-                rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+                rec = attempt.transition(rec, "STAGE_DONE", stages=stages,
+                                         proc=None if vs.terminated else stages[-1]["proc"])
                 if not vs.terminated:
                     reconcile.fence(self.cfg, rec, f"termination unverified pgid {vs.pgid}",
                                     proc=stages[-1]["proc"])

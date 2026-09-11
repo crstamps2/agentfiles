@@ -919,6 +919,60 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         # No restore: the worker's edit (accepted-track) is still on disk.
         self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())
 
+    # ----- Row 23b (C1 regression) -----------------------------------------------------
+
+    def test_cw_23b_stage_receipt_unverified_crash_before_fence_still_fences(self):
+        """STAGE_DONE receipt with terminated=False persisted, killed BEFORE fence() -- recovery must
+        still see the live stage's identity and fence, not restore under it (C1)."""
+        p, pinfo = _spawn_group()
+        try:
+            live = pinfo.to_dict()
+            t = self._ticket(); task = self.tasks[0]
+            rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                                 agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                                 "cloud", self._rung(), "test")
+            rec = attempt.transition(rec, "LAUNCHING", stages=[{"kind": "worker", "idx": 0, "proc": None}])
+            rec = attempt.transition(rec, "RUNNING", proc=live, stages=[{"kind": "worker", "idx": 0, "proc": live}])
+            # The receipt the runner now writes for an unverified stage: proc RETAINED on the record.
+            rec = attempt.transition(rec, "STAGE_DONE", proc=live,
+                                     stages=[{"kind": "worker", "idx": 0, "proc": live, "terminated": False,
+                                              "timed_out": False, "rc": None, "elapsed_s": 1.0}])
+            sentinel = self.wt / "app" / "components" / "live_writer_sentinel.rb"; sentinel.write_text("x\n")
+            with patch("reconcile.procid_mod.classify", return_value="unknown"):
+                with self.assertRaises(reconcile.FenceExit) as cm:
+                    self._reconcile()
+            self.assertEqual(cm.exception.code, 3)
+            self.assertTrue(sentinel.exists(), "must not restore under a possibly-live group")
+            fence = json.loads((self.cfg.state_root / "locks" / "heavy.fence").read_text())
+            self.assertEqual(fence["proc"]["pgid"], live["pgid"])
+            self.assertEqual(attempt.load(rec.path, validate_worktree=False).status, "ORPHANED")
+        finally:
+            try: os.killpg(pinfo.pgid, 9)
+            except ProcessLookupError: pass
+
+
+    def test_cw_23c_runner_receipt_retains_proc_when_unverified(self):
+        """The runner's own STAGE_DONE receipt for an unverified stage must keep `proc` on the record
+        (C1). Drive _attempt with a launcher returning terminated=False and inspect the record it
+        left behind (fence() raises FenceExit; the record is ORPHANED with proc == the stage proc)."""
+        t = self._ticket(); task = self.tasks[0]
+        def unverified_launcher(argv, cwd, timeout_s, env, out, err, on_start=None):
+            # Emulate a real launch: journal a real pid via on_start, then report unverified.
+            p = subprocess.Popen(["sleep", "30"], start_new_session=True)
+            try:
+                on_start(os.getpgid(p.pid), p.pid)
+                return procs.StageResult(returncode=None, timed_out=True, elapsed_s=0.1, pgid=os.getpgid(p.pid), terminated=False)
+            finally:
+                pass  # leave it running: the runner must fence, never restore under it
+        r = self._runner(launcher=unverified_launcher)
+        with self.assertRaises(reconcile.FenceExit):
+            self._direct_attempt(r, t, task, scenario="pass")
+        rec = attempt.load(self._adir(t, task), validate_worktree=False)
+        self.assertEqual(rec.status, "ORPHANED")
+        self.assertIsNotNone(rec.proc, "unverified stage must keep its identity on the record")
+        self.assertEqual(rec.proc["pgid"], rec.stages[-1]["proc"]["pgid"])
+        os.killpg(rec.proc["pgid"], 9)
+
     # ----- Row 24 ----------------------------------------------------------------------
 
     def test_cw_24_fence_written_before_orphaned(self):

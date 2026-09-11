@@ -14,8 +14,29 @@ class ProcId:
     start_time: str
     cmd: str
     def to_dict(self) -> dict: return dataclasses.asdict(self)
+
     @staticmethod
-    def from_dict(d: dict) -> "ProcId": return ProcId(**{k: d[k] for k in ("boot_id", "pgid", "pid", "start_time", "cmd")})
+    def from_dict(d: dict) -> "ProcId":
+        """Strictly validate the shape of a `proc` dict pulled from a fence file or attempt
+        record before ever trusting it enough to call `os.killpg`/`os.getpgid` on its
+        fields. Any missing key, wrong type, or non-positive pgid raises ValueError -- never
+        a bare KeyError/TypeError that would otherwise escape from `classify()` deep inside
+        a signal call. `d` itself need not be a dict; a non-mapping (e.g. a bare int) fails
+        the same way via the subscript attempt below."""
+        try:
+            kwargs = {k: d[k] for k in ("boot_id", "pgid", "pid", "start_time", "cmd")}
+        except (KeyError, TypeError) as e:
+            raise ValueError(f"invalid proc shape: {e}") from e
+        for k in ("boot_id", "start_time", "cmd"):
+            if not isinstance(kwargs[k], str):
+                raise ValueError(f"proc.{k} must be a str, got {type(kwargs[k]).__name__}")
+        for k in ("pgid", "pid"):
+            v = kwargs[k]
+            if isinstance(v, bool) or not isinstance(v, int):
+                raise ValueError(f"proc.{k} must be an int, got {type(v).__name__}")
+        if kwargs["pgid"] <= 0:
+            raise ValueError(f"proc.pgid must be > 0, got {kwargs['pgid']}")
+        return ProcId(**kwargs)
 
 
 def _ps(pid: int) -> tuple[str, str] | None:

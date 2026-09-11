@@ -1095,6 +1095,76 @@ class ClearFenceTests(ReconcilePart2TestCase):
         rc = reconcile.clear_fence(self.cfg, force=False)
         self.assertEqual(rc, 0)
 
+    def _write_fence(self, payload: dict) -> pathlib.Path:
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence_path.parent.mkdir(parents=True, exist_ok=True)
+        fence_path.write_text(json.dumps(payload))
+        return fence_path
+
+    def _valid_proc(self) -> dict:
+        return {"boot_id": locks.boot_id(), "pgid": 999999, "pid": 999999,
+                "start_time": "x", "cmd": "y"}
+
+    def test_malformed_fence_fields_are_corrupt_not_a_crash(self):
+        rec = self._create()
+        cases = {
+            "attempt_dir_null": {"attempt_dir": None, "proc": self._valid_proc(), "reason": "r"},
+            "attempt_dir_numeric": {"attempt_dir": 5, "proc": self._valid_proc(), "reason": "r"},
+            "proc_bad_pgid_type": {"attempt_dir": str(rec.path),
+                                   "proc": {**self._valid_proc(), "pgid": "x"}, "reason": "r"},
+            "proc_not_a_dict": {"attempt_dir": str(rec.path), "proc": 7, "reason": "r"},
+        }
+        for name, payload in cases.items():
+            with self.subTest(name=name):
+                fence_path = self._write_fence(payload)
+
+                buf = io.StringIO()
+                with contextlib.redirect_stderr(buf):
+                    rc = reconcile.clear_fence(self.cfg, force=False)
+                self.assertEqual(rc, 3)
+                self.assertTrue(fence_path.exists())
+                self.assertIn("corrupt fence", buf.getvalue())
+
+                rc = reconcile.clear_fence(self.cfg, force=True)
+                self.assertEqual(rc, 0)
+                self.assertFalse(fence_path.exists())
+
+    def test_force_promotes_fencing_record_to_orphaned_and_re_fences_next_run(self):
+        p, pid = spawn_sleep()
+        try:
+            rec = self._create()
+            (self.wt / "app" / "live_junk.rb").write_text("junk\n")
+            rec = attempt.transition(rec, "LAUNCHING")
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+            stages = [{"kind": "worker", "idx": 0, "proc": pid.to_dict(), "terminated": False,
+                      "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+            rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+            # Hand-simulate the crash window inside fence(): FENCING was written and the
+            # fence file exists, but the ORPHANED transition never happened.
+            rec = attempt.transition(rec, "FENCING")
+            fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+            fence_path.parent.mkdir(parents=True, exist_ok=True)
+            attempt.safe_write(fence_path, json.dumps(
+                {"attempt_dir": str(rec.path), "proc": pid.to_dict(), "reason": "crash test"}))
+
+            rc = reconcile.clear_fence(self.cfg, force=True)
+            self.assertEqual(rc, 0)
+            self.assertFalse(fence_path.exists())
+            reloaded = attempt.load(rec.path)
+            self.assertEqual(reloaded.status, "ORPHANED")
+            self.assertTrue(reloaded.operator_forced)
+            self.assertTrue((self.wt / "app" / "live_junk.rb").exists())    # NOT restored
+
+            # Next runner start: the group is still alive, no fence on disk -> re-fenced.
+            with self.assertRaises(reconcile.FenceExit) as cm:
+                reconcile.reconcile(self.cfg, "run-z")
+            self.assertEqual(cm.exception.code, 3)
+            self.assertTrue(fence_path.exists())
+            reloaded2 = attempt.load(rec.path)
+            self.assertEqual(reloaded2.status, "ORPHANED")
+        finally:
+            reap(p)
+
 
 if __name__ == "__main__":
     unittest.main()

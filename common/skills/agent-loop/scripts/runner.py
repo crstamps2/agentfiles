@@ -149,7 +149,23 @@ class Runner:
                 continue
 
             if outcome in ("rejected", "protocol"):
-                ladder.append_feedback(task_root, n, reason)
+                # Defect exposed by the crash-window table (row 32, `test_cw_32`): a worker
+                # can reach task_root/feedback.md (it lives under cfg.state_root, outside the
+                # worktree the worker's shell runs in, but AL_TASK_DIR lets a worker compute
+                # its path) and replace it with a symlink before this attempt's feedback is
+                # appended. `ladder.append_feedback` already refuses (via safe_read/
+                # safe_rewrite's no-follow discipline) to read through or write through it --
+                # but until now that UnsafePath propagated uncaught out of implement_task,
+                # crashing the whole runner process instead of the design's fail-safe
+                # per-attempt handling. Catch it here: the append is skipped (never retried
+                # blindly -- a booby-trapped feedback.md stays booby-trapped until an operator
+                # clears it), and the loop continues so the ladder still advances on this
+                # attempt's already-classified outcome.
+                try:
+                    ladder.append_feedback(task_root, n, reason)
+                except attempt.UnsafePath as e:
+                    print(f"task {task.id}: unsafe feedback.md, skipping feedback append for "
+                          f"attempt {n}: {e}", file=sys.stderr)
             if outcome == "accepted":
                 return "accepted"
             # For every other outcome, loop back to the top: re-load the ticket (projections

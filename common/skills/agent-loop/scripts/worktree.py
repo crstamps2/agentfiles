@@ -5,6 +5,7 @@ import fnmatch
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import tempfile
 
@@ -65,26 +66,49 @@ def restore(wt, tree: str) -> None:
     removed too (snapshot() now captures ignored writes via --force, so "restored to base"
     must actually mean it for ignored content as well)."""
     before = snapshot(wt)
-    _git(wt, "read-tree", "--reset", "-u", tree)
-    _git(wt, "clean", "-fd")            # remove untracked (non-ignored) leftovers
-    # Paths present before restore but absent from the target tree: read-tree/clean -fd never
-    # touch ignored paths (clean -fd skips them by design), so remove any such leftovers
-    # directly. -z is required for exact repository pathnames.
+    # C4: remove worker-written extras (incl. ignored paths) BEFORE read-tree reinstalls the base
+    # topology. Doing it after would let the unlink traverse a *restored* base symlink and delete
+    # outside the worktree. Compute extras against the observed tree, delete them while the tree
+    # is still the observed one, and refuse to follow any symlink component on the way.
     r = subprocess.run(["git", "-C", str(wt), "diff", "--no-renames", "--diff-filter=A", "--name-only", "-z", tree, before],
                        capture_output=True)
     if r.returncode:
         raise RuntimeError(f"git diff failed: {r.stderr.decode(errors='replace').strip()}")
     extras = [p.decode("utf-8", "surrogateescape") for p in r.stdout.split(b"\0") if p]
+    root = pathlib.Path(wt).resolve()
     for extra in extras:
-        fp = pathlib.Path(wt) / extra
-        try:
-            fp.unlink()
-        except (FileNotFoundError, IsADirectoryError):
-            pass
+        _unlink_nofollow(root, extra)
+    _git(wt, "read-tree", "--reset", "-u", tree)
+    _git(wt, "clean", "-fd")            # remove untracked (non-ignored) leftovers
     # read-tree left the real index pointing at `tree`; put it back to HEAD so status is sane.
     # On an unborn HEAD, `git reset` fails (there is no HEAD to reset to) and is unneeded.
     if _has_head(wt):
         _git(wt, "reset", "-q")
+
+
+def _unlink_nofollow(root: pathlib.Path, rel: str) -> None:
+    """Unlink `root/rel` without following any symlink component. Walks the path one component at
+    a time with lstat; if any intermediate component is a symlink (or not a directory) the unlink
+    is skipped -- the subsequent read-tree/clean handle tracked content, and refusing is the
+    fail-safe choice for anything that would resolve outside the worktree."""
+    cur = root
+    parts = pathlib.PurePosixPath(rel).parts
+    for comp in parts[:-1]:
+        cur = cur / comp
+        try:
+            st = os.lstat(cur)
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return
+    target = cur / parts[-1]
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode):
+        return                          # directories are handled by git clean -fd
+    os.unlink(target)                   # unlink() never follows the final component
 
 
 def verify_restored(wt, tree: str) -> bool:

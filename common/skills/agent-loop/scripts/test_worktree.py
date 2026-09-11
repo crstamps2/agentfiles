@@ -161,3 +161,31 @@ class VerifyRestoredTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestoreSymlinkEscapeTests(unittest.TestCase):
+    """C4: restore must never delete outside the worktree by traversing a restored base symlink."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.wt = pathlib.Path(self.tmp.name) / "wt"; self.wt.mkdir()
+        self.outside = pathlib.Path(self.tmp.name) / "outside"; self.outside.mkdir()
+        (self.outside / "x").write_text("keep me\n")
+        git(self.wt, "init", "-q", "-b", "main"); git(self.wt, "config", "user.email", "t@t"); git(self.wt, "config", "user.name", "t")
+        os.symlink(str(self.outside), self.wt / "d")          # base tree: d -> /outside (a symlink)
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "base with symlink")
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_worker_replaces_symlink_with_dir_then_restore_does_not_unlink_outside(self):
+        base = worktree.snapshot(self.wt)
+        (self.wt / "d").unlink(); (self.wt / "d").mkdir(); (self.wt / "d" / "x").write_text("worker\n")
+        worktree.restore(self.wt, base)
+        self.assertEqual((self.outside / "x").read_text(), "keep me\n")   # outside untouched
+        self.assertTrue(os.path.islink(self.wt / "d"))                      # base symlink restored
+        self.assertTrue(worktree.verify_restored(self.wt, base))
+
+    def test_worker_replaces_symlink_with_file_then_restore_is_clean(self):
+        base = worktree.snapshot(self.wt)
+        (self.wt / "d").unlink(); (self.wt / "d").write_text("file now\n")
+        worktree.restore(self.wt, base)
+        self.assertTrue(os.path.islink(self.wt / "d")); self.assertTrue(worktree.verify_restored(self.wt, base))
+

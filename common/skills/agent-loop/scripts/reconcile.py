@@ -266,7 +266,9 @@ def fence(cfg, rec: attempt_mod.Record, reason: str, proc: dict | None = None) -
     serialize `rec.proc` (already null at that point) and the next reconcile would treat
     the fence as corrupt ("proc must be a dict, not null") forever, instead of fencing the
     actual process group."""
-    rec = attempt_mod.transition(rec, "FENCING")
+    # C1: the fenced identity lives on the record too, not only in the fence file -- so an
+    # ORPHANED record whose fence file is lost still classifies its real group (not None→dead).
+    rec = attempt_mod.transition(rec, "FENCING", proc=(proc if proc is not None else rec.proc))
     _maybe_crash("after-fencing")
     fp = _fence_path(cfg)
     fp.parent.mkdir(parents=True, exist_ok=True)

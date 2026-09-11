@@ -33,6 +33,9 @@ if scenario == "timeout":
     target.write_text(f"edited by fake worker ({scenario})\n")
     time.sleep(30)
     sys.exit(0)
+if scenario == "transport_429":
+    print("HTTP 429 Too Many Requests", file=sys.stderr)
+    sys.exit(1)
 if scenario == "owner":
     result("blocked", "owner", [], "Is the close control part of the header slot?"); sys.exit(0)
 if scenario == "env":

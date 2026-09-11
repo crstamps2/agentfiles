@@ -83,5 +83,50 @@ class LeaseTests(unittest.TestCase):
         self.path.write_text(json.dumps({"pid": None, "boot_id": locks.boot_id(), "heartbeat_utc": "2999-01-01T00:00:00Z", "name": "heavy"}))
         self.assertTrue(locks.Lease(self.path, "heavy").acquire())
 
+    def test_held_acquire_keeps_fd_open_and_release_closes_it(self):
+        l = locks.Lease(self.path, "heavy")
+        self.assertTrue(l.acquire(hold=True))
+        self.assertIsNotNone(l._held_fd)
+        self.assertFalse(l._held_fd.closed)
+        l.release()
+        self.assertTrue(l._held_fd is None or l._held_fd.closed)
+
+    def test_held_acquire_nonblocking_second_process_fails_while_first_lives(self):
+        script_dir = pathlib.Path(__file__).resolve().parent
+        holder_src = (
+            "import sys, time\n"
+            f"sys.path.insert(0, {str(script_dir)!r})\n"
+            "import locks\n"
+            f"l = locks.Lease({str(self.path)!r}, 'heavy')\n"
+            "ok = l.acquire(hold=True)\n"
+            "print(ok, flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        holder = subprocess.Popen([sys.executable, "-c", holder_src], stdout=subprocess.PIPE, text=True)
+        try:
+            line = holder.stdout.readline().strip()
+            self.assertEqual(line, "True")
+
+            other_src = (
+                "import sys\n"
+                f"sys.path.insert(0, {str(script_dir)!r})\n"
+                "import locks\n"
+                f"l = locks.Lease({str(self.path)!r}, 'heavy')\n"
+                "print(l.acquire(hold=True), flush=True)\n"
+            )
+            r = subprocess.run([sys.executable, "-c", other_src], capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip(), "False")
+
+            # Simulate a crash: kill the holder without release(); its fd is closed by the kernel.
+            holder.kill()
+            holder.wait(timeout=5)
+
+            r2 = subprocess.run([sys.executable, "-c", other_src], capture_output=True, text=True)
+            self.assertEqual(r2.stdout.strip(), "True")
+        finally:
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait(timeout=5)
+
 if __name__ == "__main__":
     unittest.main()

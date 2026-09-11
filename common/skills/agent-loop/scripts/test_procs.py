@@ -58,8 +58,9 @@ class RunStageTests(unittest.TestCase):
 
     def test_child_does_not_execute_before_on_start(self):
         times = {}
-        def on_start(pgid):
+        def on_start(pgid, pid):
             times["pgid"] = pgid
+            times["pid"] = pid
             time.sleep(0.5)
             times["done"] = time.time()
         r = procs.run_stage(
@@ -73,8 +74,9 @@ class RunStageTests(unittest.TestCase):
 
     def test_on_start_exception_prevents_execution(self):
         captured = {}
-        def on_start(pgid):
+        def on_start(pgid, pid):
             captured["pgid"] = pgid
+            captured["pid"] = pid
             raise RuntimeError("boom")
         with self.assertRaises(RuntimeError):
             procs.run_stage(

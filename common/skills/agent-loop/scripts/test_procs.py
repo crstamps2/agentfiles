@@ -87,6 +87,21 @@ class RunStageTests(unittest.TestCase):
         self.assertFalse(procs.group_alive(captured["pgid"]))
 
 
+    def test_planted_stdout_symlink_raises_and_does_not_clobber(self):
+        outside = self.d / "outside.txt"; outside.write_text("keep")
+        target = self.d / "linked_out"
+        os.symlink(str(outside), target)
+        sentinel = self.d / "sentinel"
+        with self.assertRaises(procs.LogPathExists):
+            procs.run_stage(
+                [sys.executable, "-c",
+                 f"import pathlib; pathlib.Path({str(sentinel)!r}).write_text('ran')"],
+                cwd=self.d, timeout_s=10, env=None,
+                stdout_path=target, stderr_path=self.d / "err2")
+        self.assertEqual(outside.read_text(), "keep")
+        self.assertFalse(sentinel.exists())
+
+
 class GroupStateTests(unittest.TestCase):
     def test_group_state_dead_for_reaped_process(self):
         p = subprocess.Popen([sys.executable, "-c", "import os; print(os.getpid())"],

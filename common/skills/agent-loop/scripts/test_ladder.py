@@ -1,4 +1,5 @@
 import pathlib, tempfile, unittest
+import attempt as attempt_mod
 import ladder
 from ladder import Attempt, Rung
 
@@ -47,6 +48,52 @@ class FeedbackTests(unittest.TestCase):
             text = p.read_text()
             self.assertIn("## Attempt 1", text); self.assertIn("## Attempt 2", text); self.assertIn("footer slot", text)
             self.assertEqual(p.name, "feedback.md")
+
+    def test_append_feedback_creates_file_via_safe_write_when_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = ladder.append_feedback(pathlib.Path(d), 1, "first")
+            self.assertTrue(p.is_file())
+            self.assertIn("## Attempt 1", p.read_text())
+
+    def test_append_feedback_on_symlink_raises_unsafe_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            outside = pathlib.Path(d) / "outside.md"
+            outside.write_text("secret\n")
+            task_dir = pathlib.Path(d) / "task"
+            task_dir.mkdir()
+            (task_dir / "feedback.md").symlink_to(outside)
+            with self.assertRaises(attempt_mod.UnsafePath):
+                ladder.append_feedback(task_dir, 1, "gate summary")
+            self.assertEqual(outside.read_text(), "secret\n")
+
+
+class NextActionTests(unittest.TestCase):
+    def test_blocked_outcome_always_blocks(self):
+        self.assertEqual(ladder.next_action([], "cloud", "blocked", 0), "block")
+
+    def test_accepted_never_blocks_even_if_it_were_the_last_rung(self):
+        r1 = ladder.next_rung([], "cloud")
+        r2 = ladder.next_rung([Attempt(r1, "rejected")], "cloud")
+        r3 = ladder.next_rung([Attempt(r1, "rejected"), Attempt(r2, "timeout")], "cloud")
+        history = [Attempt(r1, "rejected"), Attempt(r2, "timeout")]
+        self.assertEqual(ladder.next_action(history, "cloud", "accepted", 0), "none")
+
+    def test_ladder_exhausted_and_not_accepted_blocks(self):
+        r1 = ladder.next_rung([], "cloud")
+        r2 = ladder.next_rung([Attempt(r1, "rejected")], "cloud")
+        history = [Attempt(r1, "rejected"), Attempt(r2, "timeout")]
+        # this attempt is the premium rung; a non-accepted outcome exhausts the ladder
+        self.assertEqual(ladder.next_action(history, "cloud", "protocol", 0), "block")
+
+    def test_more_rungs_remaining_and_not_accepted_does_not_block(self):
+        self.assertEqual(ladder.next_action([], "cloud", "rejected", 0), "none")
+
+    def test_environment_outcome_below_threshold_is_none(self):
+        self.assertEqual(ladder.next_action([], "cloud", "environment", 1), "none")
+
+    def test_environment_outcome_at_threshold_pauses_env(self):
+        self.assertEqual(ladder.next_action([], "cloud", "environment", 2), "pause-env")
+        self.assertEqual(ladder.next_action([], "cloud", "environment", 3), "pause-env")
 
 if __name__ == "__main__":
     unittest.main()

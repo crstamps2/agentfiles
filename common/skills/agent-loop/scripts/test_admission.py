@@ -30,7 +30,11 @@ class ParserTests(unittest.TestCase):
     def test_therm(self):
         self.assertFalse(admission.parse_therm(THERM_OK))
         self.assertTrue(admission.parse_therm(THERM_HOT))
-        self.assertFalse(admission.parse_therm(""))  # no data → not limited
+    def test_therm_missing_line_is_unknown_not_ok(self):
+        self.assertIsNone(admission.parse_therm("Note: No thermal warning level has been recorded\n"))
+        self.assertIsNone(admission.parse_therm(""))
+        self.assertFalse(admission.parse_therm("CPU_Speed_Limit = 100"))
+        self.assertTrue(admission.parse_therm("CPU_Speed_Limit = 60"))
     def test_df_wrapped_device_name_parses_second_line(self):
         # Long device name wraps to next line; numbers are on the line after
         text = "Filesystem 1024-blocks Used Available Capacity Mounted\n" + \
@@ -46,7 +50,7 @@ class ParserTests(unittest.TestCase):
 
 class DecideTests(unittest.TestCase):
     def r(self, **kw):
-        base = dict(compressor_pct=10.0, load1=2.0, cores=10, on_ac=True, therm_limited=False, disk_free_gb=100.0, pressure_level="normal")
+        base = dict(compressor_pct=10.0, load1=2.0, cores=10, on_ac=True, therm_limited=False, disk_free_gb=100.0, pressure_level="normal", thermal_level=0)
         base.update(kw)
         return admission.Reading(**base)
     def test_ok(self):
@@ -61,6 +65,11 @@ class DecideTests(unittest.TestCase):
     def test_battery_ok_when_not_required(self):
         th = AdmissionThresholds(25.0, 1.0, 20.0, False, 60)
         self.assertTrue(admission.decide(self.r(on_ac=False), th).ok)
+    def test_xcpm_thermal_level_used_when_pmset_silent(self):
+        r = self.r(therm_limited=None, thermal_level=0); self.assertTrue(admission.decide(r, TH).ok)
+        r = self.r(therm_limited=None, thermal_level=3); self.assertFalse(admission.decide(r, TH).ok)
+        r = self.r(therm_limited=None, thermal_level=None)
+        self.assertIn("thermal: unknown", admission.decide(r, TH).reasons[0])
     def test_df_unparseable_distinct_reason(self):
         # NaN disk_free_gb should produce "unparseable" reason, not numeric comparison
         d = admission.decide(self.r(disk_free_gb=float("nan")), TH)
@@ -72,15 +81,16 @@ class ProbeTests(unittest.TestCase):
     def test_probe_assembles_reading(self, run):
         def fake(argv, **kw):
             out = {"vm_stat": VM, "uptime": UPTIME}.get(argv[0])
-            if argv[:2] == ["pmset", "-g"] and argv[2] == "batt": out = BATT_AC
-            if argv[:2] == ["pmset", "-g"] and argv[2] == "therm": out = THERM_OK
-            if argv[0] == "sysctl" and "hw.ncpu" in argv: out = "10\n"
-            if argv[0] == "sysctl" and "hw.memsize" in argv: out = str(24 * 1024**3) + "\n"
+            if argv[:2] == ["pmset", "-g"] and len(argv) > 2 and argv[2] == "batt": out = BATT_AC
+            if argv[:2] == ["pmset", "-g"] and len(argv) > 2 and argv[2] == "therm": out = THERM_OK
+            if argv[0] == "sysctl" and len(argv) > 2 and "hw.ncpu" in argv: out = "10\n"
+            if argv[0] == "sysctl" and len(argv) > 2 and "hw.memsize" in argv: out = str(24 * 1024**3) + "\n"
+            if argv[0] == "sysctl" and len(argv) > 2 and any("xcpm" in s for s in argv): out = "2\n"
             if argv[0] == "df": out = "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/x 100 50 52428800 50% /\n"
             m = unittest.mock.MagicMock(); m.stdout = out; m.returncode = 0; return m
         run.side_effect = fake
         r = admission.probe("/tmp")
-        self.assertEqual(r.cores, 10); self.assertTrue(r.on_ac); self.assertAlmostEqual(r.disk_free_gb, 50.0, places=1)
+        self.assertEqual(r.cores, 10); self.assertTrue(r.on_ac); self.assertAlmostEqual(r.disk_free_gb, 50.0, places=1); self.assertEqual(r.thermal_level, 2)
 
 if __name__ == "__main__":
     unittest.main()

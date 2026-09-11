@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import pathlib
+import re
 import tomllib
 
 DEFAULT_PATH = pathlib.Path(__file__).resolve().parent.parent / "hopper.toml"
@@ -54,6 +55,8 @@ class Config:
     test_path_globs: list
     arms_alternate: list
     outcomes: dict
+    local_model: str | None = None
+    local_unload_after_attempt: bool = True
 
     def ticket_dir(self, key: str) -> pathlib.Path:
         return self.state_root / "tickets" / key
@@ -81,6 +84,14 @@ def load(path: pathlib.Path | None = None) -> Config:
     for row in h.get("tickets", []):
         spec = TicketSpec(key=row["key"], deps=list(row.get("deps", [])), pin_arm=row.get("pin_arm"))
         tickets[spec.key] = spec
+    local_model = None
+    local_unload_after_attempt = True
+    if "local" in raw:
+        local_table = raw["local"]
+        local_model = local_table.get("model")
+        if local_model and not re.search(r"-ctx\d+k:", local_model):
+            raise ConfigError(f"local model must be a ctx-pinned derived model (…-ctx32k:…); Ollama's default 4K context truncates pi's system prompt")
+        local_unload_after_attempt = bool(local_table.get("unload_after_attempt", True))
     return Config(
         epic=h["epic"],
         owned_epics=list(h.get("owned_epics", [h["epic"]])),
@@ -96,4 +107,6 @@ def load(path: pathlib.Path | None = None) -> Config:
         test_path_globs=list(pr["test_path_globs"]),
         arms_alternate=list(arms["alternate"]),
         outcomes=dict(oc),
+        local_model=local_model,
+        local_unload_after_attempt=local_unload_after_attempt,
     )

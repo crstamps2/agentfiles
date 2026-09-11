@@ -62,6 +62,10 @@ test_path_globs = ["test/**", "spec/**", "**/fixtures/**", "**/__snapshots__/**"
 # Cheap arms alternate by task index unless a ticket pins one. Values: cloud | local
 alternate = ["local", "cloud"]   # local-first per Cody 2026-09-10: overnight runs trade wall time for $0
 
+[local]
+model = "ollama-local/gpt-oss-ctx32k:20b"   # MUST be ctx-pinned: stock num_ctx=4096 silently truncates pi's ~11K system prompt
+unload_after_attempt = true                # runner calls `ollama stop <model>` after each local attempt (Plan 3 wires it)
+
 [outcomes]
 # Pre-registered before the first real run; the dashboard shows these verbatim.
 primary = "first-attempt acceptance rate per arm (cloud, local, premium)"

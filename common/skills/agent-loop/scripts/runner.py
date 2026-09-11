@@ -91,10 +91,11 @@ def _task_toml(task: contracts.Task) -> str:
 
 
 class Runner:
-    def __init__(self, cfg: config.Config, run_id: str | None = None, pi_launcher=None):
+    def __init__(self, cfg: config.Config, run_id: str | None = None, pi_launcher=None, admission_override: admission.Decision | None = None):
         self.cfg = cfg
         self.run_id = run_id or uuid.uuid4().hex[:8]
         self.pi_launcher = pi_launcher
+        self.admission_override = admission_override
 
     @property
     def launch(self):
@@ -270,7 +271,7 @@ class Runner:
             stop = self._stop(tdir, t)
             if stop: return stop
             reading = admission.probe(self.cfg.state_root)
-            decision = admission.decide(reading, self.cfg.admission)
+            decision = self.admission_override or admission.decide(reading, self.cfg.admission)
             if not decision.ok:
                 self._save(tdir, state.transition(t, "paused", reason="resource: " + "; ".join(decision.reasons))); return "paused"
             if self._clear_or_honor_fence(tdir, t): return "paused"
@@ -402,14 +403,15 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True); sub.add_parser("status"); sub.add_parser("run-once")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
     d = sub.add_parser("dry-run"); d.add_argument("--worktree", required=True); d.add_argument("--tasks", required=True)
-    d.add_argument("--scenario", default="pass"); d.add_argument("--ticket", default="DRY-1")
+    d.add_argument("--scenario", default="pass"); d.add_argument("--ticket", default="DRY-1"); d.add_argument("--skip-admission", action="store_true")
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "dry-run":
         def fake_launcher(pargv, cwd, timeout_s, env, out, err, on_start=None):
             fake_env = {**(env or {}), "AL_SCENARIO": a.scenario}
             fake_argv = [sys.executable, str(pathlib.Path(__file__).with_name("fake_worker.py")), *pargv[2:]]
             return procs.run_stage(fake_argv, cwd, timeout_s, fake_env, out, err, on_start=on_start)
-        r = Runner(cfg, pi_launcher=fake_launcher)
+        admission_override = admission.Decision(True, []) if a.skip_admission else None
+        r = Runner(cfg, pi_launcher=fake_launcher, admission_override=admission_override)
     else: r = Runner(cfg)
     if a.cmd == "status": return r.status()
     if a.cmd == "clear-fence":

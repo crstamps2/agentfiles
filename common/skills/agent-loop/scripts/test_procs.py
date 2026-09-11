@@ -54,5 +54,56 @@ class RunStageTests(unittest.TestCase):
         out = (self.d/"out").read_text().splitlines()
         self.assertEqual(out[0], "42"); self.assertEqual(pathlib.Path(out[1]).resolve(), self.d.resolve())
 
+    # ----- Fix round 1: Finding 1, launch gate journals pgid before exec --------------
+
+    def test_child_does_not_execute_before_on_start(self):
+        times = {}
+        def on_start(pgid):
+            times["pgid"] = pgid
+            time.sleep(0.5)
+            times["done"] = time.time()
+        r = procs.run_stage(
+            [sys.executable, "-c",
+             "import time,pathlib; pathlib.Path('t').write_text(str(time.time()))"],
+            cwd=self.d, timeout_s=10, env=None,
+            stdout_path=self.d/"out", stderr_path=self.d/"err", on_start=on_start)
+        self.assertEqual(r.returncode, 0)
+        ts = float((self.d / "t").read_text())
+        self.assertGreaterEqual(ts, times["done"])
+
+    def test_on_start_exception_prevents_execution(self):
+        captured = {}
+        def on_start(pgid):
+            captured["pgid"] = pgid
+            raise RuntimeError("boom")
+        with self.assertRaises(RuntimeError):
+            procs.run_stage(
+                [sys.executable, "-c",
+                 "import pathlib; pathlib.Path('sentinel').write_text('ran')"],
+                cwd=self.d, timeout_s=10, env=None,
+                stdout_path=self.d/"out", stderr_path=self.d/"err", on_start=on_start)
+        self.assertFalse((self.d / "sentinel").exists())
+        time.sleep(0.2)
+        self.assertFalse(procs.group_alive(captured["pgid"]))
+
+
+class GroupStateTests(unittest.TestCase):
+    def test_group_state_dead_for_reaped_process(self):
+        p = subprocess.Popen([sys.executable, "-c", "import os; print(os.getpid())"],
+                             start_new_session=True, stdout=subprocess.PIPE, text=True)
+        pgid, _ = os.getpgid(p.pid), p.communicate()
+        p.wait()
+        self.assertEqual(procs.group_state(pgid), "dead")
+
+    def test_group_state_alive_for_live_group(self):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                             start_new_session=True)
+        pgid = os.getpgid(p.pid)
+        try:
+            self.assertEqual(procs.group_state(pgid), "alive")
+        finally:
+            procs.kill_group(pgid, grace_s=0.5, reap=p)
+
+
 if __name__ == "__main__":
     unittest.main()

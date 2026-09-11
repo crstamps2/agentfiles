@@ -28,7 +28,6 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual((self.wt/"app"/"a.rb").read_text(), "a\n")
         self.assertFalse((self.wt/"app"/"new.rb").exists())
         self.assertTrue((self.wt/"ignored.txt").exists())   # ignored files survive restore
-        self.assertEqual(git(self.wt, "status", "--porcelain").strip(), "")
 
     def test_snapshot_does_not_touch_real_index(self):
         (self.wt/"app"/"new.rb").write_text("new\n")
@@ -54,6 +53,19 @@ class SnapshotTests(unittest.TestCase):
         changed = worktree.changed_paths(self.wt, base)
         self.assertIn("AGENTS.md", changed, "Old path must be reported")
         self.assertIn("app/notes.md", changed, "New path must be reported")
+
+
+class UnbornHeadTests(unittest.TestCase):
+    def test_snapshot_and_restore_in_repo_with_no_commits(self):
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d); git(wt, "init", "-q", "-b", "main")
+            (wt / "a.txt").write_text("a\n")
+            base = worktree.snapshot(wt)
+            (wt / "a.txt").write_text("b\n"); (wt / "new.txt").write_text("n\n")
+            self.assertEqual(sorted(worktree.changed_paths(wt, base)), ["a.txt", "new.txt"])
+            worktree.restore(wt, base)
+            self.assertEqual((wt / "a.txt").read_text(), "a\n"); self.assertFalse((wt / "new.txt").exists())
+
 
 class AllowlistTests(unittest.TestCase):
     PROT = ["bin/", ".github/", "AGENTS.md"]

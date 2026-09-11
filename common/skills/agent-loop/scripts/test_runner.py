@@ -321,7 +321,8 @@ class RunnerHarness(unittest.TestCase):
         self.extra_env = {"AL_OUTSIDE": str(outside)}
         outcome, rows = self.run_task("plant_verify_symlink")
         self.assertEqual(outside.read_text(), "keep")
-        self.assertIn(rows[0]["outcome"], ("rejected", "protocol"))
+        self.assertEqual(rows[0]["outcome"], "protocol")
+        self.assertIn("pre-created verification artifact", rows[0]["reason"])
 
     def test_recovery_with_unkillable_group_fences_and_pauses(self):
         # Simulate: attempt.json says running with a live pgid; kill_group reports failure.

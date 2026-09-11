@@ -101,6 +101,23 @@ class RunStageTests(unittest.TestCase):
         self.assertEqual(outside.read_text(), "keep")
         self.assertFalse(sentinel.exists())
 
+    def test_stderr_open_failure_cleans_up_stdout_log(self):
+        stderr_path = self.d / "err"
+        stdout_path = self.d / "out"
+        # Pre-create stderr_path as a regular file to trigger LogPathExists on stderr open
+        stderr_path.write_text("preexisting")
+        sentinel = self.d / "sentinel"
+        with self.assertRaises(procs.LogPathExists):
+            procs.run_stage(
+                [sys.executable, "-c",
+                 f"import pathlib; pathlib.Path({str(sentinel)!r}).write_text('ran')"],
+                cwd=self.d, timeout_s=10, env=None,
+                stdout_path=stdout_path, stderr_path=stderr_path)
+        # Verify stdout file was cleaned up
+        self.assertFalse(stdout_path.exists())
+        # Verify command did not execute
+        self.assertFalse(sentinel.exists())
+
 
 class GroupStateTests(unittest.TestCase):
     def test_group_state_dead_for_reaped_process(self):

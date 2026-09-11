@@ -186,6 +186,21 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(metrics.read_all(self.cfg.state_root)[-1]["outcome"], "accepted")
 
+    def test_paused_two_task_cli_resume_preserves_first_task_history(self):
+        tasks_toml = self.cfg.state_root.parent / "tasks2.toml"
+        tasks_toml.write_text(TASKS + TASKS.replace('id = "001"', 'id = "002"').replace("touch", "touch2"))
+        t = state.load(self.cfg.ticket_dir("DRY-1")); t.worktree = str(self.wt)
+        for s in ("spinup", "plan", "plan-review", "implement", "paused"): t = state.transition(t, s)
+        state.save(self.cfg.ticket_dir("DRY-1"), t)
+        with patch("runner.procs.run_stage", side_effect=self.launcher):
+            self.scenarios = ["pass", "pass"]
+            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                              "--worktree", str(self.wt), "--tasks", str(tasks_toml)])
+        self.assertEqual(rc, 0)
+        saved = state.load(self.cfg.ticket_dir("DRY-1"))
+        self.assertEqual(len([k for k in saved.attempts if k.startswith("001@")]), 1)
+        self.assertEqual(len([k for k in saved.attempts if k.startswith("002@")]), 1)
+
     def test_status_cli_prints_ticket_states(self):
         import io, contextlib
         buf = io.StringIO()

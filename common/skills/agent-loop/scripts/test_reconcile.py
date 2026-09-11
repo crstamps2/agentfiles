@@ -393,6 +393,56 @@ class ReconcilePart2TestCase(ReconcileTestCase):
                               FakeAgent(), arm, rung, "run-abc")
 
 
+class FenceCarriesExplicitProcTests(ReconcilePart2TestCase):
+    """Fix round 1, finding 2: `_attempt` transitions a stage to STAGE_DONE with `proc=None`
+    (the record's own `proc` field is cleared once a stage completes; the stage's own proc
+    dict lives on the stage entry) before ever calling fence() on an unverified termination.
+    Without an explicit `proc` argument, fence() would serialize `rec.proc` -- already null
+    at that point -- and the next reconcile() would treat the fence as corrupt ("proc must
+    be a dict, not null") forever, instead of fencing the actual process group."""
+
+    def test_fence_with_explicit_proc_writes_it_instead_of_rec_proc(self):
+        stage_proc = {"boot_id": "other-boot", "pgid": 424242, "pid": 424242,
+                     "start_time": "x", "cmd": "y"}
+        rec = self._create()
+        rec = attempt.transition(rec, "LAUNCHING",
+                                 stages=[{"kind": "worker", "idx": 0, "proc": None}])
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        stages = [{"kind": "worker", "idx": 0, "proc": stage_proc, "terminated": False,
+                  "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+        self.assertIsNone(rec.proc)   # the record's own proc is null, matching _attempt's flow
+
+        with self.assertRaises(reconcile.FenceExit):
+            reconcile.fence(self.cfg, rec, "termination unverified pgid 424242", proc=stage_proc)
+
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        data = json.loads(fence_path.read_text())
+        self.assertEqual(data["proc"], stage_proc)
+        self.assertIsNotNone(data["proc"])
+
+        # A subsequent reconcile() classifies the (unreachable, foreign-boot-id) proc as
+        # "unknown" -- NOT corrupt -- and exits 3 for that reason, never silently resolving.
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-y")
+        self.assertEqual(cm.exception.code, 3)
+        self.assertNotIn("corrupt", cm.exception.reason)
+        self.assertIn("unknown", cm.exception.reason)
+
+    def test_fence_without_explicit_proc_falls_back_to_rec_proc(self):
+        rec = self._create()
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING",
+                                 proc={"boot_id": "other-boot", "pgid": 1, "pid": 1,
+                                       "start_time": "x", "cmd": "y"})
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        with self.assertRaises(reconcile.FenceExit):
+            reconcile.fence(self.cfg, rec, "no explicit proc given")
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        data = json.loads(fence_path.read_text())
+        self.assertEqual(data["proc"], rec.proc)
+
+
 class GlobalFenceCheckTests(ReconcilePart2TestCase):
     def test_live_runner_lease_raises_fence_exit(self):
         held = locks.Lease(self.cfg.state_root / "locks" / "runner", "runner")

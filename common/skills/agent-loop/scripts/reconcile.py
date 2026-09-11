@@ -22,13 +22,14 @@ RESTORE_OUTCOMES = {"rejected", "protocol", "blocked"}
 
 
 def _ticket_key(rec: attempt_mod.Record) -> str:
-    """`lineage` is `<ticket>/<task.id>`; the ticket key is everything before the first
-    `/`. Task ids and ticket keys are both single path components (validated elsewhere)."""
-    return rec.lineage.split("/", 1)[0]
+    r"""`lineage` is `<ticket>/<task.id>`; the ticket key is everything before the LAST `/`.
+    `task.id` is validated as `^\d{3}$` (always the final path component), but a ticket
+    key is not forbidden from containing `/` itself, so split from the right."""
+    return rec.lineage.rsplit("/", 1)[0]
 
 
 def _task_id(rec: attempt_mod.Record) -> str:
-    _, _, rest = rec.lineage.partition("/")
+    _, _, rest = rec.lineage.rpartition("/")
     return rest or rec.lineage
 
 
@@ -48,17 +49,24 @@ def finalize(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     """Restore the worktree to base_tree iff `rec.outcome` is one that discards the
     worker's tree (rejected/protocol/blocked); otherwise keep it. `diff.patch` is always
     regenerated as `git diff base_tree observed_tree` (regenerable, so overwriting it is
-    always safe) before the record transitions to FINALIZED."""
+    always safe) before the record transitions to FINALIZED.
+
+    Requires `rec.observed_tree` to already be set (recorded at CLASSIFYING, before any
+    restore, per the in-run path in Task 6; the recovery sweep in Task 5 must record it
+    before classifying). Snapshotting it here -- after a possible crash on a prior
+    finalize() attempt that already restored the tree -- would silently diff base_tree
+    against itself and lose the worker's pre-restore diff forever, so we refuse instead of
+    guessing: no restore, no patch write, and the record stays CLASSIFIED."""
     if rec.status != "CLASSIFIED":
         raise attempt_mod.IllegalAttemptTransition(
             f"finalize requires CLASSIFIED, got {rec.status}")
+    if rec.observed_tree is None:
+        raise FinalizeFailed(
+            f"{rec.attempt_id}: observed_tree missing; record must be classified with "
+            f"observed_tree set before finalize")
 
     wt = pathlib.Path(rec.worktree)
     observed = rec.observed_tree
-    if observed is None:
-        # Should already be set at CLASSIFYING (before any restore); computed here only
-        # as a defensive fallback for records built by hand (e.g. tests) that skipped it.
-        observed = worktree_mod.snapshot(wt)
 
     if rec.outcome in RESTORE_OUTCOMES:
         worktree_mod.restore(wt, rec.base_tree)
@@ -72,10 +80,7 @@ def finalize(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     patch = _diff_patch(wt, rec.base_tree, observed)
     attempt_mod.safe_rewrite(pathlib.Path(rec.path) / "diff.patch", patch)
 
-    fields = {"tree": tree}
-    if rec.observed_tree is None:
-        fields["observed_tree"] = observed
-    return attempt_mod.transition(rec, "FINALIZED", **fields)
+    return attempt_mod.transition(rec, "FINALIZED", tree=tree)
 
 
 # ---------------------------------------------------------------------------
@@ -145,18 +150,27 @@ def project_lifecycle(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     """Replay the persisted `next_action` onto the ticket's lifecycle state: `block` ->
     blocked, `pause-env`/`fence` -> paused, `none` -> nothing. Idempotent: never
     re-transitions a ticket that is already there (avoids IllegalTransition on replay).
-    Short-circuits entirely if `lifecycle` is already true."""
+    Short-circuits entirely if `lifecycle` is already true.
+
+    `paused` only accepts a transition back to `t.previous` (see state.EDGES), so a
+    `block` replayed onto a paused ticket must first unwind to `previous` in memory before
+    moving on to `blocked`; both transitions are saved as a single `save()` so a crash
+    between them can't leave a `previous`-unwound-but-unsaved ticket on disk. A `blocked`
+    ticket never gets an env-pause -- it's already the more severe state -- so pause-env/
+    fence on a blocked ticket is a no-op, not an IllegalTransition."""
     if rec.lifecycle:
         return rec
     tdir = cfg.ticket_dir(_ticket_key(rec))
     if rec.next_action == "block":
         t = state_mod.load(tdir)
         if t.state != "blocked":
+            if t.state == "paused" and t.previous:
+                t = state_mod.transition(t, t.previous, reason=t.reason)
             t = state_mod.transition(t, "blocked", reason=rec.reason or "")
             state_mod.save(tdir, t)
     elif rec.next_action in ("pause-env", "fence"):
         t = state_mod.load(tdir)
-        if t.state != "paused":
+        if t.state not in ("blocked", "paused"):
             t = state_mod.transition(t, "paused", reason=rec.reason or "")
             state_mod.save(tdir, t)
     # "none" -> nothing to replay.

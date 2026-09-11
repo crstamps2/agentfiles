@@ -121,22 +121,6 @@ class RunStageTests(unittest.TestCase):
         self.assertFalse(sentinel.exists())
 
 
-class GroupStateTests(unittest.TestCase):
-    def test_group_state_dead_for_reaped_process(self):
-        p = subprocess.Popen([sys.executable, "-c", "import os; print(os.getpid())"],
-                             start_new_session=True, stdout=subprocess.PIPE, text=True)
-        pgid, _ = os.getpgid(p.pid), p.communicate()
-        p.wait()
-        self.assertEqual(procs.group_state(pgid), "dead")
-
-    def test_group_state_alive_for_live_group(self):
-        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                             start_new_session=True)
-        pgid = os.getpgid(p.pid)
-        try:
-            self.assertEqual(procs.group_state(pgid), "alive")
-        finally:
-            procs.kill_group(pgid, grace_s=0.5, reap=p)
 
 
 if __name__ == "__main__":

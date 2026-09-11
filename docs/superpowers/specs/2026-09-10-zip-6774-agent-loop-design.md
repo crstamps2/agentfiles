@@ -100,8 +100,8 @@ extended).
 | Role | Model tier | Model(s) | Responsibility |
 | --- | --- | --- | --- |
 | Flagship planner | `flagship-author` / `flagship-critic` | `anthropic/claude-fable-5-1`, `openai-codex/gpt-6-astra` | Evidence-backed plan, design decisions, adversarial plan review, PR-comment judgment. One authors, the other critiques. Assignment is deterministic: tickets are numbered in hopper order; odd tickets get Fable as author and Astra as critic, even tickets the reverse. The assignment is recorded in `state.json` and reused for that ticket's PR-comment judgment, so the critic is always the vendor that did not write the plan. |
-| Cloud cheap worker | `cloud-worker` | Ollama Cloud on the **Free plan**. Candidates: `glm-5.3-flash` (visual), `deepseek-v4-flash` (non-visual), `gpt-oss:20b` (cheapest, and identical weights to a local candidate). Which of these the free starter set actually exposes is discovered in slice 1. | Implement one bounded task from an approved plan. Never makes design decisions. |
-| Local cheap worker | `local-worker` | Local Ollama, one model within the residency budget. Candidate pool: `gpt-oss:20b` (preferred if it fits: same weights as a cloud candidate gives a like-for-like local-vs-cloud comparison), else a 14B-class coder at Q4 (`qwen3-coder` / `devstral` class). Chosen in slice 1 by measured fit and tool-calling reliability; reason recorded. | Same contract as the cloud worker. Runs only when the heavy lane is idle; unloaded before gates. |
+| Cloud cheap worker | `cloud-worker` | `ollama-cloud/gpt-oss:20b` on the **Free plan** (slice 1: `deepseek-v4-flash` and `glm-5.3-flash` return HTTP 402 without purchased credits; `gpt-oss:20b` is served, calls tools, and reports usage). Same weights as the local arm, so hosting is the only variable. | Implement one bounded task from an approved plan. Never makes design decisions. |
+| Local cheap worker | `local-worker` | `ollama-local/gpt-oss-ctx32k:20b` — chosen in slice 1 over `qwen3:14b` (2.4× slower, over the pressure threshold, broken usage metadata), `qwen2.5-coder:14b` (no native tool call), and `gemma3:12b` (Ollama: no tool support). **Runs first** in the arm rotation (Cody: overnight runs trade wall time for $0). | Same contract as the cloud worker. Runs only when the heavy lane is idle; unloaded (`ollama stop`) before gates. |
 | Premium fallback | `specialist` | `openai-codex/gpt-5.6-terra` -> `anthropic/claude-sonnet-5` | One attempt per task after cheap attempts fail. Budget-enforced. |
 | Runner | none (deterministic Python) | -- | Selects tickets, dispatches stages, runs gates, decides pass/fail, checkpoints, logs, pauses. |
 | Comms | existing `comms-coordinator` | per its definition | Authors every GitHub comment. Appends the AI-disclosure footer. |
@@ -499,12 +499,23 @@ Claude processes already resident.
 - **Admission thresholds** (initial values, tuned in slice 6, all in
   `hopper.toml`): defer a heavy stage when `memory_pressure` reports warn or
   critical, or compressor-occupied pages exceed 25% of physical memory; when
-  `pmset -g therm` reports CPU speed limit below 100; when on battery; when
-  free disk is below 20 GB; when 1-minute load exceeds core count. Maximum
+  the thermal signal is serious or critical — primary source
+  `NSProcessInfo.thermalState` (0 nominal, 1 fair, 2 serious, 3 critical, read
+  via `osascript -l JavaScript`; slice 1 found that `pmset -g therm` prints no
+  `CPU_Speed_Limit` line and `machdep.xcpm.cpu_thermal_level` does not exist on
+  the M4 Air), with xcpm level and pmset speed limit as secondary sources; an
+  unknown thermal reading (all three unavailable) fails closed; when on
+  battery; when free disk is below 20 GB; when 1-minute load exceeds core count. Maximum
   defer is 30 minutes, after which the ticket is paused with reason
   `resource` and the runner tries a light-lane task instead.
-- **Local model residency budget**: ~10 GB resident (14B-class at Q4 or
-  smaller). Larger models are not eligible in the pilot. The dashboard shows
+- **Local model residency budget**: ≤ 12 GB resident, verified in slice 1 by
+  `gpt-oss-ctx32k:20b` holding peak compressor at 24% (threshold 25%)
+  alongside the machine's baseline. Larger models are not eligible in the
+  pilot (`qwen3:14b` at 14 GB reached 30% and is excluded). **Local models
+  MUST be ctx-pinned derived models** (`FROM <base>` + `PARAMETER num_ctx
+  32768`, named `*-ctx32k:*`); Ollama's default 4K context silently truncates
+  pi's ~11K system prompt so the worker never sees its tools. `hopper.toml`
+  `[local].model` is validated against that naming. The dashboard shows
   peak compressor pages and thermal state during local-inference stages; if
   either trips the admission thresholds repeatedly, the runner pins the ticket
   to `cloud-worker` and alerts. The Ollama daemon itself is stopped

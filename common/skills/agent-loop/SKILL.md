@@ -17,10 +17,11 @@ All run from anywhere; `--config` defaults to this skill's `hopper.toml`.
 - **Run-once** (Plan 1 stub) -- `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py run-once`
   performs no work; ticket selection is not wired until Plan 3.
 - **Dry run** (no models, no Jira, fake worker):
-  `python3 .../runner.py dry-run --worktree <path> --tasks <tasks.toml> [--scenario <name>] [--ticket <KEY>]`
+  `python3 .../runner.py dry-run --worktree <path> --tasks <tasks.toml> [--scenario <name>] [--ticket <KEY>] [--skip-admission]`
   Scenarios: `pass fail malformed escape env_escape tests timeout owner env pass_on_feedback`.
   The CLI always replaces `pi` with the bundled fake worker; it never launches a real model.
   Manifest verification commands still run in the scratch worktree.
+  - `--skip-admission`: For tests and demos on a loaded machine; never for real runs. Bypasses the admission controller's resource checks (compressor, load, memory pressure, thermal state, disk) and allows the task to proceed unconditionally. Defaults to off (admission is enforced).
 
 ## State on disk
 

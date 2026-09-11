@@ -4,11 +4,19 @@ these functions recompute each projection idempotently from a CLASSIFIED/FINALIZ
 `attempt.Record` and are safe to re-run after a crash at any point.
 """
 from __future__ import annotations
+import dataclasses
+import json
 import pathlib
 import subprocess
+import tomllib
 
 import attempt as attempt_mod
+import contracts
+import ladder as ladder_mod
+import locks
 import metrics as metrics_mod
+import procid as procid_mod
+import procs as procs_mod
 import state as state_mod
 import worktree as worktree_mod
 
@@ -185,3 +193,253 @@ def project_all(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     rec = project_metrics(cfg, rec)
     rec = project_lifecycle(cfg, rec)
     return attempt_mod.maybe_project(rec)
+
+
+# ---------------------------------------------------------------------------
+# Reconcile part 2: FenceExit, fence()/interrupt(), the global sweep, and the
+# RunContext produced by reconcile(). See the design's "Recovery: global, before
+# any dispatch" section.
+# ---------------------------------------------------------------------------
+
+class FenceExit(SystemExit):
+    """Raised whenever recovery cannot proceed without an operator: exits the process with
+    code 3 (fail closed). `.reason` carries the human-readable cause; `.code` is always 3
+    regardless of the reason text, so callers can distinguish "this is a fence exit" from an
+    ordinary SystemExit purely by `isinstance`, and every caller can assert `.code == 3`."""
+    def __init__(self, reason: str):
+        super().__init__(3)
+        self.reason = reason
+
+
+def _fence_path(cfg) -> pathlib.Path:
+    return pathlib.Path(cfg.state_root) / "locks" / "heavy.fence"
+
+
+def fence(cfg, rec: attempt_mod.Record, reason: str) -> None:
+    """Transition the attempt FENCING -> write the fence file (safe_write: O_EXCL, never
+    overwrites) -> transition ORPHANED -> raise FenceExit. The two transitions bracket the
+    single admitted cross-file ordering (fence-file-then-ORPHANED); a crash between them
+    leaves FENCING with no fence file, which the sweep (and the global fence check) both
+    treat as "exit 3" on the next run -- never silently resolved."""
+    rec = attempt_mod.transition(rec, "FENCING")
+    fp = _fence_path(cfg)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"attempt_dir": str(rec.path), "proc": rec.proc, "reason": reason})
+    attempt_mod.safe_write(fp, payload)
+    attempt_mod.transition(rec, "ORPHANED")
+    raise FenceExit(reason)
+
+
+def interrupt(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
+    """Drive a non-terminal attempt found with no live group to INTERRUPTED: verify repo_id
+    (a mismatch means the worktree at this path is no longer the repo this attempt belongs
+    to -- exit 3, nothing restored), snapshot the tree as found, restore to base_tree, and
+    verify the restore converged before recording anything.
+
+    Sequencing note: a single INTERRUPTED transition carries `observed_tree`, `outcome`,
+    `next_action`, and `tree="restored"` together, written only AFTER restore+verify
+    succeed in memory -- two INTERRUPTED transitions are illegal (attempt.NEXT has no
+    INTERRUPTED -> INTERRUPTED edge), so the observed/outcome/tree fields cannot be split
+    across two writes. The one accepted loss this creates: if the process crashes after a
+    successful restore+verify but before this transition is durably written, the pre-restore
+    diff for that specific window is lost on the next run (the tree is re-snapshotted, which
+    now equals base_tree, restore/verify are harmless no-ops, and the transition proceeds --
+    but the pre-restore diff itself is gone). This is distinct from -- and narrower than --
+    the CLASSIFIED/FINALIZED window that `observed_tree` already fixes for the normal path
+    (finalize() requires observed_tree to be set before it ever runs)."""
+    wt = pathlib.Path(rec.worktree)
+    try:
+        actual_repo_id = attempt_mod._repo_id(wt)
+    except ValueError as e:
+        raise FenceExit(f"{rec.attempt_id}: repo_id check failed: {e}")
+    if actual_repo_id != rec.repo_id:
+        raise FenceExit(f"{rec.attempt_id}: repo_id mismatch: recorded {rec.repo_id!r} "
+                        f"!= actual {actual_repo_id!r} for {wt}")
+    observed = worktree_mod.snapshot(wt)
+    worktree_mod.restore(wt, rec.base_tree)
+    if not worktree_mod.verify_restored(wt, rec.base_tree):
+        raise FenceExit(f"{rec.attempt_id}: restore did not converge to base_tree")
+    rec = attempt_mod.transition(rec, "INTERRUPTED", observed_tree=observed, outcome="interrupted",
+                                 next_action="none", tree="restored")
+    return project_all(cfg, rec)
+
+
+def _load_task(adir: pathlib.Path) -> contracts.Task:
+    with open(adir / "task.toml", "rb") as f:
+        d = tomllib.load(f)
+    field_names = {f.name for f in dataclasses.fields(contracts.Task)}
+    return contracts.Task(**{k: v for k, v in d.items() if k in field_names})
+
+
+def _ladder_history(cfg, rec: attempt_mod.Record) -> tuple[list, int]:
+    """Prior attempts on this lineage, as ladder.Attempt objects, plus the trailing run of
+    `environment` outcomes -- the same shape the in-run path threads through `next_action`."""
+    tdir = cfg.ticket_dir(_ticket_key(rec))
+    t = state_mod.load(tdir)
+    entries = t.attempts.get(rec.lineage, [])
+    history = [ladder_mod.Attempt(ladder_mod.Rung(**e["rung"]), e["outcome"])
+               for e in entries if e.get("outcome") in ladder_mod.OUTCOMES]
+    env_failures = 0
+    for e in reversed(entries):
+        if e.get("outcome") == "environment":
+            env_failures += 1
+        else:
+            break
+    return history, env_failures
+
+
+def _reap_proc(cfg, rec: attempt_mod.Record) -> None:
+    """For a LAUNCHING/RUNNING/STAGE_DONE record with a recorded proc: classify it. Only
+    `dead` (either immediately, or after we kill an `ours-alive` group and it dies) lets the
+    caller proceed; `unknown`, or `ours-alive` that survives the kill attempt, is fenced --
+    never signaled twice, never assumed dead without re-checking."""
+    status = procid_mod.classify(procid_mod.ProcId.from_dict(rec.proc))
+    if status == "ours-alive":
+        procs_mod.kill_group(rec.proc["pgid"])
+        status = procid_mod.classify(procid_mod.ProcId.from_dict(rec.proc))
+    if status != "dead":
+        fence(cfg, rec, f"{rec.attempt_id}: proc is {status} after recovery attempt")
+
+
+def _reconcile_stage_done(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
+    """A STAGE_DONE record whose last stage timed out with a clean allowlist keeps the
+    parent spec's timeout-keeps-tree rule: classify it as `timeout` ourselves (recovery, not
+    the runner, is doing the classifying here) and finalize -- the tree is KEPT, not
+    restored. Anything else in STAGE_DONE (no timeout, or a timeout with violations) becomes
+    INTERRUPTED like any other non-terminal record."""
+    last_stage = rec.stages[-1] if rec.stages else None
+    if last_stage and last_stage.get("timed_out"):
+        wt = pathlib.Path(rec.worktree)
+        changed = worktree_mod.changed_paths(wt, rec.base_tree)
+        task = _load_task(pathlib.Path(rec.path))
+        violations = worktree_mod.check_allowlist(changed, task, cfg.protected_paths, cfg.test_path_globs)
+        if not violations:
+            observed = worktree_mod.snapshot(wt)
+            rec = attempt_mod.transition(rec, "CLASSIFYING", observed_tree=observed)
+            history, env_failures = _ladder_history(cfg, rec)
+            na = ladder_mod.next_action(history, rec.arm, "timeout", env_failures)
+            rec = attempt_mod.transition(rec, "CLASSIFIED", outcome="timeout",
+                                         reason="stage timeout (recovered)",
+                                         changed_paths=changed, violations=violations,
+                                         next_action=na)
+            rec = finalize(cfg, rec)
+            return project_all(cfg, rec)
+    return interrupt(cfg, rec)
+
+
+def _reconcile_orphaned(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
+    """By the time the sweep reaches an ORPHANED record, the global fence check (step 1 of
+    reconcile()) has already resolved (or exited on) any fence file that exists -- so an
+    ORPHANED record encountered here has no fence protecting it. Re-fence unless the group
+    has since died, in which case complete the INTERRUPTED path directly."""
+    status = procid_mod.classify(procid_mod.ProcId.from_dict(rec.proc) if rec.proc else None)
+    if status == "dead":
+        return interrupt(cfg, rec)
+    fence(cfg, rec, f"{rec.attempt_id}: ORPHANED re-fenced (fence file missing)")
+
+
+def _reconcile_one(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
+    if rec.status == "FENCING":
+        raise FenceExit(f"{rec.attempt_id}: found FENCING with no fence file (torn fence write)")
+    if rec.status in ("LAUNCHING", "RUNNING", "STAGE_DONE") and rec.proc:
+        _reap_proc(cfg, rec)   # raises FenceExit unless the group is now provably dead
+    if rec.status == "STAGE_DONE":
+        return _reconcile_stage_done(cfg, rec)
+    if rec.status in ("CREATED", "LAUNCHING", "RUNNING", "CLASSIFYING"):
+        return interrupt(cfg, rec)
+    if rec.status == "CLASSIFIED":
+        rec = finalize(cfg, rec)
+        return project_all(cfg, rec)
+    if rec.status == "FINALIZED":
+        return project_all(cfg, rec)
+    if rec.status == "ORPHANED":
+        return _reconcile_orphaned(cfg, rec)
+    if rec.status in ("INTERRUPTED", "PROJECTED"):
+        return project_all(cfg, rec)
+    return rec
+
+
+def _check_global_fence(cfg) -> None:
+    """Step 1 of recovery. If `locks/heavy.fence` exists: classify its proc. `ours-alive` or
+    `unknown` -> exit 3 (an operator must run clear-fence). `dead` -> the referenced attempt
+    (which must still be ORPHANED) is driven through INTERRUPTED and only then is the fence
+    file removed -- the fence is never simply deleted out from under a still-ORPHANED
+    record. Any malformed field (bad JSON, missing attempt_dir, an attempt_dir that doesn't
+    resolve under `attempts/`, or a referenced attempt that isn't ORPHANED or is unreadable)
+    is corrupt -> exit 3."""
+    fp = _fence_path(cfg)
+    try:
+        text = fp.read_text()
+    except FileNotFoundError:
+        return
+    try:
+        data = json.loads(text)
+        attempt_dir_str = data["attempt_dir"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        raise FenceExit("corrupt fence: unparseable")
+    proc = data.get("proc")
+    status = procid_mod.classify(procid_mod.ProcId.from_dict(proc) if proc else None)
+    if status in ("ours-alive", "unknown"):
+        raise FenceExit(f"fenced: referenced proc is {status}")
+    attempts_root = (pathlib.Path(cfg.state_root) / "attempts").resolve()
+    try:
+        adir = pathlib.Path(attempt_dir_str).resolve()
+    except OSError:
+        raise FenceExit("corrupt fence: unresolvable attempt_dir")
+    try:
+        adir.relative_to(attempts_root)
+    except ValueError:
+        raise FenceExit(f"corrupt fence: attempt_dir {adir} is outside {attempts_root}")
+    try:
+        rec = attempt_mod.load(adir)
+    except attempt_mod.UnreadableRecord as e:
+        raise FenceExit(f"corrupt fence: unreadable referenced attempt: {e}")
+    if rec.status != "ORPHANED":
+        raise FenceExit(f"corrupt fence: referenced attempt is not ORPHANED (status={rec.status})")
+    interrupt(cfg, rec)
+    fp.unlink()
+
+
+def _sweep(cfg) -> None:
+    """Step 2 of recovery: every attempt dir under `attempts/`, all tickets, all tasks,
+    sorted by mtime. A record this recovery cannot understand (unreadable/corrupt/legacy)
+    is never skipped -- it exits 3 and waits for an operator."""
+    paths = sorted(pathlib.Path(cfg.state_root).glob("attempts/*/*/*/attempt.json"),
+                   key=lambda p: p.stat().st_mtime)
+    for p in paths:
+        adir = p.parent
+        try:
+            rec = attempt_mod.load(adir)
+        except attempt_mod.UnreadableRecord as e:
+            raise FenceExit(f"unreadable record: {adir}: {e}")
+        _reconcile_one(cfg, rec)
+
+
+@dataclasses.dataclass
+class RunContext:
+    """The only way to obtain one is `reconcile(cfg, run_id)`. Holds the global runner lease
+    for the life of the run; the caller releases it via `close()` (or the lease's own
+    context-manager protocol) once done."""
+    cfg: object
+    run_id: str
+    lease: locks.Lease
+
+    def close(self) -> None:
+        self.lease.release()
+
+
+def reconcile(cfg, run_id) -> RunContext:
+    """The single global recovery entry point, run under the global runner lease before any
+    ticket selection, admission, or dispatch. `_recover` no longer exists: this is the one
+    `reconcile(state_root)` the design calls for, and `implement_task` requires a
+    `RunContext` produced by it."""
+    lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "runner", "runner")
+    if not lease.acquire(hold=True):
+        raise FenceExit("runner live")
+    try:
+        _check_global_fence(cfg)
+        _sweep(cfg)
+    except BaseException:
+        lease.release()
+        raise
+    return RunContext(cfg, run_id, lease)

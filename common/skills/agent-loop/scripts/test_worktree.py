@@ -28,6 +28,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual((self.wt/"app"/"a.rb").read_text(), "a\n")
         self.assertFalse((self.wt/"app"/"new.rb").exists())
         self.assertTrue((self.wt/"ignored.txt").exists())   # ignored files survive restore
+        self.assertEqual(git(self.wt, "status", "--porcelain").strip(), "")
 
     def test_snapshot_does_not_touch_real_index(self):
         (self.wt/"app"/"new.rb").write_text("new\n")

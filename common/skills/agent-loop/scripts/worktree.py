@@ -20,6 +20,12 @@ def head(wt) -> str:
     return _git(wt, "rev-parse", "HEAD").strip()
 
 
+def _has_head(wt) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--verify", "-q", "HEAD"], capture_output=True
+    ).returncode == 0
+
+
 def snapshot(wt) -> str:
     """Tree OID of the current working state using a throwaway index (real index untouched)."""
     with tempfile.NamedTemporaryFile(prefix="al-index-", delete=False) as tf:
@@ -28,8 +34,10 @@ def snapshot(wt) -> str:
         os.unlink(idx)
         env = {**os.environ, "GIT_INDEX_FILE": idx}
         # A new index otherwise has no tracked ignored entries, causing an ignored
-        # file that is nevertheless tracked to disappear from a snapshot.
-        _git(wt, "read-tree", "HEAD", env=env)
+        # file that is nevertheless tracked to disappear from a snapshot. On an unborn
+        # HEAD (no commits yet) there is nothing to seed.
+        if _has_head(wt):
+            _git(wt, "read-tree", "HEAD", env=env)
         _git(wt, "add", "-A", env=env)
         return _git(wt, "write-tree", env=env).strip()
     finally:
@@ -54,7 +62,9 @@ def restore(wt, tree: str) -> None:
     _git(wt, "read-tree", "--reset", "-u", tree)
     _git(wt, "clean", "-fd")            # remove untracked (non-ignored) leftovers
     # read-tree left the real index pointing at `tree`; put it back to HEAD so status is sane.
-    _git(wt, "reset", "-q")
+    # On an unborn HEAD, `git reset` fails (there is no HEAD to reset to) and is unneeded.
+    if _has_head(wt):
+        _git(wt, "reset", "-q")
 
 
 def _match(path: str, pattern: str) -> bool:

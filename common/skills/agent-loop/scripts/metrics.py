@@ -10,10 +10,17 @@ def append(state_root, row: dict) -> None:
     p = pathlib.Path(state_root) / "metrics.jsonl"
     row = dict(row)
     row.setdefault("ts_utc", dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    with open(p, "a") as f:
+    with open(p, "a+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
-        f.write(json.dumps(row, sort_keys=True) + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
+        try:
+            f.seek(0); data = f.read()
+            if data and not data.endswith("\n"):
+                # torn final append: drop it (it is an unpublished row.json's job to republish)
+                keep = data[: data.rfind("\n") + 1]
+                f.seek(0); f.truncate(); f.write(keep); f.flush()
+            f.write(json.dumps(row, sort_keys=True) + "\n")
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def read_all(state_root) -> list:

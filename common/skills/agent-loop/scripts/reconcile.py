@@ -217,16 +217,24 @@ def _fence_path(cfg) -> pathlib.Path:
     return pathlib.Path(cfg.state_root) / "locks" / "heavy.fence"
 
 
-def fence(cfg, rec: attempt_mod.Record, reason: str) -> None:
+def fence(cfg, rec: attempt_mod.Record, reason: str, proc: dict | None = None) -> None:
     """Transition the attempt FENCING -> write the fence file (safe_write: O_EXCL, never
     overwrites) -> transition ORPHANED -> raise FenceExit. The two transitions bracket the
     single admitted cross-file ordering (fence-file-then-ORPHANED); a crash between them
     leaves FENCING with no fence file, which the sweep (and the global fence check) both
-    treat as "exit 3" on the next run -- never silently resolved."""
+    treat as "exit 3" on the next run -- never silently resolved.
+
+    `proc`, if given, is written into the fence file instead of `rec.proc`. This matters
+    because `_attempt` transitions a stage to STAGE_DONE with `proc=None` (the stage's own
+    proc dict is preserved on the stage entry, not on the record) before ever calling
+    fence() on an unverified termination -- without this parameter, the fence would
+    serialize `rec.proc` (already null at that point) and the next reconcile would treat
+    the fence as corrupt ("proc must be a dict, not null") forever, instead of fencing the
+    actual process group."""
     rec = attempt_mod.transition(rec, "FENCING")
     fp = _fence_path(cfg)
     fp.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"attempt_dir": str(rec.path), "proc": rec.proc, "reason": reason})
+    payload = json.dumps({"attempt_dir": str(rec.path), "proc": proc if proc is not None else rec.proc, "reason": reason})
     try:
         attempt_mod.safe_write(fp, payload)
     except OSError as e:
@@ -502,16 +510,28 @@ def _sweep(cfg) -> None:
         _reconcile_one(cfg, rec)
 
 
+_TOKEN = object()
+"""Sentinel identifying a RunContext actually produced by reconcile(). A hand-built
+RunContext(cfg, run_id, lease) leaves `_token` at its default (None), which never matches
+this object -- implement_task uses that to refuse any RunContext it did not itself obtain
+from reconcile()."""
+
+
 @dataclasses.dataclass
 class RunContext:
-    """The only way to obtain one is `reconcile(cfg, run_id)`. Holds the global runner lease
-    for the life of the run; the caller releases it via `close()` (or the lease's own
-    context-manager protocol) once done."""
+    """The only way to obtain a *valid* one is `reconcile(cfg, run_id)`, which stamps
+    `_token` with the module-level `_TOKEN` sentinel. Holds the global runner lease for the
+    life of the run; the caller releases it via `close()` (or the lease's own
+    context-manager protocol) once done. `closed` is set by `close()` so a caller that
+    stashes a released RunContext and reuses it against `implement_task` is refused."""
     cfg: object
     run_id: str
     lease: locks.Lease
+    closed: bool = False
+    _token: object = None
 
     def close(self) -> None:
+        self.closed = True
         self.lease.release()
 
 
@@ -529,4 +549,4 @@ def reconcile(cfg, run_id) -> RunContext:
     except BaseException:
         lease.release()
         raise
-    return RunContext(cfg, run_id, lease)
+    return RunContext(cfg, run_id, lease, closed=False, _token=_TOKEN)

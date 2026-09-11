@@ -1,5 +1,5 @@
 # test_runner.py
-import json, os, pathlib, re, subprocess, sys, tempfile, unittest
+import json, os, pathlib, re, subprocess, sys, tempfile, threading, unittest
 from unittest.mock import patch
 import config, contracts, metrics, procs, runner, state, worktree
 
@@ -299,6 +299,46 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rows[0]["outcome"], "environment")
         self.assertIn("verification timeout", rows[0]["reason"])
         self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())
+
+    def test_recovery_with_unkillable_group_fences_and_pauses(self):
+        # Simulate: attempt.json says running with a live pgid; kill_group reports failure.
+        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; root.mkdir(parents=True)
+        sleeper = subprocess.Popen(["sleep", "60"], start_new_session=True); pgid = os.getpgid(sleeper.pid)
+        (root / "attempt.json").write_text(json.dumps({"status": "running", "pgid": pgid}))
+        with patch("runner.procs.kill_group", return_value=False):
+            outcome, rows = self.run_task("pass")
+        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
+        fence = json.loads((self.cfg.state_root / "locks" / "heavy.fence").read_text())
+        self.assertEqual(fence["pgid"], pgid)
+        t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertIn("fenced", t.reason)
+        sleeper.kill(); sleeper.wait()
+
+    def test_recovery_kills_live_group_then_proceeds(self):
+        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; root.mkdir(parents=True)
+        sleeper = subprocess.Popen(["sleep", "60"], start_new_session=True); pgid = os.getpgid(sleeper.pid)
+        threading.Thread(target=sleeper.wait, daemon=True).start()  # reap promptly, like a real supervisor would
+        (root / "attempt.json").write_text(json.dumps({"status": "running", "pgid": pgid}))
+        (root / "result.md").write_text("STATUS: pass\nREASON: none\n")      # stale claim must never be read
+        outcome, rows = self.run_task("fail", "pass")
+        self.assertFalse(procs.group_alive(pgid))
+        self.assertEqual(json.loads((root / "attempt.json").read_text())["status"], "interrupted")
+        self.assertEqual([r["outcome"] for r in rows if r["stage"] == "implement" and r.get("attempt") != 1],
+                         ["rejected", "accepted"])            # stale pass was NOT consumed; real attempts ran
+        self.assertEqual(rows[0]["outcome"], "interrupted")
+
+    def test_verification_stage_writes_pgid_to_attempt_json(self):
+        seen = {}
+        real = procs.run_stage
+        def spy(argv, cwd, timeout_s, env, out, err, on_start=None):
+            if argv[:2] == ["/bin/sh", "-c"]:
+                seen["on_start"] = on_start
+            return real(argv, cwd, timeout_s, env, out, err, on_start=on_start)
+        with patch("runner.procs.run_stage", side_effect=spy):
+            self.run_task("pass")
+        self.assertIsNotNone(seen.get("on_start"))
+        adir = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"
+        aj = json.loads((adir / "attempt.json").read_text())
+        self.assertEqual(aj["status"], "completed"); self.assertIn("verify_pgids", aj)
 
 if __name__ == "__main__":
     unittest.main()

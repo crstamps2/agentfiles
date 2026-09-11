@@ -397,5 +397,56 @@ class RunnerHarness(unittest.TestCase):
             rc = runner.main(["--config", cfgfile, "clear-fence", "--force"])
         self.assertEqual(rc, 0); self.assertFalse(fence_path.exists())
 
+    def test_clear_fence_force_marks_running_attempt_orphaned(self):
+        # clear-fence --force must mark the referenced attempt as orphaned before unlinking
+        # the fence, so re-entry doesn't re-fence forever once the fence is cleared.
+        import subprocess, signal
+        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; root.mkdir(parents=True)
+        
+        # Start a live sleeper process to use as pgid, in a separate thread to allow reaping
+        sleeper = subprocess.Popen(["sleep", "30"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        pgid = sleeper.pid
+        # Start a reaper thread so the sleeper can be genuinely reaped
+        threading.Thread(target=sleeper.wait, daemon=True).start()
+        
+        # Create attempt.json with status running
+        (root / "attempt.json").write_text(json.dumps({"status": "running", "pgid": pgid}))
+        
+        # Create fence file
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence_path.parent.mkdir(parents=True, exist_ok=True)
+        fence_data = {"pgid": pgid, "ticket": "ZIP-7873", "task": "001", "attempt": "1",
+                      "reason": "test fence"}
+        fence_path.write_text(json.dumps(fence_data))
+        
+        # Run clear-fence --force
+        cfgfile = str(self.cfg.state_root.parent / "hopper.toml")
+        with patch("runner.procs.group_state", return_value="alive"):
+            rc = runner.main(["--config", cfgfile, "clear-fence", "--force"])
+        
+        # Verify fence was cleared
+        self.assertEqual(rc, 0); self.assertFalse(fence_path.exists())
+        
+        # Verify attempt.json was marked orphaned
+        aj = json.loads((root / "attempt.json").read_text())
+        self.assertEqual(aj["status"], "orphaned")
+        self.assertEqual(aj["orphaned_by"], "clear-fence")
+        
+        # Now run a task; it should succeed without re-fencing
+        # Verify orphaned attempt doesn't interfere with new launches
+        self.scenarios = ["pass"]
+        t = self._fresh_ticket()
+        r = runner.Runner(self.cfg, run_id="test2", pi_launcher=self.launcher)
+        outcome = r.implement_task(t, self.tasks[0], 0, self.wt)
+        self.assertEqual(outcome, "accepted")
+        self.assertEqual(self.launches, 1)
+        self.assertFalse(fence_path.exists())  # no new fence created
+        
+        # Kill the sleeper
+        try:
+            os.kill(sleeper.pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+
 if __name__ == "__main__":
     unittest.main()

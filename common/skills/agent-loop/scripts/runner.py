@@ -167,6 +167,7 @@ class Runner:
                 f"local-worker renders {agent.model} but [local].model is {self.cfg.local_model}")
         try:
             rec = attempt.create(self.cfg, t.key, task, wt, n, agent, arm, rung, self.run_id)
+            reconcile._maybe_crash("after-created")
         except attempt.UnsafePath as e:
             print(f"task {task.id}: unsafe task-level feedback.md, refusing to create attempt {n}: {e}",
                   file=sys.stderr)
@@ -180,9 +181,11 @@ class Runner:
 
         def on_start(pgid, pid):
             holder["rec"] = attempt.transition(holder["rec"], "RUNNING", proc=procid.capture(pid).to_dict())
+            reconcile._maybe_crash("after-running")
 
         rec = attempt.transition(rec, "LAUNCHING", stages=[{"kind": "worker", "idx": 0, "proc": None}],
                                  model=agent.model, tier=rung.tier)
+        reconcile._maybe_crash("after-launching")
         holder["rec"] = rec
         stage = self.launch(argv, wt, timeout, env, rec.path / "stdout.log", rec.path / "stderr.log",
                             on_start=on_start)
@@ -191,6 +194,7 @@ class Runner:
         stages[-1] = {**stages[-1], "proc": rec.proc, "terminated": stage.terminated,
                       "timed_out": stage.timed_out, "rc": stage.returncode, "elapsed_s": stage.elapsed_s}
         rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+        reconcile._maybe_crash("after-stage-done")
 
         if not stage.terminated:
             reconcile.fence(self.cfg, rec, f"termination unverified pgid {stage.pgid}",
@@ -295,6 +299,7 @@ class Runner:
             final_tree = worktree.snapshot(wt)
 
         rec = attempt.transition(rec, "CLASSIFYING", observed_tree=final_tree)
+        reconcile._maybe_crash("after-classifying")
         # Consecutive-environment-failure count INCLUDING this attempt (matching the parent
         # design's "environment pair" pause rule); `env_failures` as threaded in is the
         # trailing count from prior history only.
@@ -304,6 +309,7 @@ class Runner:
                                  violations=violations, next_action=next_action,
                                  verify_seconds=round(verification_seconds, 2), end_utc=_now(),
                                  observed_tree=final_tree)
+        reconcile._maybe_crash("after-classified")
         rec = reconcile.finalize(self.cfg, rec)
         rec = reconcile.project_all(self.cfg, rec)
         return rec.outcome, rec.reason, rec

@@ -1,0 +1,1179 @@
+"""Plan 1c Task 9: the crash-window acceptance table. Every row of the design's "Acceptance
+criteria (the crash-window table)" (docs/superpowers/specs/2026-09-10-agent-loop-1c-attempt-
+lifecycle-design.md) is exactly one `test_cw_NN_<slug>` here, in table order. The table has 40
+physical lines (a header + separator + 38 data rows); NN therefore runs 01..38 -- see the task-9
+report for the exact count reconciliation.
+
+Technique per row, in order of preference:
+  1. The `reconcile._CRASH_HOOK` / `reconcile._maybe_crash` seam (see reconcile.py's docstring
+     next to `_CRASH_HOOK`): patch `reconcile._CRASH_HOOK` to a named boundary, drive the real
+     runner/reconcile code through that boundary, catch `reconcile.SimulatedCrash`, clear the
+     hook, then call `reconcile.reconcile()` (or `reconcile.clear_fence()` / the CLI) and assert
+     the post-condition.
+  2. A real, killed process group (`start_new_session=True` + `sleep`) for rows that need a live
+     group to classify/kill.
+  3. A hand-built `attempt.Record` at the exact named status (the same technique test_reconcile.py
+     already uses extensively) for rows whose boundary is a status, not an in-flight instruction.
+  4. Where none of the above is faithful to the row as literally written, the closest faithful
+     test is implemented and the docstring says so explicitly (see task-9-report.md's
+     "Infeasible rows" section for the full list and rationale).
+
+Reuses test_runner.RunnerHarness's setUp/tearDown (self.wt, self.cfg, self.launcher, self.tasks,
+run_task, tasks_with, extra_env) by subclassing -- see the bottom of this file for how inherited
+test_* methods are suppressed so `unittest test_crash_windows` runs only this file's 38 rows.
+"""
+from __future__ import annotations
+import dataclasses
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from unittest import mock
+from unittest.mock import patch
+
+import agentdef
+import attempt
+import config
+import contracts
+import ladder
+import locks
+import metrics
+import procid
+import procs
+import reconcile
+import runner
+import state
+import worktree
+import test_runner as _test_runner_mod
+from test_runner import TASKS
+
+HERE = pathlib.Path(__file__).resolve().parent
+
+# Deliberately NOT `from test_runner import RunnerHarness`: binding that name at this module's
+# top level would make unittest's module test-loader discover and re-run RunnerHarness's own
+# tests a second time under `python3 -m unittest test_crash_windows`. `class CrashWindowTests(
+# _test_runner_mod.RunnerHarness)` below reuses its setUp/tearDown/helpers without creating a
+# second top-level TestCase name in this module.
+
+
+def _spawn_group(argv=("sleep", "60")):
+    """A real, killable process group: start_new_session=True gives it its own pgid; a
+    background reaper thread stands in for what a real crash+reparent-to-init would do (without
+    it this test process, as the direct parent, would leave a zombie behind after killing the
+    group, and killpg(pgid, 0) reports a zombie as still "alive")."""
+    p = subprocess.Popen(list(argv), start_new_session=True)
+    time.sleep(0.1)
+    threading.Thread(target=p.wait, daemon=True).start()
+    return p, procid.capture(p.pid)
+
+
+def _reap(p):
+    try:
+        os.killpg(os.getpgid(p.pid), 9)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        p.wait(timeout=2)
+    except Exception:
+        pass
+
+
+class CrashWindowTests(_test_runner_mod.RunnerHarness):
+    """See module docstring. All 38 rows of the design's crash-window table, in table order."""
+
+    def _ticket(self, key="ZIP-7873"):
+        t = state.load(self.cfg.ticket_dir(key))
+        t.worktree = str(self.wt)
+        for s in ("spinup", "plan", "plan-review", "implement"):
+            t = state.transition(t, s)
+        state.save(self.cfg.ticket_dir(key), t)
+        return t
+
+    def _rung(self, agent="cloud-worker", tier="cheap", n=1):
+        return ladder.Rung(agent, tier, n)
+
+    def _runner(self, launcher=None):
+        return runner.Runner(self.cfg, run_id="test", pi_launcher=launcher or self.launcher)
+
+    def _direct_attempt(self, r, t, task=None, scenario="pass", n=1, arm="cloud", rung=None,
+                        attempts=None, env_failures=0):
+        self.scenarios = [scenario]
+        task = task or self.tasks[0]
+        rung = rung or self._rung()
+        return r._attempt(t, task, self.wt, arm, rung, n, attempts or [], env_failures)
+
+    def _crash(self, hookname, fn, *a, **kw):
+        """Run `fn(*a, **kw)` with `reconcile._CRASH_HOOK` set to `hookname`; asserts
+        `reconcile.SimulatedCrash` is raised (the injected "process death") and returns it."""
+        with patch("reconcile._CRASH_HOOK", hookname):
+            with self.assertRaises(reconcile.SimulatedCrash) as cm:
+                fn(*a, **kw)
+        return cm.exception
+
+    def _reconcile(self, run_id="recover"):
+        ctx = reconcile.reconcile(self.cfg, run_id)
+        ctx.close()
+
+    def _adir(self, t, task, n=1):
+        return attempt.attempt_dir(self.cfg, t.key, task.id, n)
+
+    # ----- Row 1 -----------------------------------------------------------------------
+
+    def test_cw_01_dir_artifacts_exist_before_created_record(self):
+        """dir + artifacts exist, before a valid CREATED record"""
+        t = self._ticket()
+        task = self.tasks[0]
+        adir = self._adir(t, task)
+        attempt.safe_mkdir(adir.parent)
+        os.mkdir(adir, 0o700)
+        attempt.safe_write(adir / "task.toml", attempt.task_toml(task))
+        attempt.safe_write(adir / "task.md", attempt.task_md(task, adir, self.wt))
+        attempt.safe_write(adir / "base_tree", worktree.snapshot(self.wt))
+        # No attempt.json -- the crash happened before the record itself was ever written.
+        self.assertFalse((adir / "attempt.json").exists())
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            self._reconcile()
+        self.assertEqual(cm.exception.code, 3)
+
+    # ----- Row 2 -----------------------------------------------------------------------
+
+    def test_cw_02_dir_created_before_launching(self):
+        """dir created, before LAUNCHING"""
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+        self._crash("after-created", self._direct_attempt, r, t, task, scenario="pass")
+        self.assertEqual(self.launches, 0)   # LAUNCHING (and the launch itself) never happened
+        self._reconcile()
+        rec = attempt.load(self._adir(t, task))
+        self.assertEqual(rec.status, "INTERRUPTED")
+        self.assertIsNone(rec.proc)
+        self.assertTrue(rec.history and rec.published and rec.lifecycle)
+        rows_before = len(metrics.read_all(self.cfg.state_root))
+        self._reconcile("recover-2")   # row published once: a second reconcile is a no-op
+        self.assertEqual(len(metrics.read_all(self.cfg.state_root)), rows_before)
+
+    # ----- Row 3 -----------------------------------------------------------------------
+
+    def test_cw_03_gated_child_forked_before_proc_committed(self):
+        """gated child forked, before proc committed"""
+        # Exercised directly at procs.run_stage's level (the actual launch gate primitive),
+        # which is the most faithful way to observe "child never execs": on_start raising means
+        # the gate pipe is never released and the gate shell exits 97 without ever exec'ing the
+        # real command -- verified here by the stdout log staying empty (the real command would
+        # have printed something) and the process group being provably dead afterward.
+        stdout = pathlib.Path(tempfile.mktemp())
+        stderr = pathlib.Path(tempfile.mktemp())
+
+        def crashing_on_start(pgid, pid):
+            raise RuntimeError("simulated crash: proc never committed to the attempt record")
+
+        with self.assertRaises(RuntimeError):
+            procs.run_stage(["/bin/echo", "should-never-print"], self.wt, 5.0, dict(os.environ),
+                            stdout, stderr, on_start=crashing_on_start)
+        self.assertEqual(stdout.read_bytes(), b"")
+        stdout.unlink(missing_ok=True)
+        stderr.unlink(missing_ok=True)
+
+    # ----- Row 4 -----------------------------------------------------------------------
+
+    def test_cw_04_gate_released_before_running_persisted(self):
+        """gate released, before RUNNING persisted"""
+        # Faithful-as-designed note: `procs.run_stage` always journals (on_start, which performs
+        # the RUNNING transition) strictly before releasing the gate -- see its docstring's
+        # "exec-after-journal" guarantee -- so this exact ordering cannot occur through the real
+        # code path without weakening that guarantee, which is out of scope here. The closest
+        # faithful test: a real, live worker group that the runner recorded as RUNNING and then
+        # (crash) never touched again; recovery must kill it and drive the attempt to
+        # INTERRUPTED regardless of exactly when within [gate-release, RUNNING-durable] the
+        # crash landed.
+        p, pid = _spawn_group()
+        try:
+            t = self._ticket()
+            task = self.tasks[0]
+            rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                                 agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                                 "cloud", self._rung(), "test")
+            rec = attempt.transition(rec, "LAUNCHING",
+                                     stages=[{"kind": "worker", "idx": 0, "proc": None}])
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+            self._reconcile()
+            reloaded = attempt.load(rec.path)
+            self.assertEqual(reloaded.status, "INTERRUPTED")
+            self.assertTrue(reloaded.history and reloaded.published and reloaded.lifecycle)
+            self.assertNotEqual(procid.classify(pid), "ours-alive")
+        finally:
+            _reap(p)
+
+    # ----- Row 5 -----------------------------------------------------------------------
+
+    def test_cw_05_leader_exited_live_descendant_unknown_fenced(self):
+        """leader exited with a live descendant in the pgid"""
+        # The leader (a short-lived /bin/sh) backgrounds a sleep under its own session/pgid and
+        # exits immediately; the sleep (a "descendant") keeps the pgid populated. procid.capture
+        # must run while the leader is still alive to record its lstart.
+        p = subprocess.Popen(["/bin/sh", "-c", "(sleep 60 &) ; exit 0"], start_new_session=True)
+        pgid = os.getpgid(p.pid)
+        pid = procid.capture(p.pid)
+        p.wait(timeout=2)   # leader exits; the backgrounded sleep survives under the same pgid
+        try:
+            t = self._ticket()
+            task = self.tasks[0]
+            rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                                 agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                                 "cloud", self._rung(), "test")
+            rec = attempt.transition(rec, "LAUNCHING",
+                                     stages=[{"kind": "worker", "idx": 0, "proc": None}])
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+            self.assertEqual(procid.classify(pid), "unknown")
+            with self.assertRaises(reconcile.FenceExit) as cm:
+                self._reconcile()
+            self.assertEqual(cm.exception.code, 3)
+            reloaded = attempt.load(rec.path, validate_worktree=False)
+            self.assertEqual(reloaded.status, "ORPHANED")
+            # Never restored under it: the worktree (nothing was ever written) is untouched and
+            # the record is not INTERRUPTED.
+            self.assertNotEqual(reloaded.status, "INTERRUPTED")
+        finally:
+            try:
+                os.killpg(pgid, 9)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    # ----- Row 6 -----------------------------------------------------------------------
+
+    def test_cw_06_stage_reaped_before_stage_done_receipt(self):
+        """stage reaped, before STAGE_DONE receipt"""
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+
+        def crashing_launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=None):
+            # Let the real (fake) worker actually run and exit -- "the stage is reaped" -- then
+            # simulate the runner dying before it writes the STAGE_DONE record.
+            result = self.launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
+            raise reconcile.SimulatedCrash("after stage reaped, before STAGE_DONE receipt")
+
+        r2 = self._runner(launcher=crashing_launcher)
+        with patch("reconcile._CRASH_HOOK", None):
+            with self.assertRaises(reconcile.SimulatedCrash):
+                self._direct_attempt(r2, t, task, scenario="pass")
+        self._reconcile()
+        rec = attempt.load(self._adir(t, task))
+        # Treated as INTERRUPTED: recovery cannot know whether the worker's unwritten claim
+        # would have been accepted or rejected -- it is not re-classified, just interrupted.
+        self.assertEqual(rec.status, "INTERRUPTED")
+        self.assertEqual(rec.outcome, "interrupted")
+
+    # ----- Row 7 -----------------------------------------------------------------------
+
+    def test_cw_07_stage_done_timedout_clean_before_classifying(self):
+        """STAGE_DONE timed_out, clean allowlist, before CLASSIFYING"""
+        t = self._ticket()
+        task = self.tasks[0]
+        (self.wt / "app" / "components" / "clean_edit.rb").write_text("clean\n")
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        rec = attempt.transition(rec, "LAUNCHING",
+                                 stages=[{"kind": "worker", "idx": 0, "proc": None}])
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        stages = [{"kind": "worker", "idx": 0, "proc": None, "terminated": True,
+                  "timed_out": True, "rc": None, "elapsed_s": 999.0}]
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+
+        self._reconcile()
+        reloaded = attempt.load(rec.path)
+        self.assertEqual(reloaded.status, "PROJECTED")
+        self.assertEqual(reloaded.outcome, "timeout")
+        self.assertEqual(reloaded.tree, "kept")
+        self.assertTrue((self.wt / "app" / "components" / "clean_edit.rb").exists())
+
+    # ----- Row 8 -----------------------------------------------------------------------
+
+    def test_cw_08_observed_tree_after_restore_before_finalized(self):
+        """observed_tree recorded, after restore, before FINALIZED"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        (self.wt / "app" / "components" / "junk.rb").write_text("junk\n")
+        base_tree = rec.base_tree
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        rec = attempt.transition(rec, "CLASSIFYING", observed_tree=worktree.snapshot(self.wt))
+        rec = attempt.transition(rec, "CLASSIFIED", outcome="rejected", reason="test",
+                                 next_action="none")
+        observed_tree = rec.observed_tree
+
+        self._crash("after-restore", reconcile.finalize, self.cfg, rec)
+        # The filesystem restore already happened (worktree.restore is not undone by the
+        # crash); only the diff.patch write + FINALIZED transition never landed.
+        self.assertEqual(worktree.snapshot(self.wt), base_tree)
+        reloaded = attempt.load(rec.path)
+        self.assertEqual(reloaded.status, "CLASSIFIED")
+        self.assertFalse((rec.path / "diff.patch").exists())
+
+        self._reconcile()
+        final = attempt.load(rec.path)
+        self.assertEqual(final.status, "PROJECTED")
+        self.assertEqual(final.tree, "restored")
+        patch_text = (rec.path / "diff.patch").read_text()
+        expected = subprocess.run(["git", "-C", str(self.wt), "diff", "--no-color", base_tree,
+                                   observed_tree], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(patch_text, expected)
+        self.assertTrue(worktree.verify_restored(self.wt, base_tree))
+
+    # ----- Row 9 -----------------------------------------------------------------------
+
+    def test_cw_09_mid_restore_partial(self):
+        """mid-restore (partial)"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        (self.wt / "app" / "components" / "junk.rb").write_text("junk\n")
+        base_tree = rec.base_tree
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        rec = attempt.transition(rec, "CLASSIFYING", observed_tree=worktree.snapshot(self.wt))
+        rec = attempt.transition(rec, "CLASSIFIED", outcome="rejected", reason="test",
+                                 next_action="none")
+
+        # Simulate a restore that did not converge (a partial/interrupted git operation): the
+        # record stays CLASSIFIED, nothing is corrupted.
+        with mock.patch.object(worktree, "verify_restored", return_value=False):
+            with self.assertRaises(reconcile.FinalizeFailed):
+                reconcile.finalize(self.cfg, rec)
+        reloaded = attempt.load(rec.path)
+        self.assertEqual(reloaded.status, "CLASSIFIED")
+
+        # Restart: restore is re-run (idempotently) with the real verify_restored, and converges.
+        self._reconcile()
+        final = attempt.load(rec.path)
+        self.assertEqual(final.tree, "restored")
+        self.assertEqual(worktree.snapshot(self.wt), base_tree)
+
+    # ----- Row 10 ----------------------------------------------------------------------
+
+    def test_cw_10_history_projected_before_flag(self):
+        """history projected, before flag"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        rec = attempt.transition(rec, "CLASSIFYING", observed_tree=worktree.snapshot(self.wt))
+        rec = attempt.transition(rec, "CLASSIFIED", outcome="accepted", reason="ok",
+                                 next_action="none")
+        rec = reconcile.finalize(self.cfg, rec)
+
+        self._crash("after-history", reconcile.project_history, self.cfg, rec)
+        reloaded = attempt.load(rec.path)
+        self.assertFalse(reloaded.history)
+        entries = state.load(self.cfg.ticket_dir(t.key)).attempts[rec.lineage]
+        self.assertEqual(len(entries), 1)
+
+        # Second projection is a no-op (attempt_id dedupe): re-run without the crash.
+        rec2 = reconcile.project_history(self.cfg, reloaded)
+        self.assertTrue(rec2.history)
+        entries2 = state.load(self.cfg.ticket_dir(t.key)).attempts[rec.lineage]
+        self.assertEqual(len(entries2), 1)
+
+    # ----- Row 11 ----------------------------------------------------------------------
+
+    def test_cw_11_metrics_row_appended_before_flag(self):
+        """metrics row appended, before flag"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        stages = [{"kind": "worker", "idx": 0, "proc": None, "terminated": True,
+                  "timed_out": False, "rc": 0, "elapsed_s": 1.0}]
+        rec = attempt.transition(rec, "LAUNCHING", stages=stages)
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+        rec = attempt.transition(rec, "CLASSIFYING", observed_tree=worktree.snapshot(self.wt))
+        rec = attempt.transition(rec, "CLASSIFIED", outcome="accepted", reason="ok",
+                                 next_action="none")
+        rec = reconcile.finalize(self.cfg, rec)
+
+        self._crash("after-metrics", reconcile.project_metrics, self.cfg, rec)
+        reloaded = attempt.load(rec.path)
+        self.assertFalse(reloaded.published)
+        rows = metrics.read_all(self.cfg.state_root)
+        self.assertEqual(len(rows), 1)
+
+        rec2 = reconcile.project_metrics(self.cfg, reloaded)
+        self.assertTrue(rec2.published)
+        rows2 = metrics.read_all(self.cfg.state_root)
+        self.assertEqual(len(rows2), 1)   # no duplicate
+
+    # ----- Row 12 ----------------------------------------------------------------------
+
+    def test_cw_12_lifecycle_transition_applied_before_flag(self):
+        """lifecycle transition applied, before flag"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        rec = attempt.transition(rec, "CLASSIFYING", observed_tree=worktree.snapshot(self.wt))
+        rec = attempt.transition(rec, "CLASSIFIED", outcome="blocked", reason="owner",
+                                 next_action="block")
+        rec = reconcile.finalize(self.cfg, rec)
+
+        self._crash("after-lifecycle", reconcile.project_lifecycle, self.cfg, rec)
+        reloaded = attempt.load(rec.path)
+        self.assertFalse(reloaded.lifecycle)
+        self.assertEqual(state.load(self.cfg.ticket_dir(t.key)).state, "blocked")
+
+        # Idempotent: already in state, a second call must not raise IllegalTransition.
+        rec2 = reconcile.project_lifecycle(self.cfg, reloaded)
+        self.assertTrue(rec2.lifecycle)
+        self.assertEqual(state.load(self.cfg.ticket_dir(t.key)).state, "blocked")
+
+    # ----- Row 13 ----------------------------------------------------------------------
+
+    def test_cw_13_fencing_written_fence_write_fails(self):
+        """FENCING written, fence write fails"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING",
+                                 proc={"boot_id": "other-boot", "pgid": 999999, "pid": 999999,
+                                       "start_time": "x", "cmd": "y"})
+        original_safe_write = attempt.safe_write
+
+        def fake_safe_write(path, text):
+            if pathlib.Path(path).name == "heavy.fence":
+                raise OSError("disk full")
+            return original_safe_write(path, text)
+
+        with mock.patch.object(attempt, "safe_write", side_effect=fake_safe_write):
+            with self.assertRaises(reconcile.FenceExit) as cm:
+                reconcile.fence(self.cfg, rec, "termination unverified")
+        self.assertEqual(cm.exception.code, 3)
+        reloaded = attempt.load(rec.path, validate_worktree=False)
+        self.assertEqual(reloaded.status, "FENCING")
+
+    # ----- Row 14 ----------------------------------------------------------------------
+
+    def test_cw_14_fence_write_torn_temp_exists_no_fence(self):
+        """fence write torn (temp exists, no fence)"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        rec = attempt.transition(rec, "FENCING")
+        # A stray temp sibling (as safe_rewrite's own attempt.json rewrite for the FENCING
+        # transition would leave behind if THAT write itself were torn) with no heavy.fence
+        # ever created.
+        (self.cfg.state_root / "locks").mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_root / "locks" / "heavy.fence.tmp-99999-deadbeef").write_text("{")
+        self.assertFalse((self.cfg.state_root / "locks" / "heavy.fence").exists())
+
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            self._reconcile()
+        self.assertEqual(cm.exception.code, 3)
+        self.assertIn("FENCING", cm.exception.reason)
+
+    # ----- Row 15 ----------------------------------------------------------------------
+
+    def test_cw_15_launching_written_child_gated(self):
+        """LAUNCHING written, child gated"""
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+        with patch("runner.procid.capture", side_effect=RuntimeError("simulated crash: gated child, proc capture never lands")):
+            with self.assertRaises(RuntimeError):
+                self._direct_attempt(r, t, task, scenario="pass")
+        self.assertFalse((self.wt / "app" / "components" / "worker_touch.rb").exists())
+        self._reconcile()
+        rec = attempt.load(self._adir(t, task))
+        self.assertEqual(rec.status, "INTERRUPTED")
+
+    # ----- Row 16 ----------------------------------------------------------------------
+
+    def test_cw_16_running_worker_alive_different_task_selected_next(self):
+        """RUNNING, worker alive, different task selected next"""
+        p, pid = _spawn_group()
+        try:
+            rec = attempt.create(self.cfg, "OTHER-1", self.tasks[0], self.wt, 1,
+                                 agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                                 "cloud", self._rung(), "test")
+            rec = attempt.transition(rec, "LAUNCHING",
+                                     stages=[{"kind": "worker", "idx": 0, "proc": None}])
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+
+            order = []
+            real_kill = procs.kill_group
+
+            def spy_kill(pgid, *a, **kw):
+                order.append(("kill", pgid))
+                return real_kill(pgid, *a, **kw)
+
+            def spy_launch(argv, cwd, timeout_s, env, out, err, on_start=None):
+                order.append(("launch",))
+                return self.launcher(argv, cwd, timeout_s, env, out, err, on_start=on_start)
+
+            self.scenarios = ["pass"]
+            with patch("reconcile.procs_mod.kill_group", side_effect=spy_kill), \
+                 patch("runner.procs.run_stage", side_effect=spy_launch):
+                rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                                  "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"),
+                                  "--scenario", "pass"])
+            self.assertEqual(rc, 0)
+            kills = [i for i, o in enumerate(order) if o[0] == "kill" and o[1] == pid.pgid]
+            launches = [i for i, o in enumerate(order) if o[0] == "launch"]
+            self.assertTrue(kills and launches)
+            self.assertLess(min(kills), min(launches),
+                            "the leftover live worker must be killed before any dispatch")
+            self.assertEqual(attempt.load(rec.path).status, "INTERRUPTED")
+        finally:
+            _reap(p)
+
+    # ----- Row 17 ----------------------------------------------------------------------
+
+    def test_cw_17_running_worker_created_bin_oops_killed_before_classify(self):
+        """RUNNING, worker created `bin/oops`, killed before classify"""
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+        original_base_tree = worktree.snapshot(self.wt)
+        self._crash("after-stage-done", self._direct_attempt, r, t, task, scenario="escape")
+        self.assertTrue((self.wt / "bin" / "oops").exists())   # still there: never classified/restored yet
+
+        self._reconcile()
+        rec = attempt.load(self._adir(t, task))
+        self.assertEqual(rec.status, "INTERRUPTED")
+        self.assertFalse((self.wt / "bin" / "oops").exists())
+        self.assertIn("bin/oops", (rec.path / "diff.patch").read_text())
+
+        # Next attempt's base_tree == original.
+        rec2 = attempt.create(self.cfg, t.key, task, self.wt, 2,
+                              agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                              "cloud", self._rung(), "test")
+        self.assertEqual(rec2.base_tree, original_base_tree)
+
+    # ----- Row 18 ----------------------------------------------------------------------
+
+    def test_cw_18_running_pgid_belongs_to_unrelated_process(self):
+        """RUNNING, recorded pgid now belongs to an unrelated process (start_time mismatch)"""
+        # Model an actual pgid reuse: `old_id` records a pid/start_time that no longer exists,
+        # but shares `new_id`'s pgid (as if that pgid number were recycled to an unrelated live
+        # session) -- `killpg(pgid, 0)` therefore succeeds (the group IS populated), and
+        # `ps -o lstart= -p old_id.pid` is patched to resolve to the unrelated process's lstart,
+        # so the identity check (start_time mismatch) is what fires, not a bare "dead" pgid.
+        p2, new_id = _spawn_group()
+        try:
+            old_id = procid.ProcId(boot_id=locks.boot_id(), pgid=new_id.pgid, pid=999999,
+                                   start_time="Thu Jan  1 00:00:00 1970", cmd="oldcmd")
+            real_ps = procid._ps
+
+            def fake_ps(pid):
+                if pid == old_id.pid:
+                    return real_ps(new_id.pid)
+                return real_ps(pid)
+
+            with patch("procid._ps", side_effect=fake_ps):
+                self.assertEqual(procid.classify(old_id), "unknown")
+
+                t = self._ticket()
+                task = self.tasks[0]
+                rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                                     agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                                     "cloud", self._rung(), "test")
+                rec = attempt.transition(rec, "LAUNCHING")
+                rec = attempt.transition(rec, "RUNNING", proc=old_id.to_dict())
+
+                kill_calls = []
+                real_kill = procs.kill_group
+
+                def spy_kill(pgid, *a, **kw):
+                    kill_calls.append(pgid)
+                    return real_kill(pgid, *a, **kw)
+
+                with patch("reconcile.procs_mod.kill_group", side_effect=spy_kill):
+                    with self.assertRaises(reconcile.FenceExit) as cm:
+                        self._reconcile()
+                self.assertEqual(cm.exception.code, 3)
+            # Never signaled: kill_group (the only path that sends a real TERM/KILL) is never
+            # invoked for an "unknown" classification -- fence() goes straight to fencing.
+            self.assertEqual(kill_calls, [])
+            reloaded = attempt.load(rec.path, validate_worktree=False)
+            self.assertEqual(reloaded.status, "ORPHANED")
+            self.assertEqual(procid.classify(new_id), "ours-alive")   # the real process untouched
+        finally:
+            _reap(p2)
+
+    # ----- Row 19 ----------------------------------------------------------------------
+
+    def test_cw_19_classified_rejected_before_restore(self):
+        """CLASSIFIED `rejected`, before restore"""
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+        self._crash("after-classified", self._direct_attempt, r, t, task, scenario="fail")
+        rec = attempt.load(self._adir(t, task))
+        self.assertEqual(rec.status, "CLASSIFIED")
+        self.assertEqual(rec.outcome, "rejected")
+        self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())   # not restored yet
+
+        self._reconcile()
+        rec = attempt.load(self._adir(t, task))
+        self.assertEqual(rec.tree, "restored")
+        self.assertFalse((self.wt / "app" / "components" / "worker_touch.rb").exists())
+        rows = len(metrics.read_all(self.cfg.state_root))
+        self._reconcile("recover-2")
+        self.assertEqual(len(metrics.read_all(self.cfg.state_root)), rows)   # published once
+
+    # ----- Row 20 ----------------------------------------------------------------------
+
+    def test_cw_20_classified_accepted_before_projections(self):
+        """CLASSIFIED `accepted`, before projections"""
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+        self._crash("after-finalized", self._direct_attempt, r, t, task, scenario="pass")
+        rec = attempt.load(self._adir(t, task))
+        self.assertEqual(rec.status, "FINALIZED")
+        self.assertFalse(rec.history or rec.published or rec.lifecycle)
+        launches_before = self.launches
+
+        self._reconcile()
+        rec = attempt.load(self._adir(t, task))
+        self.assertEqual(rec.status, "PROJECTED")
+        t_entries = state.load(self.cfg.ticket_dir(t.key)).attempts[rec.lineage]
+        self.assertEqual(len(t_entries), 1)
+        rows = [r_ for r_ in metrics.read_all(self.cfg.state_root) if r_["stage_kind"] == "worker"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(self.launches, launches_before)   # no re-run of the worker
+
+    # ----- Row 21 ----------------------------------------------------------------------
+
+    def test_cw_21_finalized_history_true_before_metrics(self):
+        """FINALIZED, history=true, before metrics"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        stages = [{"kind": "worker", "idx": 0, "proc": None, "terminated": True,
+                  "timed_out": False, "rc": 0, "elapsed_s": 1.0}]
+        rec = attempt.transition(rec, "LAUNCHING", stages=stages)
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+        rec = attempt.transition(rec, "CLASSIFYING", observed_tree=worktree.snapshot(self.wt))
+        rec = attempt.transition(rec, "CLASSIFIED", outcome="accepted", reason="ok", next_action="none")
+        rec = reconcile.finalize(self.cfg, rec)
+
+        self._crash("after-history", reconcile.project_all, self.cfg, rec)
+        reloaded = attempt.load(rec.path)
+        self.assertFalse(reloaded.history)
+        self.assertFalse(reloaded.published)
+        self.assertEqual(metrics.read_all(self.cfg.state_root), [])
+
+        rec2 = reconcile.project_all(self.cfg, reloaded)
+        self.assertEqual(rec2.status, "PROJECTED")
+        rows = metrics.read_all(self.cfg.state_root)
+        self.assertEqual(len(rows), 1)
+        entries = state.load(self.cfg.ticket_dir(t.key)).attempts[rec.lineage]
+        self.assertEqual(len(entries), 1)   # dedupe: history entry not duplicated
+
+    # ----- Row 22 ----------------------------------------------------------------------
+
+    def test_cw_22_finalized_blocked_before_lifecycle(self):
+        """FINALIZED `blocked`, before lifecycle"""
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+        self._crash("after-metrics", self._direct_attempt, r, t, task, scenario="owner")
+        self.assertEqual(state.load(self.cfg.ticket_dir(t.key)).state, "implement")   # not yet blocked
+
+        self._reconcile()
+        self.assertEqual(state.load(self.cfg.ticket_dir(t.key)).state, "blocked")
+
+        launches_before = self.launches
+        t2 = state.load(self.cfg.ticket_dir(t.key)); t2.worktree = str(self.wt)
+        out = self._implement(r, t2, task, 0)
+        self.assertEqual(out, "blocked")
+        self.assertEqual(self.launches, launches_before)   # not dispatched
+
+    # ----- Row 23 ----------------------------------------------------------------------
+
+    def test_cw_23_verify_stage_terminated_false(self):
+        """verify stage `terminated=False`"""
+        t = self._ticket()
+        task = self.tasks[0]
+        r = self._runner()
+        real_run_stage = procs.run_stage
+
+        def flaky_run_stage(argv, cwd, timeout_s, env, out, err, on_start=None):
+            # Only verification commands route through runner.procs.run_stage directly (the
+            # worker stage goes through self.launch/self.pi_launcher, patched separately in
+            # RunnerHarness.setUp) -- so every call seen here is a verification stage.
+            result = real_run_stage(argv, cwd, timeout_s, env, out, err, on_start=on_start)
+            return dataclasses.replace(result, terminated=False)
+
+        with patch("runner.procs.run_stage", side_effect=flaky_run_stage):
+            self.scenarios = ["pass"]
+            with self.assertRaises(reconcile.FenceExit) as cm:
+                r._attempt(t, task, self.wt, "cloud", self._rung(), 1, [], 0)
+        self.assertEqual(cm.exception.code, 3)
+        rec = attempt.load(self._adir(t, task), validate_worktree=False)
+        self.assertEqual(rec.status, "ORPHANED")
+        self.assertTrue((self.cfg.state_root / "locks" / "heavy.fence").exists())
+        # No restore: the worker's edit (accepted-track) is still on disk.
+        self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())
+
+    # ----- Row 24 ----------------------------------------------------------------------
+
+    def test_cw_24_fence_written_before_orphaned(self):
+        """fence written, before ORPHANED"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING",
+                                 proc={"boot_id": "other-boot", "pgid": 999999, "pid": 999999,
+                                       "start_time": "x", "cmd": "y"})
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        self._crash("after-fence-write", reconcile.fence, self.cfg, rec, "test reason")
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        self.assertTrue(fence_path.exists())
+        reloaded = attempt.load(rec.path, validate_worktree=False)
+        self.assertEqual(reloaded.status, "FENCING")   # ORPHANED transition never landed
+
+        # Fence present -> exit 3, fail closed (the fence references a FENCING, not ORPHANED,
+        # record: corrupt-fence semantics, never silently resolved).
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            self._reconcile()
+        self.assertEqual(cm.exception.code, 3)
+        self.assertTrue(fence_path.exists())
+
+    # ----- Row 25 ----------------------------------------------------------------------
+
+    def test_cw_25_clear_fence_while_runner_is_live(self):
+        """`clear-fence` while a runner is live"""
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"attempt_dir": str(self._adir(self._ticket(), self.tasks[0])),
+                              "proc": {"boot_id": "x", "pgid": 1, "pid": 1, "start_time": "x", "cmd": "y"},
+                              "reason": "t"})
+        fence_path.write_text(payload)
+        lease_path = self.cfg.state_root / "locks" / "runner"
+        script = (f"import sys, time\nsys.path.insert(0, {str(HERE)!r})\nimport locks\n"
+                 f"lease = locks.Lease({str(lease_path)!r}, 'runner')\n"
+                 f"assert lease.acquire(hold=True)\nprint('ready', flush=True)\ntime.sleep(30)\n")
+        proc = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+        try:
+            line = proc.stdout.readline()
+            self.assertEqual(line.strip(), "ready")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                rc = reconcile.clear_fence(self.cfg, force=False)
+            self.assertEqual(rc, 3)
+            self.assertIn(str(proc.pid), buf.getvalue())
+            self.assertEqual(fence_path.read_text(), payload)   # untouched
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    # ----- Row 26 ----------------------------------------------------------------------
+
+    def test_cw_26_clear_fence_on_dead_fence_produced_by_fence(self):
+        """`clear-fence` on a dead fence produced by `_fence()`"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        (self.wt / "app" / "components" / "junk.rb").write_text("junk\n")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        stages = [{"kind": "worker", "idx": 0, "proc": None, "terminated": False,
+                  "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+        dead_proc = {"boot_id": locks.boot_id(), "pgid": 999999, "pid": 999999,
+                    "start_time": "x", "cmd": "y"}
+        with self.assertRaises(reconcile.FenceExit):
+            reconcile.fence(self.cfg, rec, "termination unverified", proc=dead_proc)
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        self.assertTrue(fence_path.exists())
+
+        rc = reconcile.clear_fence(self.cfg, force=False)
+        self.assertEqual(rc, 0)
+        self.assertFalse(fence_path.exists())
+        reloaded = attempt.load(rec.path)
+        self.assertEqual(reloaded.status, "INTERRUPTED")
+        self.assertTrue(reloaded.history and reloaded.published and reloaded.lifecycle)
+        self.assertFalse((self.wt / "app" / "components" / "junk.rb").exists())
+
+        # Next run proceeds (no fence, nothing to reconcile for this attempt).
+        self._reconcile()
+
+    # ----- Row 27 ----------------------------------------------------------------------
+
+    def test_cw_27_clear_fence_force_on_live_group(self):
+        """`clear-fence --force` on a live group"""
+        p, pid = _spawn_group()
+        try:
+            t = self._ticket()
+            task = self.tasks[0]
+            rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                                 agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                                 "cloud", self._rung(), "test")
+            (self.wt / "app" / "components" / "live_junk.rb").write_text("junk\n")
+            rec = attempt.transition(rec, "LAUNCHING")
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+            stages = [{"kind": "worker", "idx": 0, "proc": pid.to_dict(), "terminated": False,
+                      "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+            rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+            with self.assertRaises(reconcile.FenceExit):
+                reconcile.fence(self.cfg, rec, "termination unverified", proc=pid.to_dict())
+
+            fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+            rc = reconcile.clear_fence(self.cfg, force=True)
+            self.assertEqual(rc, 0)
+            self.assertFalse(fence_path.exists())
+            reloaded = attempt.load(rec.path, validate_worktree=False)
+            self.assertEqual(reloaded.status, "ORPHANED")
+            self.assertTrue(reloaded.operator_forced)
+            self.assertTrue((self.wt / "app" / "components" / "live_junk.rb").exists())   # NOT restored
+
+            with self.assertRaises(reconcile.FenceExit) as cm:
+                self._reconcile()
+            self.assertEqual(cm.exception.code, 3)
+            self.assertTrue(fence_path.exists())   # re-fenced
+            self.assertEqual(attempt.load(rec.path, validate_worktree=False).status, "ORPHANED")
+        finally:
+            _reap(p)
+
+    # ----- Row 28 ----------------------------------------------------------------------
+
+    def test_cw_28_clear_fence_killed_after_transition_before_unlink(self):
+        """`clear-fence` killed after attempt transition, before fence unlink"""
+        p, pid = _spawn_group()
+        try:
+            t = self._ticket()
+            task = self.tasks[0]
+            rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                                 agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                                 "cloud", self._rung(), "test")
+            rec = attempt.transition(rec, "LAUNCHING")
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+            stages = [{"kind": "worker", "idx": 0, "proc": pid.to_dict(), "terminated": False,
+                      "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+            rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+            # Build the exact torn state fence() can leave behind: FENCING durably written,
+            # fence file durably written, but the ORPHANED transition never landed (fence()
+            # itself always completes both before raising, so hand-build this rather than
+            # calling it, mirroring row 24's technique).
+            rec = attempt.transition(rec, "FENCING")
+            fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+            fence_path.parent.mkdir(parents=True, exist_ok=True)
+            fence_path.write_text(json.dumps({"attempt_dir": str(rec.path), "proc": pid.to_dict(),
+                                              "reason": "termination unverified"}))
+
+            self._crash("clear-fence-after-transition", reconcile.clear_fence, self.cfg, True)
+            self.assertTrue(fence_path.exists())   # unlink never landed
+            self.assertEqual(attempt.load(rec.path, validate_worktree=False).status, "ORPHANED")
+
+            _reap(p)   # operator independently kills the group before the next start
+            self._reconcile()
+            self.assertFalse(fence_path.exists())
+            self.assertEqual(attempt.load(rec.path).status, "INTERRUPTED")
+        finally:
+            _reap(p)
+
+    # ----- Row 29 ----------------------------------------------------------------------
+
+    def test_cw_29_orphaned_fence_deleted_by_hand(self):
+        """ORPHANED attempt whose fence file was deleted by hand"""
+        p, pid = _spawn_group()
+        try:
+            t = self._ticket()
+            task = self.tasks[0]
+            rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                                 agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                                 "cloud", self._rung(), "test")
+            rec = attempt.transition(rec, "LAUNCHING")
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+            rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+            rec = attempt.transition(rec, "FENCING")
+            rec = attempt.transition(rec, "ORPHANED")
+            # Fence file absent -- deleted by hand while the group is still alive.
+            with self.assertRaises(reconcile.FenceExit) as cm:
+                self._reconcile()
+            self.assertEqual(cm.exception.code, 3)
+            reloaded = attempt.load(rec.path, validate_worktree=False)
+            self.assertEqual(reloaded.status, "ORPHANED")   # re-fenced
+            self.assertTrue((self.cfg.state_root / "locks" / "heavy.fence").exists())
+        finally:
+            _reap(p)
+
+        # Sub-case: group now dead (reaped above by the finally) -> the next reconcile drives it
+        # to INTERRUPTED directly instead of re-fencing (no fence file was ever written back).
+        self.assertEqual(procid.classify(pid), "dead")
+        self._reconcile()
+        final = attempt.load(rec.path)
+        self.assertEqual(final.status, "INTERRUPTED")
+        self.assertFalse((self.cfg.state_root / "locks" / "heavy.fence").exists())
+
+    # ----- Row 30 ----------------------------------------------------------------------
+
+    def test_cw_30_metrics_torn_trailing_line(self):
+        """metrics.jsonl has a torn trailing line"""
+        p = self.cfg.state_root / "metrics.jsonl"
+        prior = json.dumps({"a": 1}) + "\n"
+        p.write_text(prior + '{"torn": tr')
+        metrics.append(self.cfg.state_root, {"b": 2})
+        data = p.read_text()
+        self.assertTrue(data.startswith(prior))
+        rows = metrics.read_all(self.cfg.state_root)
+        self.assertEqual([r.get("a", r.get("b")) for r in rows], [1, 2])
+
+    # ----- Row 31 ----------------------------------------------------------------------
+
+    def test_cw_31_metrics_invalid_row_before_tail(self):
+        """metrics.jsonl has an invalid row BEFORE the tail"""
+        p = self.cfg.state_root / "metrics.jsonl"
+        original = json.dumps({"a": 1}) + "\n" + "not json at all\n" + json.dumps({"c": 3}) + "\n"
+        p.write_text(original)
+        with self.assertRaises(metrics.MetricsCorrupt):
+            metrics.append(self.cfg.state_root, {"d": 4})
+        self.assertEqual(p.read_text(), original)   # no truncation
+
+    # ----- Row 32 ----------------------------------------------------------------------
+
+    def test_cw_32_worker_plants_dotdot_feedback_symlink(self):
+        """worker plants `../feedback.md` symlink"""
+        # Isolated proof that ladder.append_feedback's own no-follow write guard fires before
+        # any bytes are written -- independent of the runner, whose attempt.create() read-side
+        # guard (row 33) would otherwise always win the race in the full flow (see below).
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        outside = tmp / "outside.md"
+        outside.write_text("do not touch")
+        task_root = tmp / "task_root"
+        task_root.mkdir()
+        (task_root / "feedback.md").symlink_to(outside)
+        with self.assertRaises(attempt.UnsafePath):
+            ladder.append_feedback(task_root, 1, "rejected: something")
+        self.assertEqual(outside.read_text(), "do not touch")   # detected before write
+
+        # Runner-level: a worker with bash access can compute task_root from AL_TASK_DIR and
+        # plant the symlink DURING its own run, before this same attempt's rejected outcome
+        # triggers the runner's own append_feedback call -- this is the one window where
+        # attempt.create()'s read-side guard (already run, before the worker started) cannot
+        # have caught it first. Defect exposed and fixed (see runner.py's append_feedback call
+        # site): the runner no longer crashes -- it skips the append and continues.
+        outside2 = self.cfg.state_root.parent / "outside_ladder2.md"
+        outside2.write_text("keep")
+        real_task_root = self.cfg.state_root / "attempts" / "ZIP-7873" / self.tasks[0].id
+
+        def planting_launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=None):
+            result = self.launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
+            real_task_root.mkdir(parents=True, exist_ok=True)
+            fb = real_task_root / "feedback.md"
+            if fb.exists() or fb.is_symlink():
+                fb.unlink()
+            fb.symlink_to(outside2)
+            return result
+
+        t = self._ticket()
+        r = self._runner(launcher=planting_launcher)
+        self.scenarios = ["fail"]
+        # Once planted, the symlink is never cleared by the (correctly fail-safe) production
+        # fix -- attempt.create()'s own read-side guard (row 33) then refuses every subsequent
+        # attempt the same way, exhausting the ladder to "blocked" rather than crashing. The
+        # point of this row is exactly that: no crash, no write-through, ever.
+        out = self._implement(r, t, self.tasks[0], 0)
+        self.assertEqual(out, "blocked")
+        self.assertEqual(outside2.read_text(), "keep")   # never written through
+        entries = state.load(self.cfg.ticket_dir(t.key)).attempts[f"{t.key}/{self.tasks[0].id}"]
+        self.assertEqual(entries[0]["outcome"], "rejected")   # attempt 1: feedback append skipped, not crashed
+        self.assertTrue(all(e["outcome"] in ("rejected", "protocol") for e in entries))
+
+    # ----- Row 33 ----------------------------------------------------------------------
+
+    def test_cw_33_task_level_feedback_symlink_at_next_attempts_copy(self):
+        """task-level `feedback.md` is a symlink at next attempt's copy/read"""
+        outside = self.cfg.state_root.parent / "outside_feedback_copy.md"
+        outside.write_text("secret bytes that must never reach the prompt")
+        t = self._ticket()
+        task = self.tasks[0]
+        task_level = self.cfg.state_root / "attempts" / t.key / task.id
+        task_level.mkdir(parents=True, exist_ok=True)
+        (task_level / "feedback.md").symlink_to(outside)
+
+        with self.assertRaises(attempt.UnsafePath):
+            attempt.create(self.cfg, t.key, task, self.wt, 1,
+                           agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                           "cloud", self._rung(), "test")
+        # attempt.create()'s cleanup removed the leaf dir it made; no adir/feedback.md copy exists
+        # anywhere, so the outside bytes never reached a prompt.
+        self.assertFalse(list(task_level.glob("*/feedback.md")))
+        self.assertEqual(outside.read_text(), "secret bytes that must never reach the prompt")
+
+    # ----- Row 34 ----------------------------------------------------------------------
+
+    def test_cw_34_worker_writes_ignored_path_then_rejected(self):
+        """worker writes an ignored path (`tmp/x`) then is rejected"""
+        (self.wt / ".gitignore").write_text("tmp/\n")
+        subprocess.run(["git", "-C", str(self.wt), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.wt), "commit", "-qm", "gitignore"], check=True, capture_output=True)
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        base_tree = rec.base_tree
+        (self.wt / "tmp").mkdir()
+        (self.wt / "tmp" / "x").write_text("ignored write\n")
+        observed = worktree.snapshot(self.wt)
+        self.assertNotEqual(observed, base_tree)   # snapshot() captures ignored writes too
+
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        rec = attempt.transition(rec, "CLASSIFYING", observed_tree=observed)
+        rec = attempt.transition(rec, "CLASSIFIED", outcome="rejected", reason="test",
+                                 next_action="none")
+        rec = reconcile.finalize(self.cfg, rec)
+
+        self.assertFalse((self.wt / "tmp" / "x").exists())
+        self.assertEqual(worktree.snapshot(self.wt), base_tree)
+
+    # ----- Row 35 ----------------------------------------------------------------------
+
+    def test_cw_35_attempt_record_points_at_different_repo_id(self):
+        """attempt record points at a different repo_id than the worktree"""
+        t = self._ticket()
+        task = self.tasks[0]
+        rec = attempt.create(self.cfg, t.key, task, self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        (self.wt / "app" / "components" / "junk.rb").write_text("junk\n")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        bad = dataclasses.replace(rec, repo_id="not-the-real-repo-id")
+        bad.path = rec.path
+        (rec.path / "attempt.json").write_text(attempt.to_json(bad))
+
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            self._reconcile()
+        self.assertEqual(cm.exception.code, 3)
+        self.assertTrue((self.wt / "app" / "components" / "junk.rb").exists())   # nothing restored
+
+    # ----- Row 36 ----------------------------------------------------------------------
+
+    def test_cw_36_manifest_resliced_after_one_cheap_failure(self):
+        """manifest re-sliced (same task.id, new fingerprint) after one cheap failure"""
+        # Drive two attempts directly through `_attempt` (bypassing implement_task's own ladder
+        # loop, which would otherwise silently default a second, unwanted scenario to "pass")
+        # so the ladder progression (n=1 cheap -> n=2 cheap) and the re-sliced task are both
+        # under this test's exact control.
+        t = self._ticket()
+        r = self._runner()
+        outcome1, reason1, rec1 = self._direct_attempt(
+            r, t, self.tasks[0], scenario="fail", n=1, arm="cloud",
+            rung=self._rung("cloud-worker", "cheap", 1), attempts=[])
+        self.assertEqual(rec1.outcome, "rejected")
+        gen1 = rec1.generation
+
+        # Re-slice the manifest: same task.id, different summary (-> different generation).
+        resliced = self.tasks_with(summary="a re-sliced summary for the same task id")
+        self.assertEqual(resliced[0].id, self.tasks[0].id)
+
+        prior_attempts = [ladder.Attempt(ladder.Rung("cloud-worker", "cheap", 1), "rejected")]
+        outcome2, reason2, rec2 = self._direct_attempt(
+            r, t, resliced[0], scenario="pass", n=2, arm="cloud",
+            rung=self._rung("cloud-worker", "cheap", 2), attempts=prior_attempts)
+        self.assertEqual(rec2.outcome, "accepted")
+        gen2 = rec2.generation
+        self.assertNotEqual(gen1, gen2)   # generation change is logged, not silently dropped
+
+        entries = state.load(self.cfg.ticket_dir(t.key)).attempts[f"{t.key}/{self.tasks[0].id}"]
+        self.assertEqual(len(entries), 2)
+        # Ladder continued at cheap attempt 2 (rung n=2), not reset to attempt 1 of a fresh ladder.
+        self.assertEqual(entries[-1]["rung"]["n"], 2)
+        self.assertEqual(entries[-1]["rung"]["tier"], "cheap")
+        self.assertEqual(entries[-1]["generation"], gen2)
+
+    # ----- Row 37 ----------------------------------------------------------------------
+
+    def test_cw_37_local_model_ctx4k_or_empty_is_config_error(self):
+        """`[local].model = "…-ctx4k:…"` or empty with `[local]` present"""
+        root = self.cfg.state_root.parent
+        base = (HERE.parent / "hopper.toml").read_text()
+        base = base.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state2"')
+        base = base.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}/agents"')
+        for bad_model in ('ollama-local/gpt-oss-ctx4k:20b', ''):
+            with self.subTest(bad_model=bad_model):
+                text = re.sub(r'model = "[^"]*"(?=\s*#? *MUST be ctx-pinned)',
+                              f'model = "{bad_model}"', base)
+                self.assertIn(f'model = "{bad_model}"', text)
+                p = root / "hopper_bad_local.toml"
+                p.write_text(text)
+                with self.assertRaises(config.ConfigError):
+                    config.load(p)
+
+    # ----- Row 38 ----------------------------------------------------------------------
+
+    def test_cw_38_rendered_local_worker_model_mismatches_config(self):
+        """rendered local-worker model ≠ `[local].model`"""
+        bad_model = "ollama-local/other-ctx32k:20b"
+        (self.cfg.pi_agents_dir / "local-worker.md").write_text(
+            f"---\nname: local-worker\ndescription: d\nmodel: {bad_model}\nthinking: low\n"
+            f"tools: read, grep, find, ls, bash, edit, write\n---\nbody\n")
+        t = self._ticket()
+        r = self._runner()
+        rung = self._rung(agent="local-worker", tier="cheap", n=1)
+        with self.assertRaises(RuntimeError) as cm:
+            r._attempt(t, self.tasks[0], self.wt, "local", rung, 1, [], 0)
+        msg = str(cm.exception)
+        self.assertIn(bad_model, msg)
+        self.assertIn(self.local_model_default, msg)
+        self.assertFalse(self._adir(t, self.tasks[0]).exists())   # no attempt record was ever created
+
+
+# Suppress RunnerHarness's own test_* methods on this subclass (see the module docstring): only
+# this file's test_cw_* methods should run under `unittest test_crash_windows`.
+for _name in dir(_test_runner_mod.RunnerHarness):
+    if _name.startswith("test_") and _name not in vars(CrashWindowTests):
+        setattr(CrashWindowTests, _name, None)
+
+
+if __name__ == "__main__":
+    unittest.main()

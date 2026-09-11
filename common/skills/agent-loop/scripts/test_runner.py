@@ -51,6 +51,7 @@ class RunnerHarness(unittest.TestCase):
         self.tasks = contracts.load_tasks(root / "tasks.toml")
         self.scenarios = []      # consumed in order, one per launch
         self.launches = 0
+        self.extra_env = {}
         # Admission always green in tests.
         self.adm = patch("runner.admission.probe", return_value=None); self.adm.start()
         self.dec = patch("runner.admission.decide", return_value=runner.admission.Decision(True, [])); self.dec.start()
@@ -60,7 +61,7 @@ class RunnerHarness(unittest.TestCase):
     def launcher(self, argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=None):
         self.launches += 1
         scenario = self.scenarios.pop(0) if self.scenarios else "pass"
-        env = {**(env or os.environ), "AL_SCENARIO": scenario}
+        env = {**(env or os.environ), "AL_SCENARIO": scenario, **self.extra_env}
         fake_argv = [sys.executable, str(FAKE), *argv[2:]]
         return _real_run_stage(fake_argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
 
@@ -314,6 +315,13 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rows[0]["outcome"], "environment")
         self.assertIn("verification timeout", rows[0]["reason"])
         self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())
+
+    def test_worker_planted_verify_log_symlink_does_not_clobber_target(self):
+        outside = self.cfg.state_root.parent / "outside.txt"; outside.write_text("keep")
+        self.extra_env = {"AL_OUTSIDE": str(outside)}
+        outcome, rows = self.run_task("plant_verify_symlink")
+        self.assertEqual(outside.read_text(), "keep")
+        self.assertIn(rows[0]["outcome"], ("rejected", "protocol"))
 
     def test_recovery_with_unkillable_group_fences_and_pauses(self):
         # Simulate: attempt.json says running with a live pgid; kill_group reports failure.

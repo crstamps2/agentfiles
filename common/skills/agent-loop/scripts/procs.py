@@ -7,6 +7,19 @@ import subprocess
 import time
 
 
+class LogPathExists(RuntimeError):
+    """Raised when a stage log path already exists (e.g. a worker-planted symlink); the log
+    is opened O_EXCL|O_NOFOLLOW so we never write through or follow a pre-existing path."""
+
+
+def _open_log(path):
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        raise LogPathExists(f"log path exists: {path}")
+    return os.fdopen(fd, "wb")
+
+
 @dataclasses.dataclass(frozen=True)
 class StageResult:
     returncode: int | None
@@ -77,7 +90,7 @@ def run_stage(argv: list, cwd, timeout_s: float, env: dict | None,
     try:
         r, w = os.pipe()
         gated_argv = ["/bin/sh", "-c", f'read _ <&{r} || exit 97; exec "$@"', "gate", *argv]
-        with open(stdout_path, "wb") as so, open(stderr_path, "wb") as se:
+        with _open_log(stdout_path) as so, _open_log(stderr_path) as se:
             p = subprocess.Popen(gated_argv, cwd=str(cwd), env=env, stdout=so, stderr=se,
                                  start_new_session=True, pass_fds=(r,))
             os.close(r); r = None  # child holds its own inherited copy; parent doesn't need it

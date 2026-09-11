@@ -180,9 +180,16 @@ class Runner:
             except (OSError, json.JSONDecodeError):
                 obj = None
             if obj and obj.get("status") in {"launching", "running"}:
-                pgid = obj.get("pgid")
-                if pgid and procs.group_alive(int(pgid)):
-                    procs.kill_group(int(pgid))
+                pgids = [obj.get("pgid")] + list(obj.get("verify_pgids", []))
+                survivor = None
+                for pgid in [g for g in pgids if g]:
+                    if procs.group_alive(int(pgid)) and not procs.kill_group(int(pgid)):
+                        survivor = int(pgid); break
+                if survivor is not None:
+                    self._fence_path().parent.mkdir(parents=True, exist_ok=True)
+                    self._rewrite_artifact(self._fence_path(), json.dumps({"pgid": survivor, "ticket": t.key,
+                        "task": task.id, "attempt": adir.name, "reason": "recovery: group survived kill"}))
+                    return "fenced"
                 obj["status"] = "interrupted"
                 self._rewrite_artifact(ap, json.dumps(obj, sort_keys=True))
                 row = {"run_id": self.run_id, "ticket": t.key, "task_id": task.id, "stage": "implement",
@@ -192,6 +199,7 @@ class Runner:
                 if not rp.exists(): self._write_artifact(rp, json.dumps(row, sort_keys=True))
             rp = adir / "row.json"
             if rp.exists(): self._publish_row(rp)
+        return None
 
     def _stop(self, tdir, t):
         if state.paused(self.cfg.state_root):
@@ -214,7 +222,8 @@ class Runner:
             t = state.transition(t, "implement"); self._save(tdir, t)
         elif t.state != "implement":
             raise state.IllegalTransition(f"{t.key}: cannot implement from {t.state}")
-        self._recover(t, task)
+        if self._recover(t, task) == "fenced":
+            self._save(tdir, state.transition(t, "paused", reason="fenced: recovery found a live group")); return "paused"
         if self._clear_or_honor_fence(tdir, t): return "paused"
 
         key = self._history_key(task, wt)
@@ -292,11 +301,14 @@ class Runner:
                 "base_tree": base, "agent": rung.agent, "rung": dataclasses.asdict(rung)}, sort_keys=True))
         stage = self.launch(argv, wt, timeout, env, adir / "stdout.log", adir / "stderr.log", on_start=on_start)
         end = _now()
-        if stage.terminated:
-            self._rewrite_artifact(adir / "attempt.json", json.dumps({"status": "completed", "pgid": stage.pgid,
-                "started_utc": started, "base_tree": base, "agent": rung.agent, "rung": dataclasses.asdict(rung)}, sort_keys=True))
         verification_seconds = 0.0
         violations = []
+        verify_pgids = []
+        def on_verify_start(pgid):
+            verify_pgids.append(pgid)
+            self._rewrite_artifact(adir / "attempt.json", json.dumps({"status": "running", "pgid": stage.pgid,
+                "started_utc": started, "base_tree": base, "agent": rung.agent, "rung": dataclasses.asdict(rung),
+                "verify_pgids": list(verify_pgids)}, sort_keys=True))
         if not stage.terminated:
             self._fence(stage, t, task, n)
             outcome, reason, changed = "environment", f"termination unverified pgid {stage.pgid}", []
@@ -314,7 +326,8 @@ class Runner:
             if outcome == "accepted":
                 verify_outcome, verify_reason = "accepted", "none"
                 for i, cmd in enumerate(task.verification_commands):
-                    vs = procs.run_stage(["/bin/sh", "-c", cmd], wt, timeout, env, adir / f"verify-{i}.out", adir / f"verify-{i}.err")
+                    vs = procs.run_stage(["/bin/sh", "-c", cmd], wt, timeout, env, adir / f"verify-{i}.out", adir / f"verify-{i}.err",
+                                          on_start=on_verify_start)
                     verification_seconds += vs.elapsed_s
                     if not vs.terminated:
                         self._fence(vs, t, task, n)
@@ -332,6 +345,10 @@ class Runner:
                     outcome, reason = "rejected", "verification introduced forbidden change: " + "; ".join(violations)
                 else:
                     outcome, reason = verify_outcome, verify_reason
+        if stage.terminated:
+            self._rewrite_artifact(adir / "attempt.json", json.dumps({"status": "completed", "pgid": stage.pgid,
+                "started_utc": started, "base_tree": base, "agent": rung.agent, "rung": dataclasses.asdict(rung),
+                "verify_pgids": verify_pgids}, sort_keys=True))
         restore = outcome in ("rejected", "protocol", "blocked") or (outcome == "timeout" and violations)
         diff = subprocess.run(["git", "-C", str(wt), "diff", base, worktree.snapshot(wt)], capture_output=True, text=True).stdout
         self._write_artifact(adir / "diff.patch", diff)

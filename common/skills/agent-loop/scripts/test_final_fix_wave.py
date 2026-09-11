@@ -1,5 +1,5 @@
 """Regression coverage for final runner integration fixes."""
-import json, os, pathlib, subprocess, sys, tempfile, time, unittest
+import json, os, pathlib, subprocess, sys, tempfile, threading, time, unittest
 from unittest.mock import patch
 import admission, contracts, metrics, procs, runner, state, worktree
 from test_runner import RunnerHarness, TASKS
@@ -77,12 +77,12 @@ class RunnerFinalFixTests(RunnerHarness):
     def test_recovery_marks_live_attempt_interrupted_and_uses_new_dir(self):
         t=self._fresh_ticket(); root=self.cfg.state_root/"attempts"/"ZIP-7873"/"001"/"1"; root.mkdir(parents=True)
         p=subprocess.Popen(["sleep", "60"], start_new_session=True); pgid=os.getpgid(p.pid)
+        threading.Thread(target=p.wait, daemon=True).start()  # reap promptly so kill_group can verify termination
         (root/"attempt.json").write_text(json.dumps({"status":"running","pgid":pgid}))
         self.scenarios=["pass"]
         self.assertEqual(runner.Runner(self.cfg, pi_launcher=self.launcher).implement_task(t, self.tasks[0], 0, self.wt), "accepted")
         self.assertEqual(json.loads((root/"attempt.json").read_text())["status"], "interrupted")
         self.assertTrue((root.parent/"2").exists())
-        p.wait(timeout=2)
 
 
 if __name__ == "__main__": unittest.main()

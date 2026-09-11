@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -110,6 +111,18 @@ class CreateTests(AttemptTestCase):
         with self.assertRaises(attempt.UnsafePath):
             self._create()
         self.assertFalse(adir.exists())
+
+    def test_create_raises_attempt_dir_exists_and_leaves_pre_existing_dir_untouched(self):
+        # A duplicate create() call (or a colliding n) must never delete an attempt dir it
+        # did not itself make -- only the leaf dir *we* mkdir'd gets cleaned up on failure.
+        adir = attempt.attempt_dir(self.cfg, "TICK-1", "001", 1)
+        adir.mkdir(parents=True)
+        marker = adir / "marker.txt"
+        marker.write_text("keep me")
+        with self.assertRaises(attempt.AttemptDirExists):
+            self._create()
+        self.assertTrue(adir.exists())
+        self.assertEqual(marker.read_text(), "keep me")
 
 
 class IdentityTests(AttemptTestCase):
@@ -223,6 +236,53 @@ class TransitionTests(AttemptTestCase):
         attempt.transition(copy_a, "LAUNCHING")
         with self.assertRaises(attempt.StaleRecord):
             attempt.set_flags(copy_b, history=True)
+
+    def test_stale_set_flags_does_not_clobber_earlier_flag_after_reload(self):
+        # CAS must key off rev, not status/n: two same-status set_flags calls (one setting
+        # `history`, the other `published`) must not silently overwrite each other's flag.
+        rec = self._create()
+        copy_a = attempt.load(rec.path)
+        copy_b = attempt.load(rec.path)
+        attempt.set_flags(copy_a, history=True)
+        with self.assertRaises(attempt.StaleRecord):
+            attempt.set_flags(copy_b, published=True)
+        reloaded = attempt.load(rec.path)
+        self.assertTrue(reloaded.history)
+        self.assertFalse(reloaded.published)
+
+    def test_two_processes_set_flags_on_different_flags_serialize_via_lock(self):
+        # Two real processes racing set_flags() on different flags: the per-attempt flock
+        # serializes their reload -> compute -> rewrite, and a StaleRecord retry loop lets
+        # the loser reload and succeed on its next attempt -- both flags end up set.
+        rec = self._create()
+        here = pathlib.Path(attempt.__file__).resolve().parent
+        adir = str(rec.path)
+
+        def worker_code(flag_name):
+            return (
+                f"import sys, time, pathlib\n"
+                f"sys.path.insert(0, {str(here)!r})\n"
+                f"import attempt\n"
+                f"adir = pathlib.Path({adir!r})\n"
+                f"for _ in range(200):\n"
+                f"    r = attempt.load(adir, validate_worktree=False)\n"
+                f"    try:\n"
+                f"        attempt.set_flags(r, {flag_name}=True)\n"
+                f"        break\n"
+                f"    except attempt.StaleRecord:\n"
+                f"        time.sleep(0.01)\n"
+                f"else:\n"
+                f"    raise SystemExit(1)\n"
+            )
+
+        p1 = subprocess.Popen([sys.executable, "-c", worker_code("history")])
+        p2 = subprocess.Popen([sys.executable, "-c", worker_code("published")])
+        self.assertEqual(p1.wait(timeout=15), 0)
+        self.assertEqual(p2.wait(timeout=15), 0)
+
+        final = attempt.load(rec.path)
+        self.assertTrue(final.history)
+        self.assertTrue(final.published)
 
 
 class LoadTests(AttemptTestCase):

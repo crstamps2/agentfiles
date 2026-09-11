@@ -5,8 +5,10 @@ state machine, and the no-follow I/O discipline used for every write/read under
 `attempts/`.
 """
 from __future__ import annotations
+import contextlib
 import dataclasses
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -30,6 +32,13 @@ class UnreadableRecord(ValueError):
 
 
 class IllegalAttemptTransition(ValueError):
+    pass
+
+
+class AttemptDirExists(RuntimeError):
+    """Raised when create() is asked to create an attempt dir that already exists on disk.
+    create() only ever cleans up (rmtree) a leaf directory it itself made; a pre-existing
+    dir -- ours or a duplicate caller's -- is left untouched."""
     pass
 
 
@@ -242,6 +251,7 @@ class Record:
     published: bool = False
     history: bool = False
     lifecycle: bool = False
+    rev: int = 0
 
     # Not a dataclass field: dataclasses.fields()/asdict() never see it, so it never
     # leaks into to_json(); it is the on-disk location this record was loaded from /
@@ -310,33 +320,61 @@ def load(adir, validate_worktree: bool = True) -> Record:
 def _check_not_stale(rec: Record) -> None:
     """Compare-and-swap guard: re-read the on-disk record (skipping worktree validation --
     this is a same-process freshness check, not a trust check) and refuse to overwrite it if
-    it has moved on since `rec` was loaded. Prevents a stale in-memory copy (e.g. held across
-    two overlapping recovery passes) from clobbering a newer on-disk write."""
+    it has moved on since `rec` was loaded. `rev` is bumped on every rewrite (transition or
+    set_flags), so comparing it alone subsumes any status/n check -- two same-status
+    set_flags calls that raced would otherwise pass a status/n comparison and clobber each
+    other's flags. Must be called while holding `_attempt_lock(rec.path)` so the
+    reload-compute-rewrite sequence is atomic across processes."""
     on_disk = load(rec.path, validate_worktree=False)
-    if on_disk.status != rec.status or on_disk.n != rec.n:
+    if on_disk.rev != rec.rev:
         raise StaleRecord(
-            f"{rec.attempt_id}: stale record -- on-disk is status={on_disk.status!r} n={on_disk.n!r}, "
-            f"in-memory is status={rec.status!r} n={rec.n!r}")
+            f"{rec.attempt_id}: stale record -- on-disk is rev={on_disk.rev!r} (status={on_disk.status!r}), "
+            f"in-memory is rev={rec.rev!r} (status={rec.status!r})")
+
+
+@contextlib.contextmanager
+def _attempt_lock(adir):
+    """Exclusive fcntl lock spanning an attempt record's reload -> compute -> rewrite, so two
+    processes racing on the same attempt dir are serialized rather than relying on the CAS
+    check alone to detect (not prevent) the race. The lock file is created (safe_write-style,
+    no-follow + O_EXCL) the first time; a pre-existing one is opened normally."""
+    lock_path = pathlib.Path(adir) / ".attempt.lock"
+    try:
+        safe_write(lock_path, "")
+    except FileExistsError:
+        pass
+    flags = os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(lock_path, flags)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def transition(rec: Record, to: str, **fields) -> Record:
     allowed = NEXT.get(rec.status, set())
     if to not in allowed:
         raise IllegalAttemptTransition(f"{rec.attempt_id}: {rec.status} -> {to} is not a legal transition")
-    _check_not_stale(rec)
-    new_rec = dataclasses.replace(rec, status=to, **fields)
-    new_rec.path = rec.path
-    safe_rewrite(pathlib.Path(rec.path) / "attempt.json", to_json(new_rec))
+    with _attempt_lock(rec.path):
+        _check_not_stale(rec)
+        new_rec = dataclasses.replace(rec, status=to, rev=rec.rev + 1, **fields)
+        new_rec.path = rec.path
+        safe_rewrite(pathlib.Path(rec.path) / "attempt.json", to_json(new_rec))
     return new_rec
 
 
 def set_flags(rec: Record, **flags) -> Record:
     """Rewrite the record with updated projection flags (history/published/lifecycle) or
     other non-state fields, without a state transition."""
-    _check_not_stale(rec)
-    new_rec = dataclasses.replace(rec, **flags)
-    new_rec.path = rec.path
-    safe_rewrite(pathlib.Path(rec.path) / "attempt.json", to_json(new_rec))
+    with _attempt_lock(rec.path):
+        _check_not_stale(rec)
+        new_rec = dataclasses.replace(rec, rev=rec.rev + 1, **flags)
+        new_rec.path = rec.path
+        safe_rewrite(pathlib.Path(rec.path) / "attempt.json", to_json(new_rec))
     return new_rec
 
 
@@ -400,7 +438,12 @@ def create(cfg, ticket_key: str, task: contracts.Task, worktree, n: int, agent, 
     attempt_id, lineage, generation = identity(ticket_key, task, wt, n)
 
     adir = attempt_dir(cfg, ticket_key, task.id, n)
-    safe_mkdir(adir)
+    safe_mkdir(adir.parent)
+    try:
+        os.mkdir(adir, 0o700)
+    except FileExistsError:
+        raise AttemptDirExists(f"attempt dir already exists: {adir}")
+    created_leaf = True
 
     try:
         safe_write(adir / "task.toml", task_toml(task))
@@ -441,5 +484,6 @@ def create(cfg, ticket_key: str, task: contracts.Task, worktree, n: int, agent, 
         safe_write(adir / "attempt.json", to_json(rec))
         return rec
     except BaseException:
-        shutil.rmtree(adir, ignore_errors=True)
+        if created_leaf:
+            shutil.rmtree(adir, ignore_errors=True)
         raise

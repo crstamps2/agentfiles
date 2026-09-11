@@ -348,7 +348,8 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True); sub.add_parser("status"); sub.add_parser("run-once")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
     d = sub.add_parser("dry-run"); d.add_argument("--worktree", required=True); d.add_argument("--tasks", required=True)
-    d.add_argument("--scenario", default="pass"); d.add_argument("--ticket", default="DRY-1"); d.add_argument("--skip-admission", action="store_true")
+    d.add_argument("--scenario", default="pass")
+    d.add_argument("--real", action="store_true", help="launch the real `pi` worker instead of fake_worker.py (supervised first runs; run-once is Plan 3)"); d.add_argument("--ticket", default="DRY-1"); d.add_argument("--skip-admission", action="store_true")
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
@@ -360,7 +361,11 @@ def main(argv=None) -> int:
             fake_argv = [sys.executable, str(pathlib.Path(__file__).with_name("fake_worker.py")), *pargv[2:]]
             return procs.run_stage(fake_argv, cwd, timeout_s, fake_env, out, err, on_start=on_start)
         admission_override = admission.Decision(True, []) if a.skip_admission else None
-        r = Runner(cfg, pi_launcher=fake_launcher, admission_override=admission_override)
+        launcher = None if a.real else fake_launcher          # --real: procs.run_stage with the real pi argv
+        if a.real:
+            print("dry-run --real: launching the REAL pi worker (cheap arm models may bill); admission enforced" +
+                  (" (SKIPPED)" if a.skip_admission else ""), file=sys.stderr)
+        r = Runner(cfg, pi_launcher=launcher, admission_override=admission_override)
     else: r = Runner(cfg)
     # Every subcommand except `status` and `clear-fence` (handled above) reconciles first,
     # under the global runner lease, before any ticket selection or dispatch.

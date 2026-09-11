@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -18,6 +20,9 @@ import procid
 import reconcile
 import state
 import worktree
+
+
+HERE = pathlib.Path(__file__).resolve().parent
 
 
 def git(wt, *a):
@@ -970,6 +975,125 @@ def dataclasses_replace_repo_id(rec, repo_id):
     new = dataclasses.replace(rec, repo_id=repo_id)
     new.path = rec.path
     return new
+
+
+class ClearFenceTests(ReconcilePart2TestCase):
+    """`reconcile.clear_fence` -- the operator-facing `clear-fence` CLI's implementation.
+    See the design's "## `clear-fence`" section. The CLI's own routing to this function is
+    covered by test_runner.py's test_clear_fence_cli_dead_fence_interrupts_via_reconcile."""
+
+    def test_refuses_while_runner_lease_held_by_another_process(self):
+        lease_path = self.cfg.state_root / "locks" / "runner"
+        lease_path.parent.mkdir(parents=True, exist_ok=True)
+        script = (
+            f"import sys, time\n"
+            f"sys.path.insert(0, {str(HERE)!r})\n"
+            f"import locks\n"
+            f"lease = locks.Lease({str(lease_path)!r}, 'runner')\n"
+            f"assert lease.acquire(hold=True)\n"
+            f"print('ready', flush=True)\n"
+            f"time.sleep(30)\n"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+        try:
+            line = proc.stdout.readline()
+            self.assertEqual(line.strip(), "ready")
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                rc = reconcile.clear_fence(self.cfg, force=False)
+            self.assertEqual(rc, 3)
+            self.assertIn(str(proc.pid), buf.getvalue())
+            self.assertIn("runner live", buf.getvalue())
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    def test_dead_fence_produced_by_fence_interrupts_attempt_and_removes_fence(self):
+        rec = self._create()
+        (self.wt / "app" / "junk.rb").write_text("junk\n")
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        stages = [{"kind": "worker", "idx": 0, "proc": None, "terminated": False,
+                  "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+        dead_proc = {"boot_id": locks.boot_id(), "pgid": 999999, "pid": 999999,
+                    "start_time": "x", "cmd": "y"}
+        with self.assertRaises(reconcile.FenceExit):
+            reconcile.fence(self.cfg, rec, "termination unverified", proc=dead_proc)
+
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        self.assertTrue(fence_path.exists())
+        rc = reconcile.clear_fence(self.cfg, force=False)
+        self.assertEqual(rc, 0)
+        self.assertFalse(fence_path.exists())
+        reloaded = attempt.load(rec.path)
+        self.assertEqual(reloaded.status, "INTERRUPTED")
+        self.assertTrue(reloaded.history and reloaded.published and reloaded.lifecycle)
+        self.assertFalse((self.wt / "app" / "junk.rb").exists())
+
+    def test_force_on_live_group_marks_operator_forced_and_does_not_restore(self):
+        p, pid = spawn_sleep()
+        try:
+            rec = self._create()
+            (self.wt / "app" / "live_junk.rb").write_text("junk\n")
+            rec = attempt.transition(rec, "LAUNCHING")
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+            stages = [{"kind": "worker", "idx": 0, "proc": pid.to_dict(), "terminated": False,
+                      "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+            rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+            with self.assertRaises(reconcile.FenceExit):
+                reconcile.fence(self.cfg, rec, "termination unverified", proc=pid.to_dict())
+
+            fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+            self.assertTrue(fence_path.exists())
+
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                rc = reconcile.clear_fence(self.cfg, force=False)
+            self.assertEqual(rc, 3)
+            self.assertTrue(fence_path.exists())
+
+            rc = reconcile.clear_fence(self.cfg, force=True)
+            self.assertEqual(rc, 0)
+            self.assertFalse(fence_path.exists())
+            reloaded = attempt.load(rec.path)
+            self.assertEqual(reloaded.status, "ORPHANED")
+            self.assertTrue(reloaded.operator_forced)
+            self.assertTrue((self.wt / "app" / "live_junk.rb").exists())    # NOT restored
+
+            # Next runner start: the group is still alive, no fence on disk -> re-fenced.
+            with self.assertRaises(reconcile.FenceExit) as cm:
+                reconcile.reconcile(self.cfg, "run-y")
+            self.assertEqual(cm.exception.code, 3)
+            self.assertTrue(fence_path.exists())
+            reloaded2 = attempt.load(rec.path)
+            self.assertEqual(reloaded2.status, "ORPHANED")
+            self.assertTrue((self.wt / "app" / "live_junk.rb").exists())   # still not restored
+        finally:
+            reap(p)
+
+    def test_corrupt_fence_requires_force(self):
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence_path.parent.mkdir(parents=True, exist_ok=True)
+        fence_path.write_text("not json{")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rc = reconcile.clear_fence(self.cfg, force=False)
+        self.assertEqual(rc, 3)
+        self.assertTrue(fence_path.exists())
+        self.assertIn("corrupt fence", buf.getvalue())
+
+        rc = reconcile.clear_fence(self.cfg, force=True)
+        self.assertEqual(rc, 0)
+        self.assertFalse(fence_path.exists())
+
+    def test_no_fence_present_is_a_no_op(self):
+        rc = reconcile.clear_fence(self.cfg, force=False)
+        self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":

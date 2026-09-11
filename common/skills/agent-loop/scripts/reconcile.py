@@ -10,6 +10,7 @@ import os
 import pathlib
 import stat
 import subprocess
+import sys
 import tomllib
 
 import attempt as attempt_mod
@@ -550,3 +551,121 @@ def reconcile(cfg, run_id) -> RunContext:
         lease.release()
         raise
     return RunContext(cfg, run_id, lease, closed=False, _token=_TOKEN)
+
+
+# ---------------------------------------------------------------------------
+# clear-fence: the CLI's operator-facing break-glass path. Runs under the global
+# runner lease (never concurrently with a live runner) and implements the design's
+# `clear-fence` semantics exactly -- see "## `clear-fence`" in the design doc.
+# ---------------------------------------------------------------------------
+
+def _validate_fence_schema(cfg, data) -> tuple[pathlib.Path, dict]:
+    """Raise ValueError for anything the design calls corrupt: not an object; missing
+    attempt_dir/proc/reason; attempt_dir not resolvable under attempts/; proc not a dict
+    (or not a valid ProcId shape). Returns (resolved attempt_dir, proc) on success."""
+    if not isinstance(data, dict):
+        raise ValueError("not an object")
+    required = ("attempt_dir", "proc", "reason")
+    if any(k not in data for k in required):
+        raise ValueError(f"missing required key(s), need {required}")
+    proc = data["proc"]
+    if proc is None or not isinstance(proc, dict):
+        raise ValueError("proc must be a dict, not null")
+    try:
+        procid_mod.ProcId.from_dict(proc)
+    except (KeyError, TypeError) as e:
+        raise ValueError(f"invalid proc shape: {e}")
+    attempts_root = (pathlib.Path(cfg.state_root) / "attempts").resolve()
+    try:
+        adir = pathlib.Path(data["attempt_dir"]).resolve()
+    except OSError as e:
+        raise ValueError(f"unresolvable attempt_dir: {e}")
+    try:
+        adir.relative_to(attempts_root)
+    except ValueError:
+        raise ValueError(f"attempt_dir {adir} is outside {attempts_root}")
+    return adir, proc
+
+
+def clear_fence(cfg, force: bool) -> int:
+    """CLI entry point for `clear-fence`. Acquires the global runner lease with `hold=True`
+    -- the same lease `reconcile()` takes -- so this can never run concurrently with a live
+    runner: if the lease is held by a live process, print the owner (pid, heartbeat) and
+    exit 3 without touching the fence (the break-glass sequence documented in SKILL.md is:
+    verify the runner is wedged, kill it, re-run `clear-fence`).
+
+    With the lease held: read the fence via `attempt.safe_read` (no-follow) and
+    schema-validate it. A corrupt fence (unreadable, unparseable, wrong shape, an
+    unresolvable/outside-attempts attempt_dir, or a proc that doesn't parse) is only
+    clearable with `--force` -- nothing else can be done for it, since there is no attempt
+    record to safely act on. Otherwise classify the proc:
+
+    - `dead` -> load the referenced attempt and drive it to INTERRUPTED (via `interrupt()`,
+      which also projects) if it is ORPHANED, or just project it if it is already
+      INTERRUPTED (idempotent: a crash between that transition and the fence unlink on a
+      prior run leaves exactly this state). Any other status is unexpected -- refuse.
+    - `ours-alive` / `unknown` without `--force` -> refuse, printing the proc.
+    - `ours-alive` / `unknown` with `--force` -> mark the attempt `operator_forced=True`
+      (status stays ORPHANED; NOT restored, NOT projected -- a live/unknown group may still
+      be writing) and remove the fence. The next runner start sees an ORPHANED record with
+      no fence and re-fences it (fail closed) unless the group is by then dead.
+    """
+    lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "runner", "runner")
+    if not lease.acquire(hold=True):
+        rec = locks.owner(pathlib.Path(cfg.state_root) / "locks" / "runner")
+        pid = rec.get("pid") if rec else "?"
+        hb = rec.get("heartbeat_utc") if rec else "?"
+        print(f"runner live: pid {pid} since {hb}; kill it and retry (break-glass)", file=sys.stderr)
+        return 3
+    try:
+        fp = _fence_path(cfg)
+        try:
+            text = attempt_mod.safe_read(fp)
+        except FileNotFoundError:
+            print("no fence present", file=sys.stderr)
+            return 0
+        except attempt_mod.UnsafePath:
+            if not force:
+                print("corrupt fence; use --force", file=sys.stderr)
+                return 3
+            fp.unlink()
+            return 0
+
+        try:
+            data = json.loads(text)
+            adir, proc = _validate_fence_schema(cfg, data)
+            rec = attempt_mod.load(adir)
+        except (json.JSONDecodeError, ValueError, attempt_mod.UnreadableRecord):
+            if not force:
+                print("corrupt fence; use --force", file=sys.stderr)
+                return 3
+            fp.unlink()
+            return 0
+
+        status = procid_mod.classify(procid_mod.ProcId.from_dict(proc))
+        if status == "dead":
+            if rec.status == "ORPHANED":
+                interrupt(cfg, rec)
+            elif rec.status == "INTERRUPTED":
+                project_all(cfg, rec)
+            else:
+                print(f"{rec.attempt_id}: referenced attempt is neither ORPHANED nor "
+                     f"INTERRUPTED (status={rec.status}); refusing to clear fence", file=sys.stderr)
+                return 3
+            fp.unlink()
+            return 0
+
+        # ours-alive or unknown.
+        if not force:
+            print(f"refusing to clear fence: proc is {status}: {json.dumps(proc, sort_keys=True)}",
+                 file=sys.stderr)
+            return 3
+        # Stamp `proc` onto the record too, not just the (now-deleted) fence file: STAGE_DONE
+        # already nulled rec.proc (only the stage entry keeps it) before fence() was ever
+        # called, so without this the next reconcile's ORPHANED-with-no-fence path would
+        # classify(None) as "dead" and wrongly interrupt/restore under a still-live group.
+        attempt_mod.set_flags(rec, operator_forced=True, proc=proc)
+        fp.unlink()
+        return 0
+    finally:
+        lease.release()

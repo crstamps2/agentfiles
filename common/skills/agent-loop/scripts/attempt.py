@@ -251,6 +251,7 @@ class Record:
     published: bool = False
     history: bool = False
     lifecycle: bool = False
+    operator_forced: bool = False
     rev: int = 0
 
     # Not a dataclass field: dataclasses.fields()/asdict() never see it, so it never

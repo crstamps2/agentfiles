@@ -6,35 +6,100 @@ description: Operate the autonomous ZIP-6774 agent loop -- status, pause/resume,
 # /agent-loop
 
 Operator surface for the runner in `scripts/runner.py`. Design:
-`docs/superpowers/specs/2026-09-10-zip-6774-agent-loop-design.md`.
+`docs/superpowers/specs/2026-09-10-zip-6774-agent-loop-design.md`, amended by
+`docs/superpowers/specs/2026-09-10-agent-loop-1c-attempt-lifecycle-design.md`
+(attempt lifecycle, crash recovery, and `clear-fence`).
+
+## Trust boundary (read this before touching state by hand)
+
+Workers run as Cody's UID with `bash`. They *can* rewrite `attempt.json`, the fence,
+`state.json`, or escape their recorded process group. The recovery machinery below is a
+**crash-consistency design for cooperative workers, not a security boundary against a
+hostile one** -- it guarantees the loop recovers cleanly from a runner crash or kill at any
+instruction boundary, not that a worker cannot corrupt its own recovery state on purpose.
+OS-level sandboxing of workers remains out of scope for the pilot.
+
+## Every start reconciles
+
+Every subcommand except `status` runs the global recovery pass (`reconcile.reconcile`)
+**before** touching a ticket, admission, or the heavy lane: it checks `locks/heavy.fence`,
+then sweeps every attempt directory under `attempts/` (all tickets, all tasks) and drives
+each non-terminal record forward -- killing a live group left over from a prior crash,
+fencing anything it cannot prove is dead, restoring/classifying/projecting anything it can.
+Nothing is dispatched until that pass completes. If it cannot proceed safely it exits 3 and
+prints `fenced: <reason>` to stderr; an operator must inspect (and, if a fence is involved,
+run `clear-fence`).
+
+An attempt moves through these states (`attempt.json` is the single source of truth; every
+other record -- ticket history, metrics, the ladder -- is a *projection* of it):
+
+```
+CREATED -> LAUNCHING -> RUNNING -> STAGE_DONE -> CLASSIFYING -> CLASSIFIED -> FINALIZED -> PROJECTED
+                                        |                            \
+                                        v                             (crash anywhere above)
+                                    FENCING -> ORPHANED -> INTERRUPTED
+```
+
+`PROJECTED` and `INTERRUPTED` are terminal. `ORPHANED` is terminal until `clear-fence` moves
+it to `INTERRUPTED` (or re-fences it, if the group is still alive).
 
 ## Commands
 
 All run from anywhere; `--config` defaults to this skill's `hopper.toml`.
 
-- **Status** -- `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py status`
+- **Status** (the only subcommand that skips reconcile) --
+  `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py status`
   Prints pause state, heavy-lane holder, and each hopper ticket's state and reason.
-- **Run-once** (Plan 1 stub) -- `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py run-once`
-  performs no work; ticket selection is not wired until Plan 3.
+- **Run-once** (Plan 1c stub) -- `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py run-once`
+  reconciles, then performs no ticket work; real ticket selection is not wired until Plan 3.
 - **Dry run** (no models, no Jira, fake worker):
   `python3 .../runner.py dry-run --worktree <path> --tasks <tasks.toml> [--scenario <name>] [--ticket <KEY>] [--skip-admission]`
   Scenarios: `pass fail malformed escape env_escape tests timeout owner env pass_on_feedback`.
   The CLI always replaces `pi` with the bundled fake worker; it never launches a real model.
   Manifest verification commands still run in the scratch worktree.
   - `--skip-admission`: For tests and demos on a loaded machine; never for real runs. Bypasses the admission controller's resource checks (compressor, load, memory pressure, thermal state, disk) and allows the task to proceed unconditionally. Defaults to off (admission is enforced).
+- **`clear-fence [--force]`** -- the operator's break-glass tool for `locks/heavy.fence`. See
+  below.
+
+## `clear-fence`
+
+Runs **under the global runner lease** -- it can never run concurrently with a live runner.
+
+- **A runner is live** (the lease is held): refuses immediately, printing the holder's pid
+  and heartbeat to stderr, exit 3. The fence is untouched. Break-glass sequence:
+  1. Verify the runner is actually wedged (check `status`, check the pid's process table
+     entry, check the last heartbeat) -- do not skip this step.
+  2. Kill that pid.
+  3. Re-run `clear-fence`. The lease is now reclaimable (a dead PID never blocks it).
+- **No runner holds the lease:** reads the fence and classifies its process group.
+  - **Dead** -- drives the referenced attempt `ORPHANED -> INTERRUPTED` (records the
+    observed tree, restores to `base_tree`, verifies convergence, projects) and removes the
+    fence. The next runner start proceeds normally.
+  - **Alive (ours or unknown) without `--force`** -- refuses, printing the process
+    description, exit 3. Nothing changes.
+  - **Alive (ours or unknown) with `--force`** -- removes the fence and marks the attempt
+    `operator_forced: true`, but does **not** restore or project -- a live/unknown group may
+    still be writing to the worktree. The next runner start sees an `ORPHANED` record with no
+    fence and **re-fences it** (fail closed) unless the group is dead by then, in which case
+    it completes the `INTERRUPTED` path itself. `--force` unblocks an operator who has
+    independently confirmed and killed the process; it never authorizes a restore under a
+    live writer.
+  - **Corrupt fence** (unreadable, wrong shape, an `attempt_dir` outside `attempts/`, or a
+    proc that doesn't parse) -- clearable only with `--force` (nothing else can be done for
+    it; there is no attempt record to safely act on).
 
 ## State on disk
 
 `~/.local/state/agent-loop/` (mode 0700):
-`tickets/<KEY>/state.json`, `attempts/<KEY>/<task>/<n>/{task.md,task.toml,prompt.md,body.md,result.md,diff.patch,base_tree,stdout.log,stderr.log,session/}`,
+`tickets/<KEY>/state.json`,
+`attempts/<KEY>/<task>/<n>/{attempt.json,task.md,task.toml,prompt.md,body.md,result.md,diff.patch,base_tree,stdout.log,stderr.log,verify-*.out/err,session/}`,
 `attempts/<KEY>/<task>/feedback.md`, `locks/heavy`, `locks/heavy.fence`, `locks/runner`, `metrics.jsonl`, `PAUSE`.
 
-- `locks/runner` -- global runner lease; a second instance exits with code 3.
-- `locks/heavy.fence` -- an unverified worker process group. The lane remains fenced until its PGID is dead.
-  If the group's pgid is unreachable (`PermissionError`, e.g. a foreign/unreapable zombie), recovery marks the
-  attempt `orphaned` and leaves the fence in place for an operator: run
-  `python3 .../runner.py clear-fence` to print the fence and its current process-group state, and it only
-  removes the fence when that state is `dead` (pass `--force` to clear it anyway once you've verified by hand).
+- `locks/runner` -- global runner lease, held (exclusive `flock`) for the life of the
+  process by both the runner and `clear-fence`; a second instance exits with code 3.
+- `locks/heavy.fence` -- an attempt whose process group's termination could not be verified.
+  The lane stays fenced until an operator runs `clear-fence` (see above); a fenced runner
+  start also exits 3 without dispatching anything.
 
 ## Pause, resume, and takeover
 

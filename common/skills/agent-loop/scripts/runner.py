@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
-import json
 import os
 import pathlib
 import sys
@@ -160,6 +159,12 @@ class Runner:
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
         agentdef.assert_worker_safe(agent)
+        # Config contract: the runner asserts at launch that the rendered local-worker agent's
+        # model equals [local].model, so there is one validated source for what actually runs.
+        # Checked before attempt.create() -- a mismatch must never produce an attempt record.
+        if rung.agent == "local-worker" and self.cfg.local_model and agent.model != self.cfg.local_model:
+            raise RuntimeError(
+                f"local-worker renders {agent.model} but [local].model is {self.cfg.local_model}")
         try:
             rec = attempt.create(self.cfg, t.key, task, wt, n, agent, arm, rung, self.run_id)
         except attempt.UnsafePath as e:
@@ -319,6 +324,10 @@ def main(argv=None) -> int:
     d = sub.add_parser("dry-run"); d.add_argument("--worktree", required=True); d.add_argument("--tasks", required=True)
     d.add_argument("--scenario", default="pass"); d.add_argument("--ticket", default="DRY-1"); d.add_argument("--skip-admission", action="store_true")
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
+    if a.cmd == "status":
+        return Runner(cfg).status()
+    if a.cmd == "clear-fence":
+        return reconcile.clear_fence(cfg, a.force)
     if a.cmd == "dry-run":
         def fake_launcher(pargv, cwd, timeout_s, env, out, err, on_start=None):
             fake_env = {**(env or {}), "AL_SCENARIO": a.scenario}
@@ -327,38 +336,12 @@ def main(argv=None) -> int:
         admission_override = admission.Decision(True, []) if a.skip_admission else None
         r = Runner(cfg, pi_launcher=fake_launcher, admission_override=admission_override)
     else: r = Runner(cfg)
-    if a.cmd == "status": return r.status()
-    if a.cmd == "clear-fence":
-        # NOTE: this reads/writes the pre-Plan-1c fence file shape (pgid/ticket/task/attempt).
-        # reconcile.fence() (Plan 1c Task 4) writes a different shape (attempt_dir/proc/reason).
-        # Reconciling clear-fence with the new shape is Plan 1c Task 7's job; left as-is here.
-        fence_path = cfg.state_root / "locks" / "heavy.fence"
-        if not fence_path.exists():
-            print("no fence present", file=sys.stderr); return 0
-        data = json.loads(fence_path.read_text())
-        print(json.dumps(data, sort_keys=True))
-        gstate = procs.group_state(int(data["pgid"]))
-        print(f"group_state={gstate}", file=sys.stderr)
-        if gstate == "dead" or a.force:
-            try:
-                ap_ = cfg.state_root / "attempts" / data["ticket"] / data["task"] / data["attempt"] / "attempt.json"
-                if ap_.exists():
-                    obj = json.loads(ap_.read_text())
-                    if obj.get("status") in {"launching", "running"}:
-                        obj["status"] = "orphaned"
-                        obj["orphaned_by"] = "clear-fence"
-                        tmp = ap_.with_name(f"{ap_.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
-                        tmp.write_text(json.dumps(obj, sort_keys=True)); os.replace(tmp, ap_)
-            except (OSError, json.JSONDecodeError, KeyError):
-                pass  # fence data corrupt or attempt.json missing; clearing fence anyway
-            fence_path.unlink()
-            print("fence cleared", file=sys.stderr); return 0
-        print(f"refusing to clear fence: group state is {gstate} (use --force to override)", file=sys.stderr)
-        return 1
+    # Every subcommand except `status` and `clear-fence` (handled above) reconciles first,
+    # under the global runner lease, before any ticket selection or dispatch.
     try:
         ctx = reconcile.reconcile(cfg, r.run_id)
     except reconcile.FenceExit as e:
-        print(e.reason, file=sys.stderr); return 3
+        print(f"fenced: {e.reason}", file=sys.stderr); return 3
     try:
         if a.cmd == "run-once": print("run-once: real ticket execution lands in Plan 3; nothing to do", file=sys.stderr); return 0
         tasks = contracts.load_tasks(a.tasks); t = state.load(cfg.ticket_dir(a.ticket)); t.worktree = a.worktree
@@ -373,7 +356,7 @@ def main(argv=None) -> int:
             if out != "accepted": return 1
         return 0
     except reconcile.FenceExit as e:
-        print(e.reason, file=sys.stderr); return 3
+        print(f"fenced: {e.reason}", file=sys.stderr); return 3
     finally: ctx.close()
 
 

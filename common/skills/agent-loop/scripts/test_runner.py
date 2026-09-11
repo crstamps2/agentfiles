@@ -1,7 +1,7 @@
 # test_runner.py
-import json, os, pathlib, re, subprocess, sys, tempfile, unittest
+import contextlib, io, json, os, pathlib, re, subprocess, sys, tempfile, threading, time, unittest
 from unittest.mock import patch
-import attempt, config, contracts, metrics, procs, reconcile, runner, state, worktree
+import agentdef, attempt, config, contracts, ladder, locks, metrics, procid, procs, reconcile, runner, state, worktree
 
 HERE = pathlib.Path(__file__).resolve().parent
 FAKE = HERE / "fake_worker.py"
@@ -43,9 +43,15 @@ class RunnerHarness(unittest.TestCase):
         (self.wt / "app" / "components").mkdir(parents=True); (self.wt / "app" / "components" / ".keep").write_text("")
         git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "init")
         agents = root / "agents"; agents.mkdir()
-        for n, m in (("cloud-worker", "ollama-cloud/x"), ("local-worker", "ollama-local/x"), ("premium-worker", "openai-codex/x")):
+        toml_source = (HERE.parent / "hopper.toml").read_text()
+        # local-worker's rendered model must match [local].model (the launch-model check,
+        # Task 7) -- read it straight out of the real hopper.toml rather than hard-coding a
+        # second copy that could silently drift from the production ctx32k pin.
+        local_model_match = re.search(r'model = "([^"]+)"', toml_source)
+        self.local_model_default = local_model_match.group(1)
+        for n, m in (("cloud-worker", "ollama-cloud/x"), ("local-worker", self.local_model_default), ("premium-worker", "openai-codex/x")):
             (agents / f"{n}.md").write_text(AGENT.format(name=n, model=m))
-        toml = (HERE.parent / "hopper.toml").read_text()
+        toml = toml_source
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{agents}"')
         toml = toml.replace("heavy_stage_s = 4500", "heavy_stage_s = 3")
@@ -425,35 +431,7 @@ class RunnerHarness(unittest.TestCase):
         with self.assertRaises(TypeError):
             r.implement_task(None, t, self.tasks[0], 0, self.wt)
 
-    def test_clear_fence_cli_refuses_live_and_clears_dead(self):
-        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
-        fence_path.parent.mkdir(parents=True, exist_ok=True)
-        fence_data = {"pgid": 424242, "ticket": "ZIP-7873", "task": "001", "attempt": "1",
-                      "reason": "recovery: group survived kill"}
-        cfgfile = str(self.cfg.state_root.parent / "hopper.toml")
 
-        fence_path.write_text(json.dumps(fence_data))
-        with patch("runner.procs.group_state", return_value="alive"):
-            rc = runner.main(["--config", cfgfile, "clear-fence"])
-        self.assertEqual(rc, 1); self.assertTrue(fence_path.exists())
-
-        with patch("runner.procs.group_state", return_value="dead"):
-            rc = runner.main(["--config", cfgfile, "clear-fence"])
-        self.assertEqual(rc, 0); self.assertFalse(fence_path.exists())
-
-        fence_path.write_text(json.dumps(fence_data))
-        with patch("runner.procs.group_state", return_value="alive"):
-            rc = runner.main(["--config", cfgfile, "clear-fence", "--force"])
-        self.assertEqual(rc, 0); self.assertFalse(fence_path.exists())
-
-    # ----- Deleted: test_clear_fence_force_marks_running_attempt_orphaned.
-    # Reason: this test's second half planted a legacy-shape attempt.json under attempts/ and
-    # then called implement_task directly -- reconcile.reconcile()'s global sweep (which
-    # implement_task now requires via RunContext) walks every attempt dir under attempts/ and
-    # fails closed (FenceExit) on any record without worktree/repo_id, so the legacy record
-    # can no longer coexist with a real run. clear-fence itself (the CLI branch exercised by
-    # test_clear_fence_cli_refuses_live_and_clears_dead, unchanged above) is untouched by this
-    # task; reconciling its fence-file shape with reconcile.fence()'s new shape is Task 7's job.
 
     # ----- Deleted: test_rewrite_artifact_tolerates_leftover_tmp.
     # Reason: Runner._write_artifact/_rewrite_artifact are deleted per the brief; the no-follow
@@ -651,6 +629,142 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rows[0]["outcome"], "protocol")
         self.assertIn("stderr.log", rows[0]["reason"])
         self.assertEqual(outside.read_text(), "keep")
+
+    # ----- Task 7: `main` reconciles first (every subcommand but `status`); `clear-fence`
+    # routes to reconcile.clear_fence; launch-model check. ------------------------------
+    #
+    # Deleted: test_clear_fence_cli_refuses_live_and_clears_dead. Reason: it read/wrote the
+    # pre-Plan-1c fence shape ({pgid, ticket, task, attempt}) and patched
+    # runner.procs.group_state, both gone now that the CLI branch is `reconcile.clear_fence`
+    # operating on the {attempt_dir, proc, reason} schema over a real attempt.Record
+    # produced by reconcile.fence(). Replaced by test_clear_fence_cli_dead_fence_interrupts
+    # below (CLI wiring) plus reconcile.py's own ClearFenceTests (semantics: lease conflict,
+    # dead/live/force/corrupt), per the brief.
+
+    def _spawn_sleep(self):
+        p = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        time.sleep(0.1)
+        threading.Thread(target=p.wait, daemon=True).start()
+        return p, procid.capture(p.pid)
+
+    def _reap(self, p):
+        try:
+            os.killpg(os.getpgid(p.pid), 9)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            p.wait(timeout=2)
+        except Exception:
+            pass
+
+    def test_clear_fence_cli_dead_fence_interrupts_via_reconcile(self):
+        # Wiring test: the CLI branch is a thin call into reconcile.clear_fence; the full
+        # semantics matrix (lease conflict, dead/live/force, corrupt) lives in
+        # test_reconcile.py's ClearFenceTests.
+        rung = ladder.Rung("cloud-worker", "cheap", 1)
+        agent = agentdef.load(self.cfg.pi_agents_dir, "cloud-worker")
+        rec = attempt.create(self.cfg, "ZIP-7873", self.tasks[0], self.wt, 1, agent, "cloud", rung, "prior-run")
+        rec = attempt.transition(rec, "LAUNCHING", stages=[{"kind": "worker", "idx": 0, "proc": None}])
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        stages = [{"kind": "worker", "idx": 0, "proc": None, "terminated": False,
+                  "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+        rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+        dead_proc = {"boot_id": locks.boot_id(), "pgid": 999999, "pid": 999999,
+                    "start_time": "x", "cmd": "y"}
+        with self.assertRaises(reconcile.FenceExit):
+            reconcile.fence(self.cfg, rec, "termination unverified", proc=dead_proc)
+
+        cfgfile = str(self.cfg.state_root.parent / "hopper.toml")
+        rc = runner.main(["--config", cfgfile, "clear-fence"])
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.cfg.state_root / "locks" / "heavy.fence").exists())
+        reloaded = attempt.load(rec.path)
+        self.assertEqual(reloaded.status, "INTERRUPTED")
+
+    def test_dry_run_kills_dead_group_before_launching_new_worker(self):
+        # A RUNNING record with a live `sleep` group, left behind under a DIFFERENT ticket,
+        # must be reconciled (killed + interrupted) before dispatch ever launches the fake
+        # worker for the ticket dry-run actually drives.
+        p, pid = self._spawn_sleep()
+        try:
+            rung = ladder.Rung("cloud-worker", "cheap", 1)
+            agent = agentdef.load(self.cfg.pi_agents_dir, "cloud-worker")
+            rec = attempt.create(self.cfg, "OTHER-1", self.tasks[0], self.wt, 1, agent, "cloud", rung, "prior-run")
+            rec = attempt.transition(rec, "LAUNCHING", stages=[{"kind": "worker", "idx": 0, "proc": None}])
+            rec = attempt.transition(rec, "RUNNING", proc=pid.to_dict())
+
+            order = []
+            real_kill = procs.kill_group
+
+            def spy_kill(pgid, *a, **kw):
+                order.append(("kill", pgid))
+                return real_kill(pgid, *a, **kw)
+
+            def spy_run_stage(argv, cwd, timeout_s, env, out, err, on_start=None):
+                order.append(("launch",))
+                return self.launcher(argv, cwd, timeout_s, env, out, err, on_start=on_start)
+
+            self.scenarios = ["pass"]
+            with patch("reconcile.procs_mod.kill_group", side_effect=spy_kill), \
+                 patch("runner.procs.run_stage", side_effect=spy_run_stage):
+                rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                                  "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"),
+                                  "--scenario", "pass"])
+            self.assertEqual(rc, 0)
+            leftover_kills = [i for i, o in enumerate(order) if o[0] == "kill" and o[1] == pid.pgid]
+            launches = [i for i, o in enumerate(order) if o[0] == "launch"]
+            self.assertTrue(leftover_kills, "the leftover group was never killed")
+            self.assertTrue(launches, "the fake worker was never launched")
+            self.assertLess(min(leftover_kills), min(launches),
+                            "the leftover group must be killed before the new worker launches")
+            reloaded = attempt.load(rec.path)
+            self.assertEqual(reloaded.status, "INTERRUPTED")
+            self.assertEqual(reloaded.outcome, "interrupted")
+            self.assertTrue(reloaded.history and reloaded.published and reloaded.lifecycle)
+        finally:
+            self._reap(p)
+
+    def test_dry_run_with_orphaned_record_and_live_fence_exits_3_before_dispatch(self):
+        p, pid = self._spawn_sleep()
+        try:
+            rung = ladder.Rung("cloud-worker", "cheap", 1)
+            agent = agentdef.load(self.cfg.pi_agents_dir, "cloud-worker")
+            rec = attempt.create(self.cfg, "OTHER-2", self.tasks[0], self.wt, 1, agent, "cloud", rung, "prior-run")
+            rec = attempt.transition(rec, "LAUNCHING", stages=[{"kind": "worker", "idx": 0, "proc": None}])
+            rec = attempt.transition(rec, "RUNNING", proc=None)
+            stages = [{"kind": "worker", "idx": 0, "proc": pid.to_dict(), "terminated": False,
+                      "timed_out": False, "rc": None, "elapsed_s": 1.0}]
+            rec = attempt.transition(rec, "STAGE_DONE", stages=stages, proc=None)
+            with self.assertRaises(reconcile.FenceExit):
+                reconcile.fence(self.cfg, rec, "termination unverified", proc=pid.to_dict())
+
+            with patch("runner.procs.run_stage", side_effect=self.launcher):
+                rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                                  "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"),
+                                  "--scenario", "pass"])
+            self.assertEqual(rc, 3)
+            self.assertEqual(self.launches, 0)
+        finally:
+            self._reap(p)
+
+    def test_dry_run_local_worker_model_mismatch_fails_before_launch(self):
+        bad_model = "ollama-local/other-ctx32k:20b"
+        (self.cfg.pi_agents_dir / "local-worker.md").write_text(AGENT.format(name="local-worker", model=bad_model))
+        tasks_toml = self.cfg.state_root.parent / "tasks_mismatch.toml"
+        tasks_toml.write_text(TASKS + TASKS.replace('id = "001"', 'id = "002"').replace("touch", "touch2"))
+        with patch("runner.procs.run_stage", side_effect=self.launcher):
+            self.scenarios = ["pass"]
+            with self.assertRaises(RuntimeError) as cm:
+                runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                             "--worktree", str(self.wt), "--tasks", str(tasks_toml)])
+        msg = str(cm.exception)
+        self.assertIn(bad_model, msg)
+        self.assertIn(self.local_model_default, msg)
+        # task 001 (cloud arm, index 0) launched fine and was accepted -- one worker-stage
+        # launch plus its one verification command, both routed through the same patched
+        # procs.run_stage.
+        self.assertEqual(self.launches, 2)
+        self.assertFalse((self.cfg.state_root / "attempts" / "DRY-1" / "002" / "1").exists())
 
 if __name__ == "__main__":
     unittest.main()

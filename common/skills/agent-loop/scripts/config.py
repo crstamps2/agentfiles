@@ -89,7 +89,9 @@ def load(path: pathlib.Path | None = None) -> Config:
     if "local" in raw:
         local_table = raw["local"]
         local_model = local_table.get("model")
-        if local_model and not re.search(r"-ctx\d+k:", local_model):
+        if not local_model:
+            raise ConfigError("[local].model is required and must be ctx-pinned (…-ctx32k:…) when [local] is present")
+        if not re.search(r"-ctx32k:", local_model):
             raise ConfigError(f"local model must be a ctx-pinned derived model (…-ctx32k:…); Ollama's default 4K context truncates pi's system prompt")
         local_unload_after_attempt = bool(local_table.get("unload_after_attempt", True))
     return Config(

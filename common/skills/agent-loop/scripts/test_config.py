@@ -82,8 +82,21 @@ class ConfigTests(unittest.TestCase):
         self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[local]\nmodel = "ollama-local/gpt-oss:20b"\n')
         with self.assertRaisesRegex(config.ConfigError, "ctx"):
             config.load(self.path)
+        # Only the spec's exact ctx32k pin is accepted -- ctx4k (or any other context size) is
+        # still rejected even though it matches the looser "-ctx\d+k:" shape.
+        self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[local]\nmodel = "ollama-local/gpt-oss-ctx4k:20b"\n')
+        with self.assertRaisesRegex(config.ConfigError, "ctx"):
+            config.load(self.path)
         self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[local]\nmodel = "ollama-local/gpt-oss-ctx32k:20b"\nunload_after_attempt = true\n')
         self.assertEqual(config.load(self.path).local_model, "ollama-local/gpt-oss-ctx32k:20b")
+
+    def test_local_table_present_with_missing_or_empty_model_raises(self):
+        self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[local]\nunload_after_attempt = true\n')
+        with self.assertRaises(config.ConfigError):
+            config.load(self.path)
+        self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[local]\nmodel = ""\n')
+        with self.assertRaises(config.ConfigError):
+            config.load(self.path)
 
 if __name__ == "__main__":
     unittest.main()

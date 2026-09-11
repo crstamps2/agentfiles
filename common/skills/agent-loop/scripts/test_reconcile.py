@@ -133,11 +133,28 @@ class FinalizeTests(ReconcileTestCase):
             with self.assertRaises(reconcile.FinalizeFailed):
                 reconcile.finalize(self.cfg, rec)
 
-    def test_finalize_fills_in_missing_observed_tree(self):
+    def test_finalize_requires_observed_tree(self):
         rec = self._to_classified("accepted")
         rec = attempt.set_flags(rec, observed_tree=None)
-        rec2 = reconcile.finalize(self.cfg, rec)
-        self.assertIsNotNone(rec2.observed_tree)
+        base_tree = rec.base_tree
+        before = worktree.snapshot(self.wt)
+        with self.assertRaises(reconcile.FinalizeFailed):
+            reconcile.finalize(self.cfg, rec)
+        # No restore, no patch write, no state advance: the record is still CLASSIFIED
+        # and the tree is untouched.
+        self.assertEqual(worktree.snapshot(self.wt), before)
+        self.assertFalse((rec.path / "diff.patch").exists())
+        reloaded = attempt.load(rec.path)
+        self.assertEqual(reloaded.status, "CLASSIFIED")
+        self.assertEqual(reloaded.base_tree, base_tree)
+
+    def test_finalize_requires_observed_tree_even_for_restore_outcomes(self):
+        rec = self._to_classified("rejected")
+        rec = attempt.set_flags(rec, observed_tree=None)
+        before = worktree.snapshot(self.wt)
+        with self.assertRaises(reconcile.FinalizeFailed):
+            reconcile.finalize(self.cfg, rec)
+        self.assertEqual(worktree.snapshot(self.wt), before)
 
 
 class ProjectHistoryTests(ReconcileTestCase):
@@ -245,6 +262,69 @@ class ProjectLifecycleTests(ReconcileTestCase):
         rec = attempt.set_flags(rec, lifecycle=True)
         reconcile.project_lifecycle(self.cfg, rec)
         self.assertFalse((self.cfg.ticket_dir("TICK-1") / "state.json").exists())
+
+    def test_block_on_paused_ticket_unwinds_to_previous_then_blocks(self):
+        tdir = self.cfg.ticket_dir("TICK-1")
+        t = state.load(tdir)
+        t = state.transition(t, "paused", reason="env down")
+        state.save(tdir, t)
+        self.assertEqual(t.previous, "queued")
+
+        rec = self._to_classified("blocked", next_action="block")
+        rec = reconcile.finalize(self.cfg, rec)
+        rec2 = reconcile.project_lifecycle(self.cfg, rec)
+
+        t2 = state.load(tdir)
+        self.assertEqual(t2.state, "blocked")
+        self.assertTrue(rec2.lifecycle)
+
+    def test_pause_env_on_blocked_ticket_is_noop(self):
+        tdir = self.cfg.ticket_dir("TICK-1")
+        t = state.load(tdir)
+        t = state.transition(t, "blocked", reason="boom")
+        state.save(tdir, t)
+
+        rec = self._to_classified("environment", next_action="pause-env")
+        rec = reconcile.finalize(self.cfg, rec)
+        rec2 = reconcile.project_lifecycle(self.cfg, rec)
+
+        t2 = state.load(tdir)
+        self.assertEqual(t2.state, "blocked")
+        self.assertTrue(rec2.lifecycle)
+
+    def test_pause_env_on_already_paused_ticket_is_noop(self):
+        tdir = self.cfg.ticket_dir("TICK-1")
+        t = state.load(tdir)
+        t = state.transition(t, "paused", reason="env down")
+        state.save(tdir, t)
+
+        rec = self._to_classified("environment", next_action="fence")
+        rec = reconcile.finalize(self.cfg, rec)
+        reconcile.project_lifecycle(self.cfg, rec)
+
+        t2 = state.load(tdir)
+        self.assertEqual(t2.state, "paused")
+        self.assertEqual(t2.previous, "queued")
+
+
+class TicketKeyTests(unittest.TestCase):
+    def _rec(self, lineage):
+        return attempt.Record(
+            attempt_id=f"x@{lineage}/1", lineage=lineage, generation="g", n=1,
+            status="CLASSIFIED", worktree="/tmp/wt", repo_id="r", base_tree="b")
+
+    def test_ticket_key_splits_on_last_slash(self):
+        rec = self._rec("team/TICK/001")
+        self.assertEqual(reconcile._ticket_key(rec), "team/TICK")
+
+    def test_task_id_is_last_component(self):
+        rec = self._rec("team/TICK/001")
+        self.assertEqual(reconcile._task_id(rec), "001")
+
+    def test_simple_lineage_unaffected(self):
+        rec = self._rec("TICK-1/001")
+        self.assertEqual(reconcile._ticket_key(rec), "TICK-1")
+        self.assertEqual(reconcile._task_id(rec), "001")
 
 
 class ProjectAllTests(ReconcileTestCase):

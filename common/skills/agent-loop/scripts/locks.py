@@ -49,12 +49,29 @@ class Lease:
         self.path = pathlib.Path(path)
         self.name = name
         self.held = False
+        self._held_fd = None
 
     def _flock_path(self) -> pathlib.Path:
         return self.path.with_suffix(self.path.suffix + ".flock")
 
-    def acquire(self, heartbeat_s: int = 60) -> bool:
+    def acquire(self, heartbeat_s: int = 60, hold: bool = False) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if hold:
+            fl = open(self._flock_path(), "w")
+            try:
+                fcntl.flock(fl, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                fl.close()
+                return False
+            try:
+                self._write()
+            except BaseException:
+                fcntl.flock(fl, fcntl.LOCK_UN)
+                fl.close()
+                raise
+            self.held = True
+            self._held_fd = fl
+            return True
         with open(self._flock_path(), "w") as fl:
             fcntl.flock(fl, fcntl.LOCK_EX)
             try:
@@ -96,6 +113,13 @@ class Lease:
             except FileNotFoundError:
                 pass
             self.held = False
+        if self._held_fd is not None:
+            try:
+                fcntl.flock(self._held_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            self._held_fd.close()
+            self._held_fd = None
 
     def __enter__(self) -> bool:
         return self.acquire()

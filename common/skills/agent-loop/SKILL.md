@@ -21,14 +21,22 @@ OS-level sandboxing of workers remains out of scope for the pilot.
 
 ## Every start reconciles
 
-Every subcommand except `status` runs the global recovery pass (`reconcile.reconcile`)
-**before** touching a ticket, admission, or the heavy lane: it checks `locks/heavy.fence`,
-then sweeps every attempt directory under `attempts/` (all tickets, all tasks) and drives
-each non-terminal record forward -- killing a live group left over from a prior crash,
-fencing anything it cannot prove is dead, restoring/classifying/projecting anything it can.
-Nothing is dispatched until that pass completes. If it cannot proceed safely it exits 3 and
-prints `fenced: <reason>` to stderr; an operator must inspect (and, if a fence is involved,
-run `clear-fence`).
+Every subcommand except `status` and `clear-fence` runs the global recovery pass
+(`reconcile.reconcile`) **before** touching a ticket, admission, or the heavy lane: it
+checks `locks/heavy.fence`, then sweeps every attempt directory under `attempts/` (all
+tickets, all tasks) and drives each non-terminal record forward -- killing a live group
+left over from a prior crash, fencing anything it cannot prove is dead,
+restoring/classifying/projecting anything it can. Nothing is dispatched until that pass
+completes. If it cannot proceed safely it exits 3 and prints `fenced: <reason>` to stderr;
+an operator must inspect (and, if a fence is involved, run `clear-fence`).
+
+`clear-fence` is the deliberate exception, not an oversight: it is precisely the operator
+path for when `reconcile()` has already refused (exited 3) because of `locks/heavy.fence`.
+Running the full sweep first would just re-hit the same fence and exit 3 again before
+`clear-fence` ever got to do its job. Instead, under the same global runner lease
+`reconcile()` would take, it performs only the record-integrity check for the one attempt
+the fence references (load it, validating its worktree/repo_id) -- not the full multi-ticket
+sweep -- before classifying the fenced process and deciding whether to clear the fence.
 
 An attempt moves through these states (`attempt.json` is the single source of truth; every
 other record -- ticket history, metrics, the ladder -- is a *projection* of it):
@@ -47,7 +55,8 @@ it to `INTERRUPTED` (or re-fences it, if the group is still alive).
 
 All run from anywhere; `--config` defaults to this skill's `hopper.toml`.
 
-- **Status** (the only subcommand that skips reconcile) --
+- **Status** (skips reconcile; see "Every start reconciles" above for the other exception,
+  `clear-fence`) --
   `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py status`
   Prints pause state, heavy-lane holder, and each hopper ticket's state and reason.
 - **Run-once** (Plan 1c stub) -- `python3 ~/.pi/agent/skills/agent-loop/scripts/runner.py run-once`
@@ -84,9 +93,17 @@ Runs **under the global runner lease** -- it can never run concurrently with a l
     it completes the `INTERRUPTED` path itself. `--force` unblocks an operator who has
     independently confirmed and killed the process; it never authorizes a restore under a
     live writer.
-  - **Corrupt fence** (unreadable, wrong shape, an `attempt_dir` outside `attempts/`, or a
-    proc that doesn't parse) -- clearable only with `--force` (nothing else can be done for
-    it; there is no attempt record to safely act on).
+  - **Corrupt fence** (unreadable, wrong shape, a non-string/empty `attempt_dir`, an
+    `attempt_dir` outside `attempts/`, or a `proc` that doesn't parse as a well-typed
+    `ProcId` -- e.g. a non-dict `proc`, a non-integer `pgid`, or a non-positive `pgid`) --
+    clearable only with `--force` (nothing else can be done for it; there is no attempt
+    record to safely act on).
+  - **`--force` on a fence whose referenced attempt is still `FENCING`** (a crash landed
+    between `fence()` writing the fence file and its own `ORPHANED` transition) --
+    `--force` promotes the record to `ORPHANED` first, then applies the same
+    `operator_forced: true` marking as the live/unknown case above. A referenced attempt in
+    any other status has no recovery story here; `--force` clears the fence file only and
+    leaves the record untouched.
 
 ## State on disk
 

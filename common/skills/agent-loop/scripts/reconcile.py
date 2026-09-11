@@ -399,6 +399,54 @@ def _reconcile_one(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     raise FenceExit(f"{rec.attempt_id}: unhandled status {rec.status}")
 
 
+class CorruptFence(ValueError):
+    """Raised by `_parse_fence` for any fence file that fails schema validation: unparseable
+    JSON, not an object, a missing required key, an `attempt_dir` that isn't a non-empty str
+    resolving under `attempts/`, a `proc` that isn't a dict shaped like a `ProcId`, or a
+    `reason` that isn't a str. Normalizes every malformed-fence failure mode so callers
+    never see a bare TypeError/KeyError escape from deep inside path or proc handling."""
+    pass
+
+
+def _parse_fence(cfg, text: str) -> tuple[pathlib.Path, dict, str]:
+    """Parse and strictly schema-validate a fence file's contents into `(resolved
+    attempt_dir, proc dict, reason str)`. Shared by `_check_global_fence` and `clear_fence`
+    so both paths fail closed identically on a malformed fence rather than one of them
+    letting a TypeError escape past the fail-closed contract."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise CorruptFence(f"unparseable: {e}")
+    if not isinstance(data, dict):
+        raise CorruptFence("not an object")
+    required = ("attempt_dir", "proc", "reason")
+    if any(k not in data for k in required):
+        raise CorruptFence(f"missing required key(s), need {required}")
+    attempt_dir = data["attempt_dir"]
+    if not isinstance(attempt_dir, str) or not attempt_dir:
+        raise CorruptFence(f"attempt_dir must be a non-empty str, got {attempt_dir!r}")
+    proc = data["proc"]
+    if not isinstance(proc, dict):
+        raise CorruptFence(f"proc must be a dict, got {type(proc).__name__}")
+    try:
+        procid_mod.ProcId.from_dict(proc)
+    except ValueError as e:
+        raise CorruptFence(f"invalid proc shape: {e}")
+    reason = data["reason"]
+    if not isinstance(reason, str):
+        raise CorruptFence(f"reason must be a str, got {type(reason).__name__}")
+    attempts_root = (pathlib.Path(cfg.state_root) / "attempts").resolve()
+    try:
+        adir = pathlib.Path(attempt_dir).resolve()
+    except OSError as e:
+        raise CorruptFence(f"unresolvable attempt_dir: {e}")
+    try:
+        adir.relative_to(attempts_root)
+    except ValueError:
+        raise CorruptFence(f"attempt_dir {adir} is outside {attempts_root}")
+    return adir, proc, reason
+
+
 def _check_global_fence(cfg) -> None:
     """Step 1 of recovery. If `locks/heavy.fence` exists: classify its proc. `ours-alive` or
     `unknown` -> exit 3 (an operator must run clear-fence). `dead` -> the referenced attempt
@@ -413,34 +461,12 @@ def _check_global_fence(cfg) -> None:
     except FileNotFoundError:
         return
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        raise FenceExit("corrupt fence: unparseable")
-    if not isinstance(data, dict):
-        raise FenceExit("corrupt fence: not an object")
-    required = ("attempt_dir", "proc", "reason")
-    if any(k not in data for k in required):
-        raise FenceExit(f"corrupt fence: missing required key(s), need {required}")
-    attempt_dir_str = data["attempt_dir"]
-    proc = data["proc"]
-    if proc is None or not isinstance(proc, dict):
-        raise FenceExit("corrupt fence: proc must be a dict, not null")
-    try:
-        proc_id = procid_mod.ProcId.from_dict(proc)
-    except (KeyError, TypeError) as e:
-        raise FenceExit(f"corrupt fence: invalid proc shape: {e}")
-    status = procid_mod.classify(proc_id)
+        adir, proc, reason = _parse_fence(cfg, text)
+    except CorruptFence as e:
+        raise FenceExit(f"corrupt fence: {e}")
+    status = procid_mod.classify(procid_mod.ProcId.from_dict(proc))
     if status in ("ours-alive", "unknown"):
         raise FenceExit(f"fenced: referenced proc is {status}")
-    attempts_root = (pathlib.Path(cfg.state_root) / "attempts").resolve()
-    try:
-        adir = pathlib.Path(attempt_dir_str).resolve()
-    except OSError:
-        raise FenceExit("corrupt fence: unresolvable attempt_dir")
-    try:
-        adir.relative_to(attempts_root)
-    except ValueError:
-        raise FenceExit(f"corrupt fence: attempt_dir {adir} is outside {attempts_root}")
     try:
         rec = attempt_mod.load(adir)
     except attempt_mod.UnreadableRecord as e:
@@ -559,34 +585,6 @@ def reconcile(cfg, run_id) -> RunContext:
 # `clear-fence` semantics exactly -- see "## `clear-fence`" in the design doc.
 # ---------------------------------------------------------------------------
 
-def _validate_fence_schema(cfg, data) -> tuple[pathlib.Path, dict]:
-    """Raise ValueError for anything the design calls corrupt: not an object; missing
-    attempt_dir/proc/reason; attempt_dir not resolvable under attempts/; proc not a dict
-    (or not a valid ProcId shape). Returns (resolved attempt_dir, proc) on success."""
-    if not isinstance(data, dict):
-        raise ValueError("not an object")
-    required = ("attempt_dir", "proc", "reason")
-    if any(k not in data for k in required):
-        raise ValueError(f"missing required key(s), need {required}")
-    proc = data["proc"]
-    if proc is None or not isinstance(proc, dict):
-        raise ValueError("proc must be a dict, not null")
-    try:
-        procid_mod.ProcId.from_dict(proc)
-    except (KeyError, TypeError) as e:
-        raise ValueError(f"invalid proc shape: {e}")
-    attempts_root = (pathlib.Path(cfg.state_root) / "attempts").resolve()
-    try:
-        adir = pathlib.Path(data["attempt_dir"]).resolve()
-    except OSError as e:
-        raise ValueError(f"unresolvable attempt_dir: {e}")
-    try:
-        adir.relative_to(attempts_root)
-    except ValueError:
-        raise ValueError(f"attempt_dir {adir} is outside {attempts_root}")
-    return adir, proc
-
-
 def clear_fence(cfg, force: bool) -> int:
     """CLI entry point for `clear-fence`. Acquires the global runner lease with `hold=True`
     -- the same lease `reconcile()` takes -- so this can never run concurrently with a live
@@ -605,10 +603,14 @@ def clear_fence(cfg, force: bool) -> int:
       INTERRUPTED (idempotent: a crash between that transition and the fence unlink on a
       prior run leaves exactly this state). Any other status is unexpected -- refuse.
     - `ours-alive` / `unknown` without `--force` -> refuse, printing the proc.
-    - `ours-alive` / `unknown` with `--force` -> mark the attempt `operator_forced=True`
-      (status stays ORPHANED; NOT restored, NOT projected -- a live/unknown group may still
-      be writing) and remove the fence. The next runner start sees an ORPHANED record with
-      no fence and re-fences it (fail closed) unless the group is by then dead.
+    - `ours-alive` / `unknown` with `--force` -> promote the attempt from FENCING to
+      ORPHANED first if a crash landed it between the fence write and that transition
+      (`fence()`'s only admitted torn window), then mark it `operator_forced=True` (status
+      stays ORPHANED; NOT restored, NOT projected -- a live/unknown group may still be
+      writing) and remove the fence. A referenced attempt in any status other than FENCING/
+      ORPHANED has no recovery story here -- force-clear the fence file only, leaving the
+      record untouched. The next runner start sees an ORPHANED record with no fence and
+      re-fences it (fail closed) unless the group is by then dead.
     """
     lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "runner", "runner")
     if not lease.acquire(hold=True):
@@ -632,12 +634,16 @@ def clear_fence(cfg, force: bool) -> int:
             return 0
 
         try:
-            data = json.loads(text)
-            adir, proc = _validate_fence_schema(cfg, data)
+            adir, proc, reason = _parse_fence(cfg, text)
+            # "The record-integrity part of the sweep" for the fence's referenced attempt:
+            # load it with worktree validation on (the default), same as _sweep would --
+            # an unreadable/inconsistent record is a corrupt-fence situation, not a live/
+            # unknown/dead proc classification.
             rec = attempt_mod.load(adir)
-        except (json.JSONDecodeError, ValueError, attempt_mod.UnreadableRecord):
+        except (CorruptFence, attempt_mod.UnreadableRecord, json.JSONDecodeError,
+                OSError, UnicodeDecodeError) as e:
             if not force:
-                print("corrupt fence; use --force", file=sys.stderr)
+                print(f"corrupt fence; use --force ({e})", file=sys.stderr)
                 return 3
             fp.unlink()
             return 0
@@ -660,6 +666,20 @@ def clear_fence(cfg, force: bool) -> int:
             print(f"refusing to clear fence: proc is {status}: {json.dumps(proc, sort_keys=True)}",
                  file=sys.stderr)
             return 3
+        # A crash between fence() writing the fence file and its ORPHANED transition leaves
+        # the record at FENCING with a live fence referencing it -- promote it to ORPHANED
+        # first so --force always leaves a record in the one status the next reconcile
+        # (and this function's own dead-proc branch) knows how to handle. Any other status
+        # means the fence references a record recovery has no story for; force-clear the
+        # fence file only and leave the record untouched (corrupt-fence semantics).
+        if rec.status == "FENCING":
+            rec = attempt_mod.transition(rec, "ORPHANED")
+        elif rec.status != "ORPHANED":
+            print(f"{rec.attempt_id}: referenced attempt is neither FENCING nor ORPHANED "
+                 f"(status={rec.status}); corrupt fence, clearing fence file only",
+                 file=sys.stderr)
+            fp.unlink()
+            return 0
         # Stamp `proc` onto the record too, not just the (now-deleted) fence file: STAGE_DONE
         # already nulled rec.proc (only the stage entry keeps it) before fence() was ever
         # called, so without this the next reconcile's ORPHANED-with-no-fence path would

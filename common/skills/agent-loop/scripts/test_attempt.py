@@ -62,6 +62,12 @@ class AttemptTestCase(unittest.TestCase):
         return attempt.create(self.cfg, "TICK-1", self.task, self.wt, n,
                               FakeAgent(), "cloud", rung, "run-abc")
 
+    def _persist(self, rec):
+        # Test-only: force the on-disk record to match an in-memory mutation (simulating
+        # "this attempt was recovered already sitting in state X on disk"), bypassing the
+        # CAS check that transition()/set_flags() now apply to real callers.
+        (rec.path / "attempt.json").write_text(attempt.to_json(rec))
+
 
 class CreateTests(AttemptTestCase):
     def test_create_writes_artifacts_and_created_record(self):
@@ -94,6 +100,16 @@ class CreateTests(AttemptTestCase):
         attempt.safe_write(adir / "task.toml", attempt.task_toml(self.task))
         with self.assertRaises(attempt.UnreadableRecord):
             attempt.load(adir)
+
+    def test_create_raises_on_symlinked_feedback_and_leaves_no_attempt_dir(self):
+        adir = attempt.attempt_dir(self.cfg, "TICK-1", "001", 1)
+        task_level = adir.parent
+        task_level.mkdir(parents=True)
+        target = task_level / "elsewhere.md"; target.write_text("sneaky")
+        (task_level / "feedback.md").symlink_to(target)
+        with self.assertRaises(attempt.UnsafePath):
+            self._create()
+        self.assertFalse(adir.exists())
 
 
 class IdentityTests(AttemptTestCase):
@@ -144,16 +160,22 @@ class TransitionTests(AttemptTestCase):
             with self.subTest(start=start):
                 rec = self._create(n=i + 1)
                 rec.status = start
+                self._persist(rec)
                 rec = attempt.transition(rec, "FENCING")
                 rec = attempt.transition(rec, "ORPHANED")
                 rec2 = attempt.transition(rec, "INTERRUPTED")
                 self.assertEqual(rec2.status, "INTERRUPTED")
-                rec = attempt.transition(rec, "FENCING")   # ORPHANED -> FENCING (re-fence) also legal
+                # ORPHANED -> FENCING (re-fence) also legal, from a *fresh* ORPHANED copy
+                # (the earlier `rec` var is now stale: the on-disk record moved to INTERRUPTED).
+                rec.status = "ORPHANED"
+                self._persist(rec)
+                rec = attempt.transition(rec, "FENCING")
                 self.assertEqual(rec.status, "FENCING")
 
     def test_classified_can_finalize_directly_on_recovery(self):
         rec = self._create()
         rec.status = "CLASSIFIED"
+        self._persist(rec)
         rec = attempt.transition(rec, "FINALIZED", tree="restored")
         self.assertEqual(rec.status, "FINALIZED")
 
@@ -178,9 +200,29 @@ class TransitionTests(AttemptTestCase):
     def test_maybe_project_noop_unless_all_flags_and_finalized(self):
         rec = self._create()
         rec.status = "FINALIZED"
+        self._persist(rec)
         rec = attempt.set_flags(rec, published=True, history=True)   # lifecycle still false
         rec2 = attempt.maybe_project(rec)
         self.assertEqual(rec2.status, "FINALIZED")
+
+    def test_stale_transition_raises(self):
+        # Two in-memory copies of the same on-disk record; advance copy A, then try to
+        # transition stale copy B -- it must be refused, not silently overwrite A's advance.
+        rec = self._create()
+        copy_a = attempt.load(rec.path)
+        copy_b = attempt.load(rec.path)
+        attempt.transition(copy_a, "LAUNCHING")
+        with self.assertRaises(attempt.StaleRecord):
+            attempt.transition(copy_b, "LAUNCHING")
+        self.assertIsInstance(attempt.StaleRecord("x"), attempt.IllegalAttemptTransition)
+
+    def test_stale_set_flags_raises(self):
+        rec = self._create()
+        copy_a = attempt.load(rec.path)
+        copy_b = attempt.load(rec.path)
+        attempt.transition(copy_a, "LAUNCHING")
+        with self.assertRaises(attempt.StaleRecord):
+            attempt.set_flags(copy_b, history=True)
 
 
 class LoadTests(AttemptTestCase):
@@ -221,6 +263,49 @@ class LoadTests(AttemptTestCase):
         loaded = attempt.load(rec.path)
         self.assertEqual(loaded.attempt_id, rec.attempt_id)
 
+    def test_missing_repo_id(self):
+        adir = attempt.attempt_dir(self.cfg, "TICK-1", "001", 1)
+        attempt.safe_mkdir(adir)
+        (adir / "attempt.json").write_text(json.dumps({"status": "launching", "worktree": str(self.wt)}))
+        with self.assertRaises(attempt.UnreadableRecord):
+            attempt.load(adir)
+
+    def test_non_utf8_bytes_raise_unreadable(self):
+        adir = attempt.attempt_dir(self.cfg, "TICK-1", "001", 1)
+        attempt.safe_mkdir(adir)
+        (adir / "attempt.json").write_bytes(b"\xff\xfe")
+        with self.assertRaises(attempt.UnreadableRecord):
+            attempt.load(adir)
+
+    def test_load_refuses_nonexistent_worktree(self):
+        rec = self._create()
+        raw = json.loads((rec.path / "attempt.json").read_text())
+        raw["worktree"] = str(pathlib.Path(self.state_tmp.name) / "nowhere-at-all")
+        (rec.path / "attempt.json").write_text(json.dumps(raw))
+        with self.assertRaises(attempt.UnreadableRecord):
+            attempt.load(rec.path)
+        # the CAS re-load path (validate_worktree=False) doesn't care about the worktree
+        loaded = attempt.load(rec.path, validate_worktree=False)
+        self.assertEqual(loaded.status, "CREATED")
+
+    def test_load_refuses_stale_repo_id(self):
+        rec = self._create()
+        other_repo = tempfile.TemporaryDirectory()
+        try:
+            other_wt = make_repo(other_repo.name)
+            other_repo_id = subprocess.run(
+                ["git", "-C", str(other_wt), "rev-parse", "--git-common-dir"],
+                capture_output=True, text=True, check=True).stdout.strip()
+            other_repo_id = str((other_wt / other_repo_id).resolve()) \
+                if not pathlib.Path(other_repo_id).is_absolute() else str(pathlib.Path(other_repo_id).resolve())
+            raw = json.loads((rec.path / "attempt.json").read_text())
+            raw["repo_id"] = other_repo_id
+            (rec.path / "attempt.json").write_text(json.dumps(raw))
+            with self.assertRaises(attempt.UnreadableRecord):
+                attempt.load(rec.path)
+        finally:
+            other_repo.cleanup()
+
 
 class IOHelperTests(AttemptTestCase):
     def test_safe_read_refuses_symlink(self):
@@ -232,7 +317,7 @@ class IOHelperTests(AttemptTestCase):
 
     def test_safe_read_refuses_missing(self):
         with tempfile.TemporaryDirectory() as d:
-            with self.assertRaises(attempt.UnsafePath):
+            with self.assertRaises(FileNotFoundError):
                 attempt.safe_read(pathlib.Path(d) / "nope.txt")
 
     def test_safe_write_refuses_existing_symlink(self):
@@ -250,13 +335,44 @@ class IOHelperTests(AttemptTestCase):
                 attempt.safe_write(p, "new")
             self.assertEqual(p.read_text(), "orig")
 
-    def test_safe_rewrite_tolerates_stale_tmp(self):
+    @staticmethod
+    def _dead_pid() -> int:
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        os.waitpid(pid, 0)
+        return pid
+
+    def test_safe_rewrite_sweeps_dead_pid_tmp(self):
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d) / "f.txt"; p.write_text("orig")
-            stale = pathlib.Path(d) / "f.txt.99999.deadbeef.tmp"; stale.write_text("stale")
+            stale = pathlib.Path(d) / f"f.txt.tmp-{self._dead_pid()}-deadbeef"; stale.write_text("stale")
             attempt.safe_rewrite(p, "new")
             self.assertEqual(p.read_text(), "new")
             self.assertFalse(stale.exists())
+
+    def test_safe_rewrite_spares_live_pid_tmp(self):
+        # A temp file embedding a still-alive pid is an in-flight write by another (or this)
+        # process, not a crash leftover -- the sweep must not delete it.
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "f.txt"; p.write_text("orig")
+            live = pathlib.Path(d) / f"f.txt.tmp-{os.getpid()}-deadbeef"; live.write_text("in flight")
+            attempt.safe_rewrite(p, "new")
+            self.assertEqual(p.read_text(), "new")
+            self.assertTrue(live.exists())
+            live.unlink()
+
+    def test_safe_rewrite_spares_other_artifact_tmp(self):
+        # Rewriting attempt.json must not sweep a temp belonging to a different artifact
+        # whose name happens to start with the same prefix (attempt.json.extra).
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "attempt.json"; p.write_text("orig")
+            dead = self._dead_pid()
+            other = pathlib.Path(d) / f"attempt.json.extra.tmp-{dead}-deadbeef"; other.write_text("mine")
+            attempt.safe_rewrite(p, "new")
+            self.assertEqual(p.read_text(), "new")
+            self.assertTrue(other.exists())
+            other.unlink()
 
     def test_safe_mkdir_refuses_symlinked_parent(self):
         with tempfile.TemporaryDirectory() as d:

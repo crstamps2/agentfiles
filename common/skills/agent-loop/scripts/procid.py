@@ -47,6 +47,7 @@ def classify(rec: ProcId | None) -> str:
     ps = _ps(rec.pid)
     if ps is None:
         return "unknown"            # group populated, leader gone: descendants may be writing
-    if ps != (rec.start_time, rec.cmd):
-        return "unknown"            # recycled pid
+    if ps[0] != rec.start_time:
+        return "unknown"            # recycled pid (start time is the identity; cmd is informational --
+                                    # the gate shell execs into the real command, so cmd legitimately changes)
     return "ours-alive"

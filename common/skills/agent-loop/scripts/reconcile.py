@@ -276,10 +276,14 @@ def interrupt(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
 def _ensure_diff_patch(rec: attempt_mod.Record) -> None:
     """Any INTERRUPTED record found without a diff.patch (an interrupt() written before this
     fix existed, or a hand-built test record) gets it regenerated -- it is always derivable
-    from base_tree/observed_tree, so writing it late is always safe."""
+    from base_tree/observed_tree, so writing it late is always safe. However, if observed_tree
+    is None (legacy record), the patch cannot be regenerated safely -- an operator must inspect."""
     patch_path = pathlib.Path(rec.path) / "diff.patch"
     if patch_path.exists():
         return
+    if not rec.observed_tree:
+        raise FenceExit(
+            f"cannot regenerate diff.patch for {rec.attempt_id}: observed_tree missing")
     wt = pathlib.Path(rec.worktree)
     patch = _diff_patch(wt, rec.base_tree, rec.observed_tree)
     attempt_mod.safe_rewrite(patch_path, patch)

@@ -787,6 +787,30 @@ class FenceWriteFailureTests(ReconcilePart2TestCase):
         self.assertEqual(reloaded.status, "FENCING")
 
 
+class ObservedTreeMissingTests(ReconcilePart2TestCase):
+    """O1: an INTERRUPTED record with observed_tree=None (legacy, or hand-built test) and
+    no diff.patch cannot be recovered -- the patch cannot be regenerated safely without a
+    snapshot of the pre-restore tree. The sweep exits 3 with reason in the FenceExit."""
+
+    def test_interrupted_with_none_observed_tree_and_no_diff_patch_raises_fence_exit(self):
+        rec = self._create()
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=None)
+        # Hand-build an INTERRUPTED record with observed_tree=None and no diff.patch,
+        # simulating a legacy record or a test record that was not properly set up.
+        rec = attempt.transition(rec, "INTERRUPTED", observed_tree=None,
+                                 outcome="interrupted", next_action="none", tree="restored")
+        self.assertIsNone(rec.observed_tree)
+        self.assertFalse((rec.path / "diff.patch").exists())
+
+        with self.assertRaises(reconcile.FenceExit) as cm:
+            reconcile.reconcile(self.cfg, "run-x")
+        self.assertEqual(cm.exception.code, 3)
+        self.assertIn("cannot regenerate diff.patch", cm.exception.reason)
+        self.assertIn("observed_tree missing", cm.exception.reason)
+        self.assertIn(rec.attempt_id, cm.exception.reason)
+
+
 class InterruptWritesDiffPatchTests(ReconcilePart2TestCase):
     """I3: interrupt() writes diff.patch capturing the pre-restore tree, and the sweep
     regenerates it for any INTERRUPTED record found without one."""

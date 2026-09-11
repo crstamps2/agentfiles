@@ -340,5 +340,62 @@ class RunnerHarness(unittest.TestCase):
         aj = json.loads((adir / "attempt.json").read_text())
         self.assertEqual(aj["status"], "completed"); self.assertIn("verify_pgids", aj)
 
+    def test_zombie_group_marks_orphaned_and_fences_once(self):
+        # group_state == "zombie-or-foreign" (PermissionError probing killpg) must not be treated
+        # as a plain survivor: the attempt is marked orphaned so a cleared fence doesn't re-fence.
+        # Only fake the recovered-attempt's pgid; the real launch below must use the real
+        # group_state/kill_group so its own process group is genuinely reaped.
+        real_group_state, real_kill_group = procs.group_state, procs.kill_group
+        root = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; root.mkdir(parents=True)
+        pgid = 999999
+        (root / "attempt.json").write_text(json.dumps({"status": "running", "pgid": pgid}))
+        def fake_group_state(p, *a, **kw):
+            return "zombie-or-foreign" if p == pgid else real_group_state(p, *a, **kw)
+        def fake_kill_group(p, *a, **kw):
+            return False if p == pgid else real_kill_group(p, *a, **kw)
+        self.scenarios = ["pass"]
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        t = self._fresh_ticket()
+        with patch("runner.procs.group_state", side_effect=fake_group_state), \
+             patch("runner.procs.kill_group", side_effect=fake_kill_group):
+            outcome = r.implement_task(t, self.tasks[0], 0, self.wt)
+        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence = json.loads(fence_path.read_text())
+        self.assertEqual(fence["pgid"], pgid)
+        self.assertIn("zombie-or-foreign", fence["reason"])
+        aj = json.loads((root / "attempt.json").read_text())
+        self.assertEqual(aj["status"], "orphaned")
+
+        # Operator clears the fence; re-entry must not re-fence the orphaned attempt forever.
+        fence_path.unlink()
+        t2 = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        with patch("runner.procs.group_state", side_effect=fake_group_state), \
+             patch("runner.procs.kill_group", side_effect=fake_kill_group):
+            outcome2 = r.implement_task(t2, self.tasks[0], 0, self.wt)
+        self.assertEqual(outcome2, "accepted"); self.assertEqual(self.launches, 1)
+        self.assertFalse(fence_path.exists())
+
+    def test_clear_fence_cli_refuses_live_and_clears_dead(self):
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence_path.parent.mkdir(parents=True, exist_ok=True)
+        fence_data = {"pgid": 424242, "ticket": "ZIP-7873", "task": "001", "attempt": "1",
+                      "reason": "recovery: group survived kill"}
+        cfgfile = str(self.cfg.state_root.parent / "hopper.toml")
+
+        fence_path.write_text(json.dumps(fence_data))
+        with patch("runner.procs.group_state", return_value="alive"):
+            rc = runner.main(["--config", cfgfile, "clear-fence"])
+        self.assertEqual(rc, 1); self.assertTrue(fence_path.exists())
+
+        with patch("runner.procs.group_state", return_value="dead"):
+            rc = runner.main(["--config", cfgfile, "clear-fence"])
+        self.assertEqual(rc, 0); self.assertFalse(fence_path.exists())
+
+        fence_path.write_text(json.dumps(fence_data))
+        with patch("runner.procs.group_state", return_value="alive"):
+            rc = runner.main(["--config", cfgfile, "clear-fence", "--force"])
+        self.assertEqual(rc, 0); self.assertFalse(fence_path.exists())
+
 if __name__ == "__main__":
     unittest.main()

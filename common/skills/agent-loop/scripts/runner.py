@@ -182,13 +182,27 @@ class Runner:
             if obj and obj.get("status") in {"launching", "running"}:
                 pgids = [obj.get("pgid")] + list(obj.get("verify_pgids", []))
                 survivor = None
+                survivor_reason = None
                 for pgid in [g for g in pgids if g]:
-                    if procs.group_alive(int(pgid)) and not procs.kill_group(int(pgid)):
-                        survivor = int(pgid); break
+                    pgid = int(pgid)
+                    gstate = procs.group_state(pgid)
+                    if gstate == "dead":
+                        continue
+                    if procs.kill_group(pgid):
+                        continue
+                    survivor = pgid
+                    survivor_reason = ("zombie-or-foreign group; operator must verify and clear"
+                                        if gstate == "zombie-or-foreign" else "recovery: group survived kill")
+                    break
                 if survivor is not None:
                     self._fence_path().parent.mkdir(parents=True, exist_ok=True)
                     self._rewrite_artifact(self._fence_path(), json.dumps({"pgid": survivor, "ticket": t.key,
-                        "task": task.id, "attempt": adir.name, "reason": "recovery: group survived kill"}))
+                        "task": task.id, "attempt": adir.name, "reason": survivor_reason}))
+                    if survivor_reason.startswith("zombie-or-foreign"):
+                        # Fail-safe wedge is operable: mark this attempt orphaned (not running/launching)
+                        # so re-entry doesn't re-fence forever once an operator clears the fence.
+                        obj["status"] = "orphaned"
+                        self._rewrite_artifact(ap, json.dumps(obj, sort_keys=True))
                     return "fenced"
                 obj["status"] = "interrupted"
                 self._rewrite_artifact(ap, json.dumps(obj, sort_keys=True))
@@ -376,6 +390,7 @@ class Runner:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="agent-loop"); ap.add_argument("--config", default=None)
     sub = ap.add_subparsers(dest="cmd", required=True); sub.add_parser("status"); sub.add_parser("run-once")
+    cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
     d = sub.add_parser("dry-run"); d.add_argument("--worktree", required=True); d.add_argument("--tasks", required=True)
     d.add_argument("--scenario", default="pass"); d.add_argument("--ticket", default="DRY-1")
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
@@ -387,6 +402,19 @@ def main(argv=None) -> int:
         r = Runner(cfg, pi_launcher=fake_launcher)
     else: r = Runner(cfg)
     if a.cmd == "status": return r.status()
+    if a.cmd == "clear-fence":
+        fence_path = cfg.state_root / "locks" / "heavy.fence"
+        if not fence_path.exists():
+            print("no fence present", file=sys.stderr); return 0
+        data = json.loads(fence_path.read_text())
+        print(json.dumps(data, sort_keys=True))
+        gstate = procs.group_state(int(data["pgid"]))
+        print(f"group_state={gstate}", file=sys.stderr)
+        if gstate == "dead" or a.force:
+            fence_path.unlink()
+            print("fence cleared", file=sys.stderr); return 0
+        print(f"refusing to clear fence: group state is {gstate} (use --force to override)", file=sys.stderr)
+        return 1
     runner_lease = locks.Lease(cfg.state_root / "locks" / "runner", "runner")
     if not runner_lease.acquire(): print("another runner instance is live; exiting", file=sys.stderr); return 3
     try:

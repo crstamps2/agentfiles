@@ -195,14 +195,15 @@ class Runner:
                                         if gstate == "zombie-or-foreign" else "recovery: group survived kill")
                     break
                 if survivor is not None:
+                    # Mark the attempt orphaned BEFORE writing the fence, so a crash between
+                    # these writes doesn't leave the attempt in a recoverable state (running)
+                    # that would cause re-fencing forever when the fence is later cleared.
+                    obj["status"] = "orphaned"
+                    obj["orphaned_by"] = "recovery: " + survivor_reason
+                    self._rewrite_artifact(ap, json.dumps(obj, sort_keys=True))
                     self._fence_path().parent.mkdir(parents=True, exist_ok=True)
                     self._rewrite_artifact(self._fence_path(), json.dumps({"pgid": survivor, "ticket": t.key,
                         "task": task.id, "attempt": adir.name, "reason": survivor_reason}))
-                    if survivor_reason.startswith("zombie-or-foreign"):
-                        # Fail-safe wedge is operable: mark this attempt orphaned (not running/launching)
-                        # so re-entry doesn't re-fence forever once an operator clears the fence.
-                        obj["status"] = "orphaned"
-                        self._rewrite_artifact(ap, json.dumps(obj, sort_keys=True))
                     return "fenced"
                 obj["status"] = "interrupted"
                 self._rewrite_artifact(ap, json.dumps(obj, sort_keys=True))
@@ -411,6 +412,18 @@ def main(argv=None) -> int:
         gstate = procs.group_state(int(data["pgid"]))
         print(f"group_state={gstate}", file=sys.stderr)
         if gstate == "dead" or a.force:
+            # Before unlinking the fence, mark the referenced attempt as orphaned so re-entry
+            # doesn't re-fence forever. Find the attempt.json using ticket/task/attempt fields.
+            try:
+                ap = cfg.state_root / "attempts" / data["ticket"] / data["task"] / data["attempt"] / "attempt.json"
+                if ap.exists():
+                    obj = json.loads(ap.read_text())
+                    if obj.get("status") in {"launching", "running"}:
+                        obj["status"] = "orphaned"
+                        obj["orphaned_by"] = "clear-fence"
+                        Runner._rewrite_artifact(ap, json.dumps(obj, sort_keys=True))
+            except (OSError, json.JSONDecodeError, KeyError):
+                pass  # fence data corrupt or attempt.json missing; clearing fence anyway
             fence_path.unlink()
             print("fence cleared", file=sys.stderr); return 0
         print(f"refusing to clear fence: group state is {gstate} (use --force to override)", file=sys.stderr)

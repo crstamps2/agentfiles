@@ -90,7 +90,20 @@ def run_stage(argv: list, cwd, timeout_s: float, env: dict | None,
     try:
         r, w = os.pipe()
         gated_argv = ["/bin/sh", "-c", f'read _ <&{r} || exit 97; exec "$@"', "gate", *argv]
-        with _open_log(stdout_path) as so, _open_log(stderr_path) as se:
+        so = _open_log(stdout_path)
+        try:
+            se = _open_log(stderr_path)
+        except LogPathExists:
+            try:
+                so.close()
+            except OSError:
+                pass
+            try:
+                os.unlink(stdout_path)
+            except FileNotFoundError:
+                pass
+            raise
+        with so, se:
             p = subprocess.Popen(gated_argv, cwd=str(cwd), env=env, stdout=so, stderr=se,
                                  start_new_session=True, pass_fds=(r,))
             os.close(r); r = None  # child holds its own inherited copy; parent doesn't need it

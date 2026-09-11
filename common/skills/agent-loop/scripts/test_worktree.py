@@ -23,11 +23,14 @@ class SnapshotTests(unittest.TestCase):
         (self.wt/"ignored.txt").write_text("keep me\n")
         after = worktree.snapshot(self.wt)
         self.assertNotEqual(base, after)
-        self.assertEqual(sorted(worktree.changed_paths(self.wt, base)), ["app/a.rb", "app/new.rb"])
+        # snapshot() now captures ignored writes too (--force), so an ignored file written
+        # after base shows up as changed and is removed on restore -- it was never part of base.
+        self.assertEqual(sorted(worktree.changed_paths(self.wt, base)), ["app/a.rb", "app/new.rb", "ignored.txt"])
         worktree.restore(self.wt, base)
         self.assertEqual((self.wt/"app"/"a.rb").read_text(), "a\n")
         self.assertFalse((self.wt/"app"/"new.rb").exists())
-        self.assertTrue((self.wt/"ignored.txt").exists())   # ignored files survive restore
+        self.assertFalse((self.wt/"ignored.txt").exists())  # not in base -> removed by restore
+        self.assertTrue(worktree.verify_restored(self.wt, base))
         self.assertEqual(git(self.wt, "status", "--porcelain").strip(), "")
 
     def test_snapshot_does_not_touch_real_index(self):
@@ -99,6 +102,62 @@ class AllowlistTests(unittest.TestCase):
         # Should accept exact match
         v = worktree.check_allowlist(["app/well.rb"], self.task(["app/well.rb"]), self.PROT, self.TESTS)
         self.assertEqual(v, [])
+
+class IgnoredWriteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.wt = pathlib.Path(self.tmp.name)
+        git(self.wt, "init", "-q", "-b", "main")
+        git(self.wt, "config", "user.email", "t@t"); git(self.wt, "config", "user.name", "t")
+        (self.wt/"app").mkdir(); (self.wt/"app"/"a.rb").write_text("a\n")
+        (self.wt/".gitignore").write_text("tmp/\n")
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "init")
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_ignored_write_is_in_changed_paths_and_removed_by_restore(self):
+        base = worktree.snapshot(self.wt)
+        (self.wt/"tmp").mkdir()
+        (self.wt/"tmp"/"x").write_text("scratch\n")
+        after = worktree.snapshot(self.wt)
+        self.assertNotEqual(base, after)
+        self.assertIn("tmp/x", worktree.changed_paths(self.wt, base))
+        worktree.restore(self.wt, base)
+        self.assertFalse((self.wt/"tmp"/"x").exists())
+        self.assertTrue(worktree.verify_restored(self.wt, base))
+
+    def test_tracked_ignored_file_survives_restore(self):
+        """A file that is tracked (force-added) despite matching an ignore rule must survive
+        a restore to a base tree that already contains it."""
+        (self.wt/"tmp").mkdir()
+        (self.wt/"tmp"/"keep.txt").write_text("keep\n")
+        git(self.wt, "add", "-f", "tmp/keep.txt")
+        git(self.wt, "commit", "-qm", "tracked ignored file")
+        base = worktree.snapshot(self.wt)
+        (self.wt/"tmp"/"scratch").write_text("scratch\n")
+        worktree.restore(self.wt, base)
+        self.assertTrue((self.wt/"tmp"/"keep.txt").exists())
+        self.assertEqual((self.wt/"tmp"/"keep.txt").read_text(), "keep\n")
+        self.assertFalse((self.wt/"tmp"/"scratch").exists())
+        self.assertTrue(worktree.verify_restored(self.wt, base))
+
+
+class VerifyRestoredTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.wt = pathlib.Path(self.tmp.name)
+        git(self.wt, "init", "-q", "-b", "main")
+        git(self.wt, "config", "user.email", "t@t"); git(self.wt, "config", "user.name", "t")
+        (self.wt/"a.txt").write_text("a\n")
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "init")
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_verify_restored_false_before_true_after(self):
+        base = worktree.snapshot(self.wt)
+        (self.wt/"a.txt").write_text("changed\n")
+        self.assertFalse(worktree.verify_restored(self.wt, base))
+        worktree.restore(self.wt, base)
+        self.assertTrue(worktree.verify_restored(self.wt, base))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,11 @@ if scenario == "misplaced_result":
     stray = wt / rel; stray.mkdir(parents=True, exist_ok=True)
     (stray / "result.md").write_text(f"STATUS: pass\nREASON: none\nBASE: fake\nFILES: {target.relative_to(wt)}\nEVIDENCE: x\nUNVERIFIED: none\nNEXT: none\n")
     sys.exit(0)
+if scenario == "no_result":
+    # Does the work, runs nothing, writes NO result.md -- the local model's actual failure mode.
+    target.write_text("edited by fake worker (no_result)\n"); sys.exit(0)
+if scenario == "noop":
+    sys.exit(0)                      # exit 0, touched nothing, wrote nothing
 if scenario == "timeout":
     target.write_text(f"edited by fake worker ({scenario})\n")
     time.sleep(30)

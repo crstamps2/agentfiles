@@ -58,9 +58,32 @@ def append_feedback(task_dir, attempt_n: int, gate_summary: str) -> pathlib.Path
         old = attempt_mod.safe_read(p)
     except FileNotFoundError:
         old = ""
-    new_text = old + f"## Attempt {attempt_n}\n{gate_summary.strip()}\n\n"
+    new_text = old + f"## Attempt {attempt_n}\n{summarize_feedback(gate_summary)}\n\n"
     attempt_mod.safe_rewrite(p, new_text)
     return p
+
+
+def summarize_feedback(gate_summary: str, max_items: int = 8) -> str:
+    """The field guide's rule: two sentences about what the gate saw, not a wall. A runner
+    reason is often `path: why; path: why; ...` -- group by the `why` clause, keep the first
+    few paths per group, and state the counts. Anything else passes through trimmed."""
+    text = gate_summary.strip()
+    parts = [x.strip() for x in text.split("; ") if x.strip()]
+    if len(parts) <= max_items or not all(": " in x for x in parts):
+        return text[:2000]
+    groups: dict[str, list] = {}
+    for x in parts:
+        path, why = x.split(": ", 1)
+        groups.setdefault(why, []).append(path)
+    lines = [f"{len(parts)} findings in {len(groups)} group(s):"]
+    def _artifact(path: str) -> bool:      # sort likely build artifacts last so source paths surface
+        return path.split("/", 1)[0] in ("tmp", "node_modules", "log", "coverage", "public") or path.startswith(".")
+    for why, paths in groups.items():
+        paths = sorted(paths, key=_artifact)
+        shown = ", ".join(paths[:3]) + (f", … (+{len(paths)-3} more)" if len(paths) > 3 else "")
+        lines.append(f"- {len(paths)}× {why}: {shown}")
+    lines.append("Fix the source-file findings; build artifacts and caches are not yours to clean.")
+    return "\n".join(lines)
 
 
 def next_action(history: list, arm: str, outcome: str, env_failures: int) -> str:

@@ -189,3 +189,36 @@ class RestoreSymlinkEscapeTests(unittest.TestCase):
         worktree.restore(self.wt, base)
         self.assertTrue(os.path.islink(self.wt / "d")); self.assertTrue(worktree.verify_restored(self.wt, base))
 
+
+class IgnoredArtifactsExemptTests(unittest.TestCase):
+    """First-real-run finding: running `bin/rails test` writes tmp/cache/bootsnap, .ruby-lsp, etc.
+    Those are gitignored build artifacts, not worker edits -- the allowlist must not reject them,
+    while protected paths stay rejected even when ignored."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.wt = pathlib.Path(self.tmp.name)
+        git(self.wt, "init", "-q", "-b", "main"); git(self.wt, "config", "user.email", "t@t"); git(self.wt, "config", "user.name", "t")
+        (self.wt/"app"/"components").mkdir(parents=True); (self.wt/"app"/"components"/".keep").write_text("")
+        (self.wt/".gitignore").write_text("tmp/\n.ruby-lsp/\nnode_modules/\nbin/cache/\n")
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "init")
+        self.task = Task(id="001", slug="s", summary="s", allowed_files=["app/components/**"], verification_commands=["true"], acceptance=["a"])
+        self.PROT = ["bin/", ".github/", "AGENTS.md"]; self.TESTS = ["test/**"]
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_ignored_build_artifacts_are_not_violations(self):
+        paths = ["app/components/well.rb", "tmp/cache/bootsnap/compile-cache-iseq/00/abc", ".ruby-lsp/Gemfile", "node_modules/.cache/jiti/x.mjs"]
+        v = worktree.check_allowlist(paths, self.task, self.PROT, self.TESTS, wt=self.wt)
+        self.assertEqual(v, [])
+
+    def test_ignored_but_protected_is_still_a_violation(self):
+        v = worktree.check_allowlist(["bin/cache/evil"], self.task, self.PROT, self.TESTS, wt=self.wt)
+        self.assertEqual(len(v), 1); self.assertIn("protected", v[0])
+
+    def test_non_ignored_outside_allowlist_still_rejected(self):
+        v = worktree.check_allowlist(["app/models/user.rb", "tmp/cache/x"], self.task, self.PROT, self.TESTS, wt=self.wt)
+        self.assertEqual(len(v), 1); self.assertIn("app/models/user.rb", v[0])
+
+    def test_without_wt_legacy_behavior_judges_everything(self):
+        v = worktree.check_allowlist(["tmp/cache/x"], self.task, self.PROT, self.TESTS)
+        self.assertEqual(len(v), 1)
+

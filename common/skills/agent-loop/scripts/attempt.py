@@ -177,7 +177,7 @@ May edit tests/fixtures: {"yes" if task.may_edit_tests else "no"}
 ## Stop / escalate when
 {bl(task.stop_when)}
 
-If `{task_dir}/feedback.md` exists, read it first. Write `{task_dir}/result.md` when done, even on failure.
+If `{task_dir}/feedback.md` exists, read it first. Write `{task_dir}/result.md` when done, even on failure -- that is an ABSOLUTE path; do not prefix it with `./`.
 Do not commit or push. Never weaken an acceptance check.
 """
 
@@ -469,7 +469,9 @@ def create(cfg, ticket_key: str, task: contracts.Task, worktree, n: int, agent, 
         body = getattr(agent, "body", "") if not isinstance(agent, str) else ""
         safe_write(adir / "body.md", body)
         safe_write(adir / "prompt.md",
-                   f"Your task file is {adir / 'task.md'}. Read it, then begin. Write result.md to {adir}.\n")
+                   f"Your task file is {adir / 'task.md'}. Read it, then begin.\n"
+                   f"When done, write your result to this ABSOLUTE path (starts with '/', no './' prefix):\n"
+                   f"{adir / 'result.md'}\n")
 
         base_tree = worktree_mod.snapshot(wt)
         safe_write(adir / "base_tree", base_tree)

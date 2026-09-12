@@ -438,6 +438,14 @@ class RunnerHarness(unittest.TestCase):
     # create/rewrite discipline they implemented now lives in attempt.safe_write/safe_rewrite,
     # already covered by test_attempt.py.
 
+    def test_result_written_relative_to_worktree_is_detected_in_feedback(self):
+        # fake scenario `misplaced_result`: does the pass edit, but writes result.md to
+        # <worktree>/<attempt-dir-as-relative>/result.md instead of the absolute attempt dir.
+        outcome, rows = self.run_task("misplaced_result", "pass")
+        self.assertEqual(rows[0]["outcome"], "rejected")
+        self.assertIn("WRONG place", rows[0]["reason"]); self.assertIn("ABSOLUTE", rows[0]["reason"].upper())
+        self.assertEqual(outcome, "accepted")
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

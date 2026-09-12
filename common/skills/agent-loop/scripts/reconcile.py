@@ -389,7 +389,7 @@ def _reconcile_stage_done(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
         wt = pathlib.Path(rec.worktree)
         changed = worktree_mod.changed_paths(wt, rec.base_tree)
         task = _load_task(pathlib.Path(rec.path))
-        violations = worktree_mod.check_allowlist(changed, task, cfg.protected_paths, cfg.test_path_globs)
+        violations = worktree_mod.check_allowlist(changed, task, cfg.protected_paths, cfg.test_path_globs, wt=wt)
         if not violations:
             observed = worktree_mod.snapshot(wt)
             rec = attempt_mod.transition(rec, "CLASSIFYING", observed_tree=observed)

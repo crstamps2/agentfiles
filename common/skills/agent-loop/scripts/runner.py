@@ -430,7 +430,10 @@ def main(argv=None) -> int:
                 transient = out == "paused" and (t.reason.startswith("resource:") or t.reason.startswith("heavy lane"))
                 if transient and _time.monotonic() < deadline:
                     print(f"  waiting 120s for resources ({int((deadline - _time.monotonic()) // 60)} min left)", file=sys.stderr, flush=True)
-                    _time.sleep(120)
+                    for _ in range(12):                       # 12 x 10s: stay responsive to PAUSE and signals
+                        if state.paused(cfg.state_root):
+                            print("  PAUSE appeared while waiting; exiting", file=sys.stderr, flush=True); return 1
+                        _time.sleep(10)
                     continue
                 return 1
         return 0

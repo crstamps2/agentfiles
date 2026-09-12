@@ -257,6 +257,7 @@ class Runner:
         symlinked_result = False
         symlinked_stderr = False
         misplaced_result = None
+        evidence_only = False
         try:
             text = attempt.safe_read(rec.path / "result.md")
             res = contracts.parse_result(text)
@@ -292,6 +293,20 @@ class Runner:
             outcome, reason = "protocol", "worker replaced stderr.log"
         else:
             outcome, reason = _classify(res, stage, violations, stderr)
+            # Evidence-based classification. The worker's result.md was only ever a claim the
+            # runner verifies; when the claim is MISSING but the evidence is all there -- the
+            # tree changed inside the allowlist, no violations, the stage exited 0 -- run the
+            # verification gate and let IT decide. First overnight run: the local model wrote
+            # working code 3/3 times and a parseable result.md 0/3 times; rejecting on the
+            # missing file paid the premium arm for work the cheap arm had already done.
+            result_missing = not (rec.path / "result.md").exists()   # missing != malformed
+            if (outcome == "protocol" and res is None and result_missing and not misplaced_result
+                    and not violations and changed and stage.returncode == 0 and not stage.timed_out):
+                ignored = worktree.ignored_paths(wt, changed)
+                source_changes = [p for p in changed if p not in ignored
+                                  and not any(worktree._match(p, g) for g in getattr(self.cfg, "harness_artifact_globs", ()))]
+                if source_changes:
+                    outcome, reason, evidence_only = "accepted", "none", True
             if misplaced_result and outcome in ("rejected", "protocol"):
                 reason = (f"result.md was written to the WRONG place: `{misplaced_result}` inside the worktree. "
                           f"Write it to the absolute path `{rec.path / 'result.md'}` (no leading `./`). "
@@ -358,6 +373,8 @@ class Runner:
                 outcome, reason = "rejected", "verification introduced forbidden change: " + "; ".join(violations)
             else:
                 outcome, reason = verify_outcome, verify_reason
+                if evidence_only and outcome == "accepted":
+                    reason = "accepted from evidence: worker omitted result.md; allowlist clean; verification passed"
         else:
             final_tree = worktree.snapshot(wt)
 

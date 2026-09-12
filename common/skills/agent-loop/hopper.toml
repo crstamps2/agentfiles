@@ -43,7 +43,9 @@ compressor_pct_max = 60.0    # SECONDARY signal. On Apple silicon the kernel com
                              # 30-45% is a normal daytime steady state (macOS memory_pressure says 'normal' at 35%).
                              # `pressure_level` (memory_pressure warn/critical) is the primary memory gate; this
                              # ceiling only catches a runaway. Slice-1 idle baseline was 20-26%.
-load_per_core_max = 1.0
+load_per_core_max = 2.0     # SECONDARY. macOS runs mediaanalysisd/Spotlight when the box looks idle at night;
+                            # first overnight run saw load 9-14 on 10 cores from the OS alone with memory_pressure
+                            # 'normal'. 1.0 would have waited until dawn. pressure_level is the primary gate.
 disk_free_gb_min = 20.0
 require_ac_power = true
 defer_max_s = 1800

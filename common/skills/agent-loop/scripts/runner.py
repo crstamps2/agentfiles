@@ -141,6 +141,16 @@ class Runner:
             try:
                 n = attempt.next_n(task_root)
                 outcome, reason, rec = self._attempt(t, task, wt, arm, rung, n, attempts, env_failures)
+            except reconcile.FinalizeFailed as e:
+                # The attempt is durably CLASSIFIED; finalize (restore/verify/patch) could not
+                # complete. Pause the ticket with the cause and stop -- reconcile() retries
+                # finalize on the next start. Never let this traceback out of the runner.
+                t = state.load(tdir)
+                if t.state != "paused":
+                    t = state.transition(t, "paused", reason=f"finalize failed: {e}")
+                    state.save(tdir, t)
+                print(f"{t.key}/{task.id}: finalize failed; ticket paused: {e}", file=sys.stderr, flush=True)
+                return "paused"
             finally:
                 # Local arm: free the 12 GB before the lane is handed to anything else (gates,
                 # the next attempt, or Cody). The spec makes local inference and Rails/Chrome

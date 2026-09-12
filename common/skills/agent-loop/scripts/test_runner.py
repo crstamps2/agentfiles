@@ -457,6 +457,24 @@ class RunnerHarness(unittest.TestCase):
         rec = attempt.load(self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1", validate_worktree=False)
         self.assertEqual(rec.status, "CLASSIFIED")
 
+    def test_missing_result_with_clean_evidence_is_accepted_by_the_gate(self):
+        """Overnight finding: the worker did the work but wrote no result.md. Evidence (allowlisted
+        tree change + rc 0 + verification passes) accepts; the reason says so."""
+        outcome, rows = self.run_task("no_result")
+        self.assertEqual(outcome, "accepted"); self.assertEqual(self.launches, 1)
+        self.assertIn("accepted from evidence", rows[0]["reason"])
+
+    def test_missing_result_with_failing_verification_is_still_rejected(self):
+        tasks = self.tasks_with(verification_commands=["false"])
+        outcome, rows = self.run_task("no_result", "pass", tasks=tasks)
+        self.assertEqual(rows[0]["outcome"], "rejected"); self.assertIn("verification failed", rows[0]["reason"])
+
+    def test_missing_result_with_no_source_change_is_still_protocol(self):
+        # scenario `transport_429` exits nonzero with no edit -> environment; use `owner`-less path:
+        # a worker that exits 0 having changed nothing is still a protocol failure.
+        outcome, rows = self.run_task("noop", "pass")
+        self.assertEqual(rows[0]["outcome"], "protocol")
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

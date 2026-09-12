@@ -8,6 +8,7 @@ import dataclasses
 import datetime as dt
 import os
 import pathlib
+import subprocess
 import sys
 import uuid
 
@@ -49,6 +50,17 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
     if res.status == "pass":
         return "accepted", "none"
     return "rejected", f"{res.status}/{res.reason}: {res.next}"
+
+
+def _unload_local_model(model: str | None) -> None:
+    """Best-effort `ollama stop <model>`; never raises. `model` is `ollama-local/<id>` -> `<id>`."""
+    if not model:
+        return
+    mid = model.split("/", 1)[-1]
+    try:
+        subprocess.run(["ollama", "stop", mid], capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 class Runner:
@@ -130,6 +142,11 @@ class Runner:
                 n = attempt.next_n(task_root)
                 outcome, reason, rec = self._attempt(t, task, wt, arm, rung, n, attempts, env_failures)
             finally:
+                # Local arm: free the 12 GB before the lane is handed to anything else (gates,
+                # the next attempt, or Cody). The spec makes local inference and Rails/Chrome
+                # mutually exclusive in time; this is the unload half of that rule.
+                if rung.agent == "local-worker" and getattr(self.cfg, "local_unload_after_attempt", True):
+                    _unload_local_model(getattr(self.cfg, "local_model", None))
                 lease.release()
 
             if rec is None:
@@ -366,6 +383,9 @@ def main(argv=None) -> int:
     d = sub.add_parser("dry-run"); d.add_argument("--worktree", required=True); d.add_argument("--tasks", required=True)
     d.add_argument("--scenario", default="pass")
     d.add_argument("--real", action="store_true", help="launch the real `pi` worker instead of fake_worker.py (supervised first runs; run-once is Plan 3)"); d.add_argument("--ticket", default="DRY-1"); d.add_argument("--skip-admission", action="store_true")
+    d.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES",
+                   help="overnight mode: when a task pauses for a RESOURCE reason (admission red / heavy lane held), "
+                        "sleep 2 min and retry for up to MINUTES instead of exiting. PAUSE/HUMAN still exit.")
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
@@ -396,11 +416,23 @@ def main(argv=None) -> int:
             for s in ("spinup", "plan", "plan-review", "implement"): t = state.transition(t, s)
             state.save(cfg.ticket_dir(a.ticket), t)
         seen = {False: 0, True: 0}
+        import time as _time
         for task in tasks:
-            t = state.load(cfg.ticket_dir(a.ticket)); t.worktree = a.worktree
             index = seen[task.visual]; seen[task.visual] += 1
-            out = r.implement_task(ctx, t, task, index, a.worktree); print(f"{a.ticket} task {task.id}: {out}")
-            if out != "accepted": return 1
+            deadline = _time.monotonic() + 60 * a.wait_on_resource
+            while True:
+                t = state.load(cfg.ticket_dir(a.ticket)); t.worktree = a.worktree
+                out = r.implement_task(ctx, t, task, index, a.worktree)
+                print(f"{a.ticket} task {task.id}: {out}" + (f" ({state.load(cfg.ticket_dir(a.ticket)).reason})" if out == "paused" else ""), flush=True)
+                if out == "accepted":
+                    break
+                t = state.load(cfg.ticket_dir(a.ticket))
+                transient = out == "paused" and (t.reason.startswith("resource:") or t.reason.startswith("heavy lane"))
+                if transient and _time.monotonic() < deadline:
+                    print(f"  waiting 120s for resources ({int((deadline - _time.monotonic()) // 60)} min left)", file=sys.stderr, flush=True)
+                    _time.sleep(120)
+                    continue
+                return 1
         return 0
     except reconcile.FenceExit as e:
         print(f"fenced: {e.reason}", file=sys.stderr); return 3

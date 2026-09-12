@@ -29,6 +29,12 @@ def result(status, reason="none", files=None, nxt="none"):
         f"EVIDENCE: fake worker scenario={scenario}\nUNVERIFIED: none\nNEXT: {nxt}\n")
 
 
+if scenario == "misplaced_result":
+    target.write_text("edited by fake worker (misplaced_result)\n")
+    rel = pathlib.Path(*task_dir.parts[1:])           # the model's `./Users/...` mistake
+    stray = wt / rel; stray.mkdir(parents=True, exist_ok=True)
+    (stray / "result.md").write_text(f"STATUS: pass\nREASON: none\nBASE: fake\nFILES: {target.relative_to(wt)}\nEVIDENCE: x\nUNVERIFIED: none\nNEXT: none\n")
+    sys.exit(0)
 if scenario == "timeout":
     target.write_text(f"edited by fake worker ({scenario})\n")
     time.sleep(30)

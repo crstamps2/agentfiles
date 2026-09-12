@@ -225,14 +225,26 @@ class Runner:
         # CLASSIFYING (attempt.py's forward-only table only allows CLASSIFYING once, after
         # every stage -- worker and verify -- has completed).
         changed = worktree.changed_paths(wt, rec.base_tree)
-        violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs, wt=wt)
+        violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs, wt=wt, harness_globs=getattr(self.cfg, 'harness_artifact_globs', ()))
         res = None
         symlinked_result = False
         symlinked_stderr = False
+        misplaced_result = None
         try:
             text = attempt.safe_read(rec.path / "result.md")
             res = contracts.parse_result(text)
         except FileNotFoundError:
+            # Small models sometimes write the absolute result path as RELATIVE to the worktree
+            # (`./Users/cody/...`). First real run: gpt-oss:20b did exactly this. Detect it so the
+            # feedback names the real mistake, and treat the stray write as an allowlist
+            # violation (it is one: an untracked dir inside the repo).
+            rel = pathlib.Path(*rec.path.parts[1:])          # strip the leading "/"
+            stray = wt / rel / "result.md"
+            try:
+                if stray.exists() and not stray.is_symlink():
+                    misplaced_result = str(rel / "result.md")
+            except OSError:
+                pass
             res = None
         except contracts.ProtocolError:
             res = None
@@ -253,6 +265,10 @@ class Runner:
             outcome, reason = "protocol", "worker replaced stderr.log"
         else:
             outcome, reason = _classify(res, stage, violations, stderr)
+            if misplaced_result and outcome in ("rejected", "protocol"):
+                reason = (f"result.md was written to the WRONG place: `{misplaced_result}` inside the worktree. "
+                          f"Write it to the absolute path `{rec.path / 'result.md'}` (no leading `./`). "
+                          f"Other findings: {reason}")
 
         verification_seconds = 0.0
         if outcome == "accepted":
@@ -310,7 +326,7 @@ class Runner:
             # times out may still have executed worker code that wrote a forbidden path.
             final_tree = worktree.snapshot(wt)
             changed = worktree.changed_paths(wt, rec.base_tree)
-            violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs, wt=wt)
+            violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs, wt=wt, harness_globs=getattr(self.cfg, 'harness_artifact_globs', ()))
             if violations:
                 outcome, reason = "rejected", "verification introduced forbidden change: " + "; ".join(violations)
             else:

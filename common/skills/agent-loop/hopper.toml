@@ -60,6 +60,10 @@ ci_rerun_max = 5
 protected_paths = ["bin/", ".github/", ".circleci/", "AGENTS.md", "CLAUDE.md", "config/ci/"]
 # Editable only when the task manifest sets may_edit_tests = true.
 test_path_globs = ["test/**", "spec/**", "**/fixtures/**", "**/__snapshots__/**"]
+# Written by the agent harness / editor tooling INTO the worktree, never by a worker as code.
+# Exempt from the allowlist exactly like gitignored build artifacts (protected paths still win).
+# First real run (2026-09-11): pi wrote .pi/loops/*.json; ruby-lsp wrote .ruby-lsp/*.
+harness_artifact_globs = [".pi/**", ".ruby-lsp/**", ".claude/**", ".codex/**", ".pi-subagents/**"]
 
 [arms]
 # Cheap arms alternate by task index unless a ticket pins one. Values: cloud | local

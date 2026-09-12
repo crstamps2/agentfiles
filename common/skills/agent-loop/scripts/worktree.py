@@ -139,7 +139,7 @@ def ignored_paths(wt, paths: list) -> set:
     return {p.decode("utf-8", "surrogateescape") for p in r.stdout.split(b"\0") if p}
 
 
-def check_allowlist(paths: list, task, protected_paths: list, test_globs: list, wt=None) -> list:
+def check_allowlist(paths: list, task, protected_paths: list, test_globs: list, wt=None, harness_globs: list = ()) -> list:
     """Runner-enforced diff allowlist. Precedence per path: protected (always a violation) ->
     gitignored (exempt: build artifacts such as tmp/cache, .ruby-lsp, node_modules/.cache are
     side effects of running the repo's own verification commands, not worker edits; restore()
@@ -151,8 +151,8 @@ def check_allowlist(paths: list, task, protected_paths: list, test_globs: list, 
         if any(_match(p, pp) for pp in protected_paths):
             violations.append(f"{p}: protected path (never editable by workers)")
             continue
-        if p in ignored:
-            continue
+        if p in ignored or any(_match(p, g) for g in harness_globs):
+            continue                      # build/harness artifact, not a worker edit
         if not any(_match(p, a) for a in task.allowed_files):
             violations.append(f"{p}: not in allowed_files for task {task.id}")
             continue

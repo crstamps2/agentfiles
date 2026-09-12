@@ -53,6 +53,7 @@ class Config:
     budgets: Budgets
     protected_paths: list
     test_path_globs: list
+    harness_artifact_globs: list
     arms_alternate: list
     outcomes: dict
     local_model: str | None = None
@@ -107,6 +108,7 @@ def load(path: pathlib.Path | None = None) -> Config:
         budgets=Budgets(**b),
         protected_paths=list(pr["protected_paths"]),
         test_path_globs=list(pr["test_path_globs"]),
+        harness_artifact_globs=list(pr.get("harness_artifact_globs", [])),
         arms_alternate=list(arms["alternate"]),
         outcomes=dict(oc),
         local_model=local_model,

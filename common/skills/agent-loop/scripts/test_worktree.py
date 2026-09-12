@@ -222,3 +222,12 @@ class IgnoredArtifactsExemptTests(unittest.TestCase):
         v = worktree.check_allowlist(["tmp/cache/x"], self.task, self.PROT, self.TESTS)
         self.assertEqual(len(v), 1)
 
+
+class HarnessArtifactExemptTests(unittest.TestCase):
+    def test_pi_loops_state_is_exempt_but_protected_still_wins(self):
+        task = Task(id="001", slug="s", summary="s", allowed_files=["app/**"], verification_commands=["true"], acceptance=["a"])
+        v = worktree.check_allowlist([".pi/loops/loops-x.json", "app/x.rb"], task, ["bin/"], ["test/**"], harness_globs=[".pi/**"])
+        self.assertEqual(v, [])
+        v = worktree.check_allowlist(["bin/x"], task, ["bin/"], ["test/**"], harness_globs=["bin/**"])
+        self.assertEqual(len(v), 1); self.assertIn("protected", v[0])
+

@@ -231,3 +231,24 @@ class HarnessArtifactExemptTests(unittest.TestCase):
         v = worktree.check_allowlist(["bin/x"], task, ["bin/"], ["test/**"], harness_globs=["bin/**"])
         self.assertEqual(len(v), 1); self.assertIn("protected", v[0])
 
+
+class VerifyRestoredIgnoresCachesTests(unittest.TestCase):
+    """Overnight-run finding: running the test suite rewrites tmp/cache/*; that must not make
+    'restored to base' false, but a differing NON-ignored file still must."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.wt = pathlib.Path(self.tmp.name)
+        git(self.wt, "init", "-q", "-b", "main"); git(self.wt, "config", "user.email", "t@t"); git(self.wt, "config", "user.name", "t")
+        (self.wt/"app").mkdir(); (self.wt/"app"/"a.rb").write_text("a\n")
+        (self.wt/".gitignore").write_text("tmp/\n"); (self.wt/"tmp"/"cache").mkdir(parents=True); (self.wt/"tmp"/"cache"/"boot").write_text("v1\n")
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "init")
+    def tearDown(self):
+        self.tmp.cleanup()
+    def test_modified_ignored_cache_does_not_fail_verification(self):
+        base = worktree.snapshot(self.wt)                    # base includes tmp/cache/boot=v1 (--force)
+        (self.wt/"tmp"/"cache"/"boot").write_text("v2\n")     # the test suite rewrote a cache
+        self.assertTrue(worktree.verify_restored(self.wt, base))
+    def test_modified_tracked_file_still_fails_verification(self):
+        base = worktree.snapshot(self.wt)
+        (self.wt/"app"/"a.rb").write_text("changed\n")
+        self.assertFalse(worktree.verify_restored(self.wt, base))
+

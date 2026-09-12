@@ -125,11 +125,33 @@ def _match(path: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(path, pattern)
 
 
-def check_allowlist(paths: list, task, protected_paths: list, test_globs: list) -> list:
+def ignored_paths(wt, paths: list) -> set:
+    """Subset of `paths` that git would ignore (gitignore/exclude rules). Batch call via
+    `check-ignore --stdin -z`; a nonexistent path is still classified by the rules."""
+    if not paths:
+        return set()
+    r = subprocess.run(["git", "-C", str(wt), "check-ignore", "--stdin", "-z", "--no-index"],
+                       input=b"\0".join(p.encode("utf-8", "surrogateescape") for p in paths) + b"\0",
+                       capture_output=True)
+    # rc 0 = some ignored, 1 = none ignored, 128 = error
+    if r.returncode not in (0, 1):
+        raise RuntimeError(f"git check-ignore failed: {r.stderr.decode(errors='replace').strip()}")
+    return {p.decode("utf-8", "surrogateescape") for p in r.stdout.split(b"\0") if p}
+
+
+def check_allowlist(paths: list, task, protected_paths: list, test_globs: list, wt=None) -> list:
+    """Runner-enforced diff allowlist. Precedence per path: protected (always a violation) ->
+    gitignored (exempt: build artifacts such as tmp/cache, .ruby-lsp, node_modules/.cache are
+    side effects of running the repo's own verification commands, not worker edits; restore()
+    still removes them so 'restored to base' stays true) -> allowed_files -> test/fixture rule.
+    `wt` enables the gitignore exemption; without it every path is judged (legacy callers)."""
     violations = []
+    ignored = ignored_paths(wt, paths) if wt is not None else set()
     for p in paths:
         if any(_match(p, pp) for pp in protected_paths):
             violations.append(f"{p}: protected path (never editable by workers)")
+            continue
+        if p in ignored:
             continue
         if not any(_match(p, a) for a in task.allowed_files):
             violations.append(f"{p}: not in allowed_files for task {task.id}")

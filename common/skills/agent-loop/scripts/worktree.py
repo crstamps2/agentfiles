@@ -112,8 +112,22 @@ def _unlink_nofollow(root: pathlib.Path, rel: str) -> None:
 
 
 def verify_restored(wt, tree: str) -> bool:
-    """True iff the working tree's current snapshot matches `tree` exactly."""
-    return snapshot(wt) == tree
+    """True iff the working tree matches `tree` for every path that is NOT gitignored.
+
+    Ignored paths are excluded from the verdict on purpose: build caches such as
+    tmp/cache/bootsnap are rewritten by merely running the repo's test suite (the runner's own
+    verification gate does it), so a byte-exact tree comparison can never converge and would
+    wedge every attempt at finalize (first overnight run, 2026-09-12). Worker-WRITTEN ignored
+    extras are still removed by restore(); a worker edit to a protected-but-ignored path is
+    caught earlier by check_allowlist (protected wins over ignored)."""
+    now = snapshot(wt)
+    if now == tree:
+        return True
+    r = subprocess.run(["git", "-C", str(wt), "diff", "--no-renames", "--name-only", "-z", tree, now], capture_output=True)
+    if r.returncode:
+        raise RuntimeError(f"git diff failed: {r.stderr.decode(errors='replace').strip()}")
+    differing = [p.decode("utf-8", "surrogateescape") for p in r.stdout.split(b"\0") if p]
+    return not (set(differing) - ignored_paths(wt, differing))
 
 
 def _match(path: str, pattern: str) -> bool:

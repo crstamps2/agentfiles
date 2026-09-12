@@ -446,6 +446,17 @@ class RunnerHarness(unittest.TestCase):
         self.assertIn("WRONG place", rows[0]["reason"]); self.assertIn("ABSOLUTE", rows[0]["reason"].upper())
         self.assertEqual(outcome, "accepted")
 
+    def test_finalize_failure_pauses_ticket_instead_of_crashing(self):
+        """Overnight-run finding: FinalizeFailed escaped implement_task as a traceback. It must pause
+        the ticket with the reason and leave the record CLASSIFIED for reconcile to retry."""
+        with patch("runner.reconcile.finalize", side_effect=reconcile.FinalizeFailed("boom: did not converge")):
+            outcome, rows = self.run_task("fail")
+        self.assertEqual(outcome, "paused")
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertEqual(t.state, "paused"); self.assertIn("finalize failed", t.reason); self.assertIn("boom", t.reason)
+        rec = attempt.load(self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1", validate_worktree=False)
+        self.assertEqual(rec.status, "CLASSIFIED")
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

@@ -225,7 +225,7 @@ class Runner:
         # CLASSIFYING (attempt.py's forward-only table only allows CLASSIFYING once, after
         # every stage -- worker and verify -- has completed).
         changed = worktree.changed_paths(wt, rec.base_tree)
-        violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs)
+        violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs, wt=wt)
         res = None
         symlinked_result = False
         symlinked_stderr = False
@@ -310,7 +310,7 @@ class Runner:
             # times out may still have executed worker code that wrote a forbidden path.
             final_tree = worktree.snapshot(wt)
             changed = worktree.changed_paths(wt, rec.base_tree)
-            violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs)
+            violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs, wt=wt)
             if violations:
                 outcome, reason = "rejected", "verification introduced forbidden change: " + "; ".join(violations)
             else:

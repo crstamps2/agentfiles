@@ -97,3 +97,15 @@ class NextActionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SummarizeFeedbackTests(unittest.TestCase):
+    def test_wall_of_paths_is_grouped_and_counted(self):
+        wall = "; ".join([f"tmp/cache/bootsnap/{i:02d}: not in allowed_files for task 001" for i in range(120)]
+                         + ["app/models/user.rb: not in allowed_files for task 001", "bin/x: protected path (never editable by workers)"])
+        out = ladder.summarize_feedback(wall)
+        self.assertLess(len(out), 600); self.assertIn("122 findings", out); self.assertIn("121×", out)
+        self.assertIn("app/models/user.rb", out); self.assertIn("(+118 more)", out)
+    def test_short_reason_passes_through(self):
+        self.assertEqual(ladder.summarize_feedback("verification failed: bin/rails test x"), "verification failed: bin/rails test x")
+

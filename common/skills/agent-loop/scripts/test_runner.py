@@ -58,6 +58,7 @@ class RunnerHarness(unittest.TestCase):
         # Pin the arm order the ladder tests assume (index 0 -> cloud). The production default is an
         # operator preference (local-first since 2026-09-10) and must not silently flip these assertions.
         toml = re.sub(r'alternate = \[[^\]]*\][^\n]*', 'alternate = ["cloud", "local"]', toml)
+        toml = re.sub(r'^pin_arm = .*$', '', toml, flags=re.M)          # operator pins are production state, not test fixture
         (root / "hopper.toml").write_text(toml)
         self.cfg = config.load(root / "hopper.toml"); self.cfg.ensure_dirs()
         (root / "tasks.toml").write_text(TASKS)

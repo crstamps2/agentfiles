@@ -108,5 +108,22 @@ class PushRebasedTests(unittest.TestCase):
             publish.github_write("push", ["git", "push", "--force-with-lease=internal/x:" + "a" * 40, "origin", "HEAD"], ".")
 
 
+class CommitMessageTests(unittest.TestCase):
+    def test_subject_is_short_and_drops_read_first(self):
+        import contracts
+        task = contracts.Task(id="001", slug="well-typed-slot-contract", allowed_files=["a"], verification_commands=["true"], acceptance=["x"],
+                              summary="Implement the neutral ZUI::Well shell and typed auto-wrapping slots with focused TDD; Read first: .agents/skills/zui-component-creation/SKILL.md#step-0")
+        msg = publish.commit_message("ZIP-7873", task); subject, body = msg.split("\n", 1)
+        self.assertLessEqual(len(subject), publish.SUBJECT_MAX); self.assertNotIn("Read first", subject)
+        self.assertTrue(subject.startswith("Implement the neutral ZUI::Well shell"))
+        self.assertIn("ZIP-7873 task 001 (well-typed-slot-contract)", body); self.assertIn("Read first", body)
+
+    def test_overlong_first_clause_is_truncated_on_a_word(self):
+        import contracts
+        task = contracts.Task(id="1", slug="s", allowed_files=["a"], verification_commands=["true"], acceptance=["x"], summary="word " * 40)
+        subject = publish.commit_message("K", task).split("\n")[0]
+        self.assertLessEqual(len(subject), publish.SUBJECT_MAX); self.assertTrue(subject.endswith("…"))
+
+
 if __name__ == "__main__":
     unittest.main()

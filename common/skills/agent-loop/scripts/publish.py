@@ -106,6 +106,23 @@ def commit_paths(wt, paths: list[str], message: str) -> str | None:
     return _sh(["git", "rev-parse", "HEAD"], wt).stdout.strip()
 
 
+SUBJECT_MAX = 72        # repo commit-msg hook rejects > 80 chars after the first ':'; stay well under
+
+
+def commit_message(ticket_key: str, task) -> str:
+    """Short subject from the task summary's first clause (the planner's summaries run 150+ chars
+    with a `Read first:` reference -- the repo's commit-msg hook rejected them, 2026-09-14); the
+    full summary and provenance go in the body."""
+    first = re.split(r"[;.](\s|$)", task.summary.strip(), maxsplit=1)[0].strip()
+    first = re.sub(r"\s*Read first:.*$", "", first).strip().rstrip(".")
+    subject = first if len(first) <= SUBJECT_MAX else first[:SUBJECT_MAX - 1].rsplit(" ", 1)[0] + "…"
+    if not subject:
+        subject = f"{ticket_key} task {task.id}: {task.slug}"
+    body = (f"{task.summary.strip()}\n\n{ticket_key} task {task.id} ({task.slug}); implemented by the agent loop "
+            f"and accepted by its verification gate.")
+    return f"{subject}\n\n{body}"
+
+
 def ahead_of_remote(wt, branch: str) -> int | None:
     """Commits ahead of origin/<branch>, or None when the branch has no remote yet."""
     r = _sh(["git", "rev-parse", "--verify", "-q", f"origin/{branch}"], wt)

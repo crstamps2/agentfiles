@@ -29,6 +29,9 @@ You do not fix the plan and you do not touch application code. You write one ver
 - **Contract soundness**: can each task be finished inside `allowed_files` alone? Do the
   `verification_commands` actually exercise the acceptance criteria and exit non-zero on
   failure? Is anything acceptance-critical unverifiable by the runner?
+- **Self-referential gates**: for every task where the worker may write tests, name each AC that
+  the worker could violate while keeping its own tests green and confirm a runner-executed
+  verification command pins it. Missing pins on API-shape/enum/attribute ACs are BLOCKERS.
 - **Ticket fidelity**: does the task graph cover the ticket's acceptance criteria and Notes?
   Name any AC with no task, and any task with no AC.
 - **Precedent fidelity**: does the plan match how the sibling component actually does it

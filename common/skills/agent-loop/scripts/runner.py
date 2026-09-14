@@ -347,6 +347,11 @@ class Runner:
             outcome, reason = "protocol", "worker replaced stderr.log"
         else:
             outcome, reason = _classify(res, stage, violations, stderr)
+            # A CHEAP worker's `blocked/owner` is a claim, not a verdict: twice today the 20B model
+            # called a task it simply could not do an "owner" block. Only the premium rung may block
+            # the ticket; a cheap owner-claim advances the ladder so premium confirms or does the work.
+            if outcome == "blocked" and rung.tier != "premium":
+                outcome, reason = "protocol", f"cheap worker claimed blocked/owner (escalating for premium confirmation): {(res.next or res.reason or '')[:300]}"
             # Evidence-based classification. The worker's result.md was only ever a claim the
             # runner verifies; when the claim is MISSING but the evidence is all there -- the
             # tree changed inside the allowlist, no violations, the stage exited 0 -- run the

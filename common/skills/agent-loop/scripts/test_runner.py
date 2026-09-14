@@ -179,10 +179,10 @@ class RunnerHarness(unittest.TestCase):
         outcome, rows = self.run_task("transport_429", "transport_429")
         self.assertEqual([r["outcome"] for r in rows], ["environment", "environment"]); self.assertEqual(outcome, "paused")
 
-    def test_owner_block_returns_blocked_without_consuming_ladder(self):
-        outcome, rows = self.run_task("owner")
-        self.assertEqual(outcome, "blocked"); self.assertEqual(self.launches, 1)
-        self.assertEqual(rows[0]["outcome"], "blocked"); self.assertEqual(rows[0]["reason"], "owner")
+    def test_cheap_owner_claim_does_not_block_the_ticket(self):
+        """Changed 2026-09-14: a cheap worker's blocked/owner is a claim that escalates; only premium blocks."""
+        outcome, rows = self.run_task("owner", "pass")
+        self.assertEqual(outcome, "accepted"); self.assertEqual(rows[0]["outcome"], "protocol"); self.assertIn("escalating", rows[0]["reason"])
 
     def test_environment_does_not_consume_rung_then_pauses(self):
         outcome, rows = self.run_task("env", "env")
@@ -417,9 +417,9 @@ class RunnerHarness(unittest.TestCase):
         self.assertNotEqual(aj["observed_tree"], aj["base_tree"])
 
     def test_owner_block_sets_next_action_block_and_blocks_ticket(self):
-        outcome, rows = self.run_task("owner")
+        outcome, rows = self.run_task("fail", "fail", "owner")          # only the PREMIUM rung may block
         self.assertEqual(outcome, "blocked")
-        aj = json.loads((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "attempt.json").read_text())
+        aj = json.loads((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "3" / "attempt.json").read_text())
         self.assertEqual(aj["next_action"], "block")
         t = state.load(self.cfg.ticket_dir("ZIP-7873"))
         self.assertEqual(t.state, "blocked")
@@ -508,6 +508,19 @@ class RunnerHarness(unittest.TestCase):
             outcome, rows = self.run_task("pass")
         self.assertEqual(rows[0]["outcome"], "accepted"); self.assertEqual(rows[0]["agent"], "cloud-worker")
 
+    def test_cheap_owner_block_escalates_instead_of_blocking_ticket(self):
+        """Live 2026-09-14: the cloud 20B model reported blocked/owner for a task it could not do.
+        Cheap rungs may not block the ticket; the claim advances the ladder to premium."""
+        outcome, rows = self.run_task("owner", "owner", "pass")
+        self.assertEqual(outcome, "accepted")
+        worker_rows = [r for r in rows if r.get("stage_kind", "worker") == "worker" or r.get("kind") == "worker"]
+        self.assertEqual([r["outcome"] for r in rows][:3], ["protocol", "protocol", "accepted"])
+        self.assertEqual(rows[2]["agent"], "premium-worker"); self.assertIn("escalating", rows[0]["reason"])
+
+    def test_premium_owner_block_still_blocks_ticket(self):
+        outcome, rows = self.run_task("fail", "fail", "owner")
+        self.assertEqual(outcome, "blocked"); self.assertEqual(rows[2]["outcome"], "blocked")
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):
@@ -576,21 +589,18 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(arms, ["cloud", "cloud", "local", "local"])
 
     def test_arm_persists_across_alternate_change(self):
-        # "owner" blocks on attempt 1 without consuming the ladder, so a second implement_task
-        # call on the SAME history can be issued after mutating the config -- run_task() itself
-        # can't be called twice on one ticket (it re-drives the full spinup..implement chain,
-        # which is illegal once the ticket has already reached "implement").
-        outcome, rows = self.run_task("owner")                     # attempt 1 on the stratum-0 arm (cloud)
-        self.assertEqual(outcome, "blocked"); self.assertEqual(rows[0]["arm"], "cloud")
-        tdir = self.cfg.ticket_dir("ZIP-7873")
-        t = state.transition(state.load(tdir), "implement"); state.save(tdir, t)
-        object.__setattr__(self.cfg, "arms_alternate", ["local", "cloud"])
-        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
-        self.scenarios = ["pass"]
-        outcome2 = self._implement(r, t, self.tasks[0], 0)
-        rows = metrics.read_all(self.cfg.state_root)
-        self.assertEqual(outcome2, "accepted")
-        self.assertEqual({row["arm"] for row in rows}, {"cloud"})
+        # Attempt 1 is rejected on the stratum-0 arm (cloud). Flip arms.alternate BETWEEN attempts of the
+        # same lineage (from inside the launcher); attempt 2 must stay on cloud because the arm is pinned
+        # by the first real outcome.
+        real_launcher = self.launcher
+        def flipping_launcher(*a, **k):
+            res = real_launcher(*a, **k)
+            object.__setattr__(self.cfg, "arms_alternate", ["local", "cloud"])
+            return res
+        self.launcher = flipping_launcher
+        outcome, rows = self.run_task("fail", "pass")
+        self.assertEqual(outcome, "accepted")
+        self.assertEqual({row["arm"] for row in rows}, {"cloud"}); self.assertGreaterEqual(len(rows), 2)
 
     # ----- Fix round 1, finding 3: attempt.create() UnsafePath -> no record; ladder
     # advances by hand, append_feedback is skipped, and a later attempt (once the trap is

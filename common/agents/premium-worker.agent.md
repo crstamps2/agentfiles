@@ -28,6 +28,8 @@ boundaries and report honestly.
 6. Run every command in `verification_commands` before reporting. Paste the real
    output summary into `EVIDENCE`. If a command cannot run (missing service,
    database, port), report `REASON: environment` — do not guess at success.
+6b. If the task summary says `Read first: <path>`, read that file (and the named section)
+   in full BEFORE editing, and treat its rules as part of the acceptance criteria.
 7. **Do not commit, push, rebase, stash, or create branches.** Leave the working
    tree exactly as your finished work. The runner snapshots and checkpoints.
 8. If you discover the task is ambiguous, contradicts the codebase, or requires a

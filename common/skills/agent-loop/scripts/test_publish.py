@@ -94,5 +94,19 @@ class PrBodyTests(unittest.TestCase):
             self.assertEqual(publish.ensure_draft_pr(".", "b", "t", "body")["number"], 7); gw.assert_not_called()
 
 
+class PushRebasedTests(unittest.TestCase):
+    def test_lease_form_is_the_only_force_permitted(self):
+        with patch.object(publish, "_sh", return_value=subprocess.CompletedProcess([], 0, "", "")):
+            publish.github_write("push-rebased", ["git", "push", "--force-with-lease=internal/x:" + "a" * 40, "origin", "HEAD"], ".")
+        for bad in (["git", "push", "--force-with-lease", "origin", "HEAD"], ["git", "push", "--force-with-lease=internal/x", "origin", "HEAD"],
+                    ["git", "push", "--force", "origin", "HEAD"], ["git", "push", "origin", "HEAD"]):
+            with self.subTest(bad=bad), self.assertRaises(publish.PublishError):
+                publish.github_write("push-rebased", bad, ".")
+
+    def test_plain_push_verb_still_refuses_any_lease(self):
+        with self.assertRaises(publish.PublishError):
+            publish.github_write("push", ["git", "push", "--force-with-lease=internal/x:" + "a" * 40, "origin", "HEAD"], ".")
+
+
 if __name__ == "__main__":
     unittest.main()

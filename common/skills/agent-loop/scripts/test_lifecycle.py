@@ -131,10 +131,14 @@ class LifecycleTests(unittest.TestCase):
             r, steps, t = self.run_once()
         self.assertEqual(t.state, "ready"); self.assertEqual(steps[-1].action, "CI rerun requested"); rr.assert_called_once()
 
-    def test_tier3_flag_blocks_mark_ready(self):
-        p = self.wt / "planning" / "zip-7873" / "tasks.toml"; p.write_text("human_confirm_before_ready = true\n" + MANIFEST)
+    def test_tier3_flag_records_questions_but_does_not_block_mark_ready(self):
+        """Cody (2026-09-14): he injects himself only at Human Gate 1, after the bot review. The loop never
+        assigns reviewers, so marking ready is not colleague exposure; tier-3 questions travel to the report."""
+        p = self.wt / "planning" / "zip-7873" / "tasks.toml"; p.write_text("human_confirm_before_ready = true\n# Owner/design questions: confirm single-tone scope, div-only tag enum.\n" + MANIFEST)
         r, steps, t = self.run_once()
-        self.assertEqual(t.state, "paused"); self.assertIn("confirmation", t.reason); self.assertEqual(self.marked, [])
+        self.assertEqual(self.marked, [47888])
+        cis = json.loads((self.cfg.ticket_dir("ZIP-7873") / "ci.json").read_text())
+        self.assertIn("div-only tag enum", cis["tier3_pending"])
 
     def test_review_fix_decision_queues_task_and_replies(self):
         self.comments = [{"kind": "inline", "id": 5, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "nil guard missing", "body_hash": "h5"}]

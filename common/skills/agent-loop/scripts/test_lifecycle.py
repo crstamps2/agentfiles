@@ -189,6 +189,12 @@ class LifecycleTests(unittest.TestCase):
         tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "rung": {"agent": "x", "tier": "cheap", "n": 1}}]; state.save(tdir, tt)
         self.assertTrue(lifecycle._task_accepted(self.cfg, "ZIP-7873", task))
 
+    def test_insert_task_before_places_fix_ahead_of_target(self):
+        import contracts as c
+        m = self.wt / "planning" / "zip-7873" / "tasks.toml"
+        lifecycle.insert_task_before(m, {"id": "001a", "slug": "fix", "summary": "fix", "allowed_files": ["a"], "verification_commands": ["true"], "acceptance": ["z"]}, "002")
+        self.assertEqual([x.id for x in c.load_tasks(m)], ["001", "001a", "002"])
+
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()
         r, steps, t = self.run_once()

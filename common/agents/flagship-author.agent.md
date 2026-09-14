@@ -90,6 +90,14 @@ prose, and any shipped component's precedent:
   are named in both and the later task's `invariants` say what not to change.
 - Work already shipped on the branch (given to you as attempt records / git log) is NOT
   re-planned; reference it and plan only what remains.
+- **Every contract-bearing acceptance criterion gets its own verification command.** Tests the
+  worker writes itself do not verify the contract — a worker can implement the wrong API and write
+  tests that agree with it (ZIP-7873/001: the AC said `enum(:div)`; the worker shipped
+  `enum(:div, :button, :a)` and tested `tag: :button`; the gate saw green). For any AC that fixes
+  an API shape, an allowed/forbidden value, a rendered attribute, or a file's presence, add a
+  `verification_commands` entry the RUNNER executes that fails if the AC is violated (e.g.
+  `bin/rails runner 'ZUI::Well.new(tag: :button); abort "button accepted"' ... ; test $? -ne 0`
+  or a one-line `ruby -e` assertion). ACs without such a command are advisory only.
 - Never authorize edits to tests the task does not own; never authorize weakening a check.
 - Migrations of existing styles must leave a tombstone comment where the rules were removed,
   when the ticket asks for it, and must keep existing call sites rendering (say how you know).

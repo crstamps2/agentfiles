@@ -31,7 +31,7 @@ PLATITUDES = ("good call", "great point", "you're right", "great catch", "nice c
 
 
 def _gh_json(args: list[str], cwd) -> list | dict:
-    r = subprocess.run(["gh", *args], cwd=str(cwd), capture_output=True, text=True, timeout=120)
+    r = subprocess.run(["gh", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     if r.returncode:
         raise RuntimeError(f"gh {' '.join(args[:3])} failed: {r.stderr.strip()[:300]}")
     return json.loads(r.stdout or "null")
@@ -42,7 +42,7 @@ def mark_ready(pr_number: int, cwd) -> None:
 
 
 def head_sha(cwd) -> str:
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(cwd), capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
 
 
 def fetch_bot_comments(pr_number: int, cwd) -> list[dict]:

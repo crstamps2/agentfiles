@@ -313,7 +313,7 @@ def _pause_step(cfg, t, stage, reason) -> Step:
 
 
 def _sh(cmd, cwd, timeout):
-    return subprocess.run(["bash", "-lc", " ".join(__import__("shlex").quote(c) for c in cmd)], cwd=str(cwd), capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["bash", "-lc", " ".join(__import__("shlex").quote(c) for c in cmd)], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _head(wt) -> str:

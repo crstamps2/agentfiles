@@ -403,3 +403,18 @@ def _pr_from_plan(cfg, key, wt, t) -> tuple[str, str]:
                         f"- Plan and adversarial review: `planning/{key.lower()}/` on this branch\n- Lookbook preview: `/lookbook/inspect/zui/{component}`", 1)
     return title, body
 
+
+def insert_task_before(manifest: pathlib.Path, task: dict, before_id: str) -> None:
+    """Insert a prerequisite fix task immediately before `before_id` in manifest order. The runner
+    dispatches tasks in file order, so a contract defect found in a LATER task (007 found 001's
+    tag enum wrong, 2026-09-14) is repaired before that later task runs again."""
+    botreview.write_fix_manifest([task], manifest.with_name("_insert.toml"))
+    body = manifest.with_name("_insert.toml").read_text().split("\n", 1)[1].strip("\n")
+    manifest.with_name("_insert.toml").unlink()
+    text = manifest.read_text()
+    marker = f'\n[[tasks]]\nid = {json.dumps(before_id)}'
+    i = text.find(marker)
+    if i < 0:
+        raise ValueError(f"task {before_id} not found in {manifest}")
+    manifest.write_text(text[:i] + "\n" + body + "\n" + text[i:])
+

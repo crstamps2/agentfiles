@@ -7,7 +7,7 @@ import tomllib
 STATUSES = {"pass", "fail", "blocked"}
 REASONS = {"none", "implementation", "test", "environment", "timeout", "owner", "protocol"}
 _KEY_RE = re.compile(r"^\s*(?:[#*\-]+\s*)?(status|reason|base|files|evidence|unverified|next)\s*[:=]\s*(.*)$", re.I)
-_ID_RE = re.compile(r"^\d{3}$")
+_ID_RE = re.compile(r"^\d{3}[a-z]?$")   # optional letter suffix: a prerequisite fix inserted between planned tasks (006a)
 
 
 class ProtocolError(ValueError):
@@ -103,7 +103,7 @@ def validate_tasks(data: dict) -> list:
                 errs.append(f"{p}: unknown key {k!r}")
         tid = str(t.get("id", ""))
         if tid and not _ID_RE.match(tid):
-            errs.append(f"{p}.id: must match ^\\d{{3}}$ (got {tid!r})")
+            errs.append(f"{p}.id: must match ^\\d{{3}}[a-z]?$ (got {tid!r})")
         if tid in seen:
             errs.append(f"{p}.id: duplicate id {tid}")
         seen.add(tid)

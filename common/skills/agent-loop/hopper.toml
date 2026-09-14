@@ -10,6 +10,8 @@ owned_epics = ["ZIP-6774"]          # cmux listener skips children of these
 key = "ZIP-7872"   # Nav Link
 [[hopper.tickets]]
 key = "ZIP-7873"   # Well — pilot ticket
+pin_arm = "cloud"  # local 32K window fills on the skill excerpt + Card precedent alone (attempts 1,3 hit 32.2K);
+                   # cloud runs the same 20B weights with full context at $0 on the Free plan
 [[hopper.tickets]]
 key = "ZIP-4293"   # Section
 [[hopper.tickets]]

@@ -17,6 +17,7 @@ import agentdef
 import attempt
 import config
 import contracts
+import publish
 import ladder
 import locks
 import procid
@@ -50,6 +51,54 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
     if res.status == "pass":
         return "accepted", "none"
     return "rejected", f"{res.status}/{res.reason}: {res.next}"
+
+
+def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
+    """Source paths from the most recent ACCEPTED attempt of this task (ignored + harness paths dropped)."""
+    root = cfg.state_root / "attempts" / ticket_key / task_id
+    recs = []
+    for d in sorted((p for p in root.iterdir() if p.name.isdigit()), key=lambda p: int(p.name)):
+        try:
+            rec = attempt.load(d, validate_worktree=False)
+        except Exception:
+            continue
+        if rec.outcome == "accepted":
+            recs.append(rec)
+    if not recs:
+        return []
+    changed = list(recs[-1].changed_paths or [])
+    ignored = worktree.ignored_paths(wt, changed)
+    globs = getattr(cfg, "harness_artifact_globs", ())
+    return [p for p in changed if p not in ignored and not any(worktree._match(p, g) for g in globs)
+            and (pathlib.Path(wt) / p).exists()]
+
+
+def publish_accepted(cfg, ticket_key: str, wt, task) -> None:
+    """Commit + push the accepted task's paths and make sure the loop's DRAFT PR exists.
+    Failures here pause the ticket (the code is safe on disk; publishing can be retried) and
+    never undo an acceptance."""
+    tdir = cfg.ticket_dir(ticket_key)
+    try:
+        branch = publish.guard_branch(wt, ticket_key)
+        paths = _accepted_source_paths(cfg, ticket_key, task.id, wt)
+        sha = publish.commit_paths(wt, paths, f"{task.summary.strip().rstrip('.')}\n\n{ticket_key} task {task.id} ({task.slug}); "
+                                              f"implemented by the agent loop and accepted by its verification gate.")
+        pushed = publish.push(wt, branch)
+        pr = publish.existing_pr(wt, branch)
+        if pr is None:
+            spec = cfg.tickets.get(ticket_key)
+            summary = getattr(spec, "summary", None) or ticket_key
+            pr = publish.ensure_draft_pr(wt, branch, publish.pr_title(ticket_key, summary),
+                                         publish.pr_body(ticket_key, summary, task.summary, paths,
+                                                         ["There are automated tests (runner verification gate passed)"],
+                                                         {"intent": f"Implement {ticket_key} via the agent loop."}))
+            publish.record_pr_on_worktree(wt, pr["number"])
+        print(f"{ticket_key} task {task.id}: published commit={str(sha)[:10] if sha else 'none'} pushed={pushed} pr=#{pr['number']}", flush=True)
+    except publish.PublishError as e:
+        t = state.load(tdir)
+        if t.state != "paused":
+            state.save(tdir, state.transition(t, "paused", reason=f"publish failed: {e}"))
+        print(f"{ticket_key} task {task.id}: publish failed; ticket paused: {e}", file=sys.stderr, flush=True)
 
 
 def _unload_local_model(model: str | None) -> None:
@@ -410,6 +459,7 @@ def main(argv=None) -> int:
     d = sub.add_parser("dry-run"); d.add_argument("--worktree", required=True); d.add_argument("--tasks", required=True)
     d.add_argument("--scenario", default="pass")
     d.add_argument("--real", action="store_true", help="launch the real `pi` worker instead of fake_worker.py (supervised first runs; run-once is Plan 3)"); d.add_argument("--ticket", default="DRY-1"); d.add_argument("--skip-admission", action="store_true")
+    d.add_argument("--no-publish", action="store_true", help="do not commit/push/open a draft PR after acceptance")
     d.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES",
                    help="overnight mode: when a task pauses for a RESOURCE reason (admission red / heavy lane held), "
                         "sleep 2 min and retry for up to MINUTES instead of exiting. PAUSE/HUMAN still exit.")
@@ -452,6 +502,8 @@ def main(argv=None) -> int:
                 out = r.implement_task(ctx, t, task, index, a.worktree)
                 print(f"{a.ticket} task {task.id}: {out}" + (f" ({state.load(cfg.ticket_dir(a.ticket)).reason})" if out == "paused" else ""), flush=True)
                 if out == "accepted":
+                    if not a.no_publish:
+                        publish_accepted(cfg, a.ticket, a.worktree, task)
                     break
                 t = state.load(cfg.ticket_dir(a.ticket))
                 transient = out == "paused" and (t.reason.startswith("resource:") or t.reason.startswith("heavy lane"))

@@ -82,8 +82,7 @@ def publish_accepted(cfg, ticket_key: str, wt, task) -> None:
     try:
         branch = publish.guard_branch(wt, ticket_key)
         paths = _accepted_source_paths(cfg, ticket_key, task.id, wt)
-        sha = publish.commit_paths(wt, paths, f"{task.summary.strip().rstrip('.')}\n\n{ticket_key} task {task.id} ({task.slug}); "
-                                              f"implemented by the agent loop and accepted by its verification gate.")
+        sha = publish.commit_paths(wt, paths, publish.commit_message(ticket_key, task))
         pushed = publish.push(wt, branch)
         pr = publish.existing_pr(wt, branch)
         if pr is None:

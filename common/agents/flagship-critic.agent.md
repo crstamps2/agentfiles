@@ -20,6 +20,12 @@ You do not fix the plan and you do not touch application code. You write one ver
 
 ## Check, concretely
 
+- **Skill fidelity (first)**: list `.agents/skills/` and read the skills that govern this work
+  in full. Every rule the skill states must appear as an acceptance criterion or invariant of
+  some task, or under Out of scope with the permitting skill line. A plan that copies a shipped
+  component's deviation from the skill is a BLOCKER. A missing definition-of-done step (SCSS
+  sidecar, Lookbook, Code Connect, docs, linter cop) with no out-of-scope justification is a
+  BLOCKER.
 - **Contract soundness**: can each task be finished inside `allowed_files` alone? Do the
   `verification_commands` actually exercise the acceptance criteria and exit non-zero on
   failure? Is anything acceptance-critical unverifiable by the runner?

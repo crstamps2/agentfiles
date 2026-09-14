@@ -54,6 +54,11 @@ class ReplyTests(unittest.TestCase):
         self.assertEqual(seen[0][0], "pr-comment"); self.assertIn("/pulls/5/comments/9/replies", seen[0][1][4])
         self.assertIn("/issues/5/comments", seen[1][1][4])
 
+    def test_reply_argv_passes_the_real_allowlist(self):
+        """Live 2026-09-14: `-f` (gh's short --field) collided with the forbidden `git push -f` token."""
+        with patch.object(publish, "_sh", return_value=__import__("subprocess").CompletedProcess([], 0, "", "")):
+            botreview.reply(5, bot(9, "x"), "t", ".")           # must not raise PublishError
+
     def test_mark_ready_uses_allowlist_verb(self):
         with patch.object(publish, "github_write") as gw:
             botreview.mark_ready(5, ".")

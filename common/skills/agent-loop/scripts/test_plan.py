@@ -84,6 +84,16 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(self.go()["result"], "approved")
         self.assertTrue(list(pd.glob("plan-review.stale-*.md")))
 
+    def test_resumes_from_existing_revise_review(self):
+        """Live 2026-09-14: the critic's third `revise` carried a real, mechanical fix; restarting from scratch
+        would have discarded it. With plan+manifest present, round 1 addresses that review."""
+        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
+        (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(self.GOOD); (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. add yarn build")
+        self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
+        log = self.go(); self.assertEqual(log["result"], "approved"); self.assertTrue(log.get("resumed_from_review"))
+        self.assertIn("Critic review to address", (self.stage / "author-1" / "prompt.md").read_text())
+        self.assertFalse(list(pd.glob("plan-review.stale-*.md")))
+
     def test_approve_first_round(self):
         self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
         log = self.go()

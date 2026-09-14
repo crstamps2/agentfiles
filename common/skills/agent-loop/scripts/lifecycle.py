@@ -159,6 +159,13 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         # test dir, rubocop on the branch's Ruby diff, and -- when any task is visual -- Lookbook
         # captures of every scenario of the component (policy: screenshots before leaving draft).
         _sh(["bin/wt", "prepare", "--for", "rails"], wt, 900)
+        # `bin/rails test <path>` skips test:prepare, so the webpack CSS/JS build under app/assets/builds
+        # can be stale; system tests and the Lookbook captures would then render old styles
+        # (found by the plan critic, 2026-09-14). Build explicitly before anything browser-backed.
+        rb = _sh(["bash", "-c", "NODE_ENV=development yarn build"], wt, 900)
+        if rb.returncode:
+            (tdir / "gates.out").write_text((rb.stdout + rb.stderr)[-6000:])
+            return _pause_step(cfg, t, "gates", f"gates failed: yarn build rc={rb.returncode}")
         r1 = _sh(["bin/rails", "test", "test/views/components/zui/"], wt, 1800)
         changed = _sh(["git", "diff", "--name-only", "origin/main...HEAD", "--", "*.rb"], wt, 60).stdout.split()
         r2 = _sh(["bin/agent_run", "rubocop", "--cache", "false", *changed], wt, 600) if changed else None

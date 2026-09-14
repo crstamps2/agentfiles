@@ -36,8 +36,11 @@ class FakeRunner:
         self.calls.append(task.id)
         out = self.outcomes.pop(0)
         tdir = self.cfg.ticket_dir(t.key); tt = state.load(tdir)
-        tt.attempts.setdefault(f"{t.key}/{task.id}", []).append({"n": 1, "outcome": out, "rung": {"agent": "x", "tier": "cheap", "n": 1}})
+        n = len(tt.attempts.get(f"{t.key}/{task.id}", [])) + 1
+        tt.attempts.setdefault(f"{t.key}/{task.id}", []).append({"n": n, "outcome": out, "rung": {"agent": "x", "tier": "cheap", "n": 1}})
         state.save(tdir, tt)
+        d = self.cfg.state_root / "attempts" / t.key / task.id / str(n); d.mkdir(parents=True, exist_ok=True)
+        (d / "task.md").write_text(f'id = "{task.id}"\nslug = "{task.slug}"\n')
         return out
 
 
@@ -140,6 +143,14 @@ class LifecycleTests(unittest.TestCase):
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}
         r, steps, t = self.run_once()
         self.assertEqual(t.state, "paused"); self.assertIn("need Cody", t.reason); self.assertEqual(self.replies, [])
+
+    def test_accepted_task_with_same_id_but_other_slug_is_not_skipped(self):
+        """Re-plans restart numbering at 001; an old accepted 001 with a different slug must not satisfy the new 001."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "rung": {"agent": "x", "tier": "cheap", "n": 1}}]; state.save(tdir, tt)
+        d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True); (d / "task.md").write_text('id = "001"\nslug = "old-hand-task"\n')
+        r, steps, t = self.run_once(outcomes=("rejected",))
+        self.assertEqual(r.calls, ["001"])
 
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()

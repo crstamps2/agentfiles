@@ -63,12 +63,27 @@ def _load_json(p: pathlib.Path, default):
     return json.loads(p.read_text()) if p.exists() else default
 
 
-def _next_task(cfg, key, tasks):
-    """First task in manifest order without an accepted attempt."""
+def _task_accepted(cfg, key, task) -> bool:
+    """Accepted iff an accepted attempt exists for this id AND that attempt's task.md carries the
+    same slug. Task ids are re-used across manifests (a re-plan starts at 001 again); the slug is
+    what identifies the work."""
     t = state.load(cfg.ticket_dir(key))
+    for e in t.attempts.get(f"{key}/{task.id}", []):
+        if e.get("outcome") != "accepted":
+            continue
+        n = e.get("n")
+        task_md = cfg.state_root / "attempts" / key / task.id / str(n) / "task.md" if n is not None else None
+        if task_md is None or not task_md.exists():
+            continue
+        if f"slug = {json.dumps(task.slug)}" in task_md.read_text():
+            return True
+    return False
+
+
+def _next_task(cfg, key, tasks):
+    """First task in manifest order without an accepted attempt (by id AND slug)."""
     for task in tasks:
-        hist = t.attempts.get(f"{key}/{task.id}", [])
-        if not any(e.get("outcome") == "accepted" for e in hist):
+        if not _task_accepted(cfg, key, task):
             return task
     return None
 

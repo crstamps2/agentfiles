@@ -7,6 +7,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import os
+import json
 import pathlib
 import subprocess
 import sys
@@ -456,6 +457,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="agent-loop"); ap.add_argument("--config", default=None)
     sub = ap.add_subparsers(dest="cmd", required=True); sub.add_parser("status"); sub.add_parser("run-once")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
+    pl = sub.add_parser("plan", help="flagship author writes planning/<key>/tasks.toml; opposite-vendor critic reviews")
+    pl.add_argument("--ticket", required=True); pl.add_argument("--worktree", required=True)
     d = sub.add_parser("dry-run"); d.add_argument("--worktree", required=True); d.add_argument("--tasks", required=True)
     d.add_argument("--scenario", default="pass")
     d.add_argument("--real", action="store_true", help="launch the real `pi` worker instead of fake_worker.py (supervised first runs; run-once is Plan 3)"); d.add_argument("--ticket", default="DRY-1"); d.add_argument("--skip-admission", action="store_true")
@@ -468,6 +471,15 @@ def main(argv=None) -> int:
         return Runner(cfg).status()
     if a.cmd == "clear-fence":
         return reconcile.clear_fence(cfg, a.force)
+    if a.cmd == "plan":
+        import plan as plan_mod
+        keys = list(cfg.tickets)
+        idx = keys.index(a.ticket) + 1 if a.ticket in keys else 1
+        stage_root = cfg.state_root / "plans" / a.ticket / _now().replace(":", "").replace("-", "")[:15]
+        log = plan_mod.plan_ticket(cfg, a.ticket, a.worktree, idx, stage_root)
+        (stage_root / "plan-log.json").write_text(json.dumps(log, indent=2))
+        print(json.dumps(log, indent=2))
+        return 0 if log.get("result") == "approved" else 1
     if a.cmd == "dry-run":
         def fake_launcher(pargv, cwd, timeout_s, env, out, err, on_start=None):
             fake_env = {**(env or {}), "AL_SCENARIO": a.scenario}

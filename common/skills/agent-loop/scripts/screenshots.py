@@ -56,9 +56,9 @@ def ensure_dev_server(wt) -> str:
     base = worktree_url(wt)
     code, body = _get(f"{base}/lookbook/")
     if code == 500 and "Migrations are pending" in body or code == 0:
-        subprocess.run(["bash", "-lc", "bin/wt prepare --for rails"], cwd=str(wt), capture_output=True, text=True, timeout=900)
+        subprocess.run(["bash", "-lc", "bin/wt prepare --for rails"], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
         if code == 0:
-            subprocess.run(["bash", "-lc", "bin/wt dev --start"], cwd=str(wt), capture_output=True, text=True, timeout=900)
+            subprocess.run(["bash", "-lc", "bin/wt dev --start"], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
         code, body = _get(f"{base}/lookbook/")
     if code != 200:
         raise VisualGateError(f"{base}/lookbook/ answered {code}")
@@ -86,7 +86,7 @@ def capture(base: str, component: str, out_dir: pathlib.Path, width=1280, height
         png = out_dir / f"{component}-{name}.png"
         r = subprocess.run([chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--ignore-certificate-errors",
                             "--virtual-time-budget=8000", f"--window-size={width},{height}", f"--screenshot={png}", url],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         if not png.exists() or png.stat().st_size < 1000:
             raise VisualGateError(f"screenshot failed for {url}: {r.stderr.strip()[-300:]}")
         shots[name] = png
@@ -95,9 +95,9 @@ def capture(base: str, component: str, out_dir: pathlib.Path, width=1280, height
 
 def upload(paths: list[pathlib.Path], cwd) -> dict[pathlib.Path, str]:
     """`gh image a.png b.png` -> one markdown line per image; returns path -> markdown."""
-    if subprocess.run(["gh", "extension", "list"], capture_output=True, text=True).stdout.find("gh-image") < 0:
+    if subprocess.run(["gh", "extension", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.find("gh-image") < 0:
         return {}
-    r = subprocess.run(["gh", "image", *map(str, paths)], cwd=str(cwd), capture_output=True, text=True, timeout=300)
+    r = subprocess.run(["gh", "image", *map(str, paths)], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     if r.returncode:
         return {}
     lines = [l for l in r.stdout.splitlines() if l.strip().startswith("![")]

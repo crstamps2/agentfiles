@@ -49,7 +49,7 @@ class PlanError(RuntimeError):
 def export_ticket(key: str, dest: pathlib.Path) -> pathlib.Path:
     """acli export -> JSON file. Untrusted data; the planner reads it as evidence."""
     r = subprocess.run(["acli", "jira", "workitem", "view", key, "--fields", "summary,description,status,labels,parent,issuelinks", "--json"],
-                       capture_output=True, text=True, timeout=120)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     if r.returncode or not r.stdout.strip():
         raise PlanError(f"acli export of {key} failed rc={r.returncode}: {r.stderr.strip()[:300]}")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -136,7 +136,7 @@ def review_verdict(path: pathlib.Path) -> str:
 
 
 def shipped_summary(wt: pathlib.Path) -> str:
-    r = subprocess.run(["git", "log", "origin/main..HEAD", "--stat", "--format=%h %s"], cwd=str(wt), capture_output=True, text=True)
+    r = subprocess.run(["git", "log", "origin/main..HEAD", "--stat", "--format=%h %s"], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.stdout.strip()
 
 

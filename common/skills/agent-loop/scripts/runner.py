@@ -94,11 +94,11 @@ def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> 
                                                          {"intent": f"Implement {ticket_key} via the agent loop."}))
             publish.record_pr_on_worktree(wt, pr["number"])
         print(f"{ticket_key} task {task.id}: published commit={str(sha)[:10] if sha else 'none'} pushed={pushed} pr={'#' + str(pr['number']) if pr else 'none yet'}", flush=True)
-    except publish.PublishError as e:
+    except Exception as e:  # noqa: BLE001 -- publishing must never take the runner down; the code is safe on disk
         t = state.load(tdir)
         if t.state != "paused":
-            state.save(tdir, state.transition(t, "paused", reason=f"publish failed: {e}"))
-        print(f"{ticket_key} task {task.id}: publish failed; ticket paused: {e}", file=sys.stderr, flush=True)
+            state.save(tdir, state.transition(t, "paused", reason=f"publish failed: {type(e).__name__}: {str(e)[:400]}"))
+        print(f"{ticket_key} task {task.id}: publish failed; ticket paused: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
 
 def _unload_local_model(model: str | None) -> None:

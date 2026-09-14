@@ -125,5 +125,11 @@ class CommitMessageTests(unittest.TestCase):
         self.assertLessEqual(len(subject), publish.SUBJECT_MAX); self.assertTrue(subject.endswith("…"))
 
 
+class EncodingTests(unittest.TestCase):
+    def test_non_utf8_hook_output_does_not_raise(self):
+        r = publish._sh(["printf", "ok\\x81bad"], ".")
+        self.assertEqual(r.returncode, 0); self.assertIn("ok", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

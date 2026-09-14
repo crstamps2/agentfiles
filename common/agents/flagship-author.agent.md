@@ -50,6 +50,18 @@ Write exactly two files inside the worktree:
    safety, or shipped call sites in a way you cannot make safe: write
    `blocked = "<question>"` at the top of the manifest and stop. Do not guess.
 
+## Precedence when evidence disagrees
+
+- A repository convention document (a skill under `.agents/skills/`, `AGENTS.md`, `CLAUDE.md`)
+  that AGREES with the ticket outranks the precedent of any single shipped component. The
+  older component is the exception; do not propagate it. Record the divergence as a finding.
+- An API that exists only on this ticket's unmerged branch is not "shipped" and not "public":
+  changing it is tier 2 (reversible), not tier 3/4. Plan the change.
+- Tier 4 is for conflicts that remain after applying the two rules above, or for questions
+  the ticket itself defers to a named owner ("confirm with design ..."). Those become
+  `human_confirm_before_ready = true` with the question listed — the work proceeds and the
+  PR waits in draft — unless proceeding would touch shipped call sites unsafely.
+
 ## Slicing rules
 
 - A task is small enough when one worker can finish it inside its timeout and the runner can

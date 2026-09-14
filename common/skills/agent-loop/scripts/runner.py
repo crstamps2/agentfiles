@@ -455,7 +455,10 @@ class Runner:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="agent-loop"); ap.add_argument("--config", default=None)
-    sub = ap.add_subparsers(dest="cmd", required=True); sub.add_parser("status"); sub.add_parser("run-once")
+    sub = ap.add_subparsers(dest="cmd", required=True); sub.add_parser("status")
+    ro = sub.add_parser("run-once", help="advance one ticket through plan -> implement -> gates -> draft PR -> CI -> ready -> bot review -> Human Gate 1")
+    ro.add_argument("--ticket", required=True); ro.add_argument("--worktree", required=True)
+    ro.add_argument("--max-steps", type=int, default=12); ro.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
     pl = sub.add_parser("plan", help="flagship author writes planning/<key>/tasks.toml; opposite-vendor critic reviews")
     pl.add_argument("--ticket", required=True); pl.add_argument("--worktree", required=True)
@@ -499,7 +502,26 @@ def main(argv=None) -> int:
     except reconcile.FenceExit as e:
         print(f"fenced: {e.reason}", file=sys.stderr); return 3
     try:
-        if a.cmd == "run-once": print("run-once: real ticket execution lands in Plan 3; nothing to do", file=sys.stderr); return 0
+        if a.cmd == "run-once":
+            import lifecycle
+            import time as _time
+            keys = list(cfg.tickets); idx = keys.index(a.ticket) + 1 if a.ticket in keys else 1
+            deadline = _time.monotonic() + 60 * a.wait_on_resource
+            while True:
+                steps = lifecycle.run_once(cfg, r, ctx, a.ticket, a.worktree, hopper_index=idx, max_steps=a.max_steps)
+                last = steps[-1] if steps else None
+                t = state.load(cfg.ticket_dir(a.ticket))
+                transient = (t.state == "paused" and (t.reason.startswith("resource:") or t.reason.startswith("heavy lane"))) \
+                            or (last is not None and last.stage == "implement" and t.state == "implement" and last.wait
+                                and ("resource:" in (last.detail or "") or "heavy lane" in (last.detail or "")))
+                external_wait = last is not None and last.wait and last.action in ("CI running", "CI rerun requested",
+                                                                                    "checks (incl. claude-review) still running", "no bot comments yet")
+                if (transient or external_wait) and _time.monotonic() < deadline:
+                    for _ in range(18):                       # 3 min in 10 s slices; PAUSE exits
+                        if state.paused(cfg.state_root): print("PAUSE appeared; exiting", file=sys.stderr); return 1
+                        _time.sleep(10)
+                    continue
+                return 0 if t.state in ("human-gate-1", "done") else 1
         tasks = contracts.load_tasks(a.tasks); t = state.load(cfg.ticket_dir(a.ticket)); t.worktree = a.worktree
         if t.state == "queued":
             for s in ("spinup", "plan", "plan-review", "implement"): t = state.transition(t, s)

@@ -74,10 +74,10 @@ def _task_accepted(cfg, key, task) -> bool:
         if e.get("outcome") != "accepted":
             continue
         n = e.get("n")
-        task_md = cfg.state_root / "attempts" / key / task.id / str(n) / "task.md" if n is not None else None
-        if task_md is None or not task_md.exists():
+        task_toml = cfg.state_root / "attempts" / key / task.id / str(n) / "task.toml" if n is not None else None
+        if task_toml is None or not task_toml.exists():
             continue
-        if f"slug = {json.dumps(task.slug)}" in task_md.read_text():
+        if f"slug = {json.dumps(task.slug)}" in task_toml.read_text():
             return True
     return False
 
@@ -149,7 +149,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         out = runner.implement_task(ctx, t, task, seen, str(wt))
         if out == "accepted":
             import runner as runner_mod
-            runner_mod.publish_accepted(cfg, key, str(wt), task)
+            runner_mod.publish_accepted(cfg, key, str(wt), task, ensure_pr=False)   # the draft-pr stage owns PR creation
             return Step(key, "implement", f"task {task.id} accepted + published")
         t = state.load(tdir)
         return Step(key, "implement", f"task {task.id} -> {out}", detail=t.reason, wait=True)

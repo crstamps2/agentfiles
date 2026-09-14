@@ -150,6 +150,23 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.replies[0][0], 5)
         ledger = json.loads((self.cfg.ticket_dir("ZIP-7873") / "bot-ledger.json").read_text()); self.assertEqual(ledger["5"], "h5")
 
+    def test_reply_publish_error_pauses_and_keeps_ledger(self):
+        self.comments = [{"kind": "inline", "id": 5, "path": "a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "x", "body_hash": "h5"}]
+        self.adjudication = {"decisions": [{"id": 5, "decision": "decline", "reply": "No."}]}
+        with patch.object(lifecycle.botreview, "reply", side_effect=lifecycle.publish.PublishError("boom")):
+            r, steps, t = self.run_once()
+        self.assertEqual(t.state, "paused"); self.assertIn("reply failed", t.reason)
+
+    def test_existing_adjudication_is_reused_not_repaid(self):
+        self.comments = [{"kind": "inline", "id": 5, "path": "a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "x", "body_hash": "h5"}]
+        stage = self.cfg.state_root / "botreview" / "ZIP-7873" / "round-1"; stage.mkdir(parents=True)
+        (stage / "adjudication.json").write_text(json.dumps({"decisions": [{"id": 5, "decision": "decline", "reply": "Already decided."}]}))
+        (self.cfg.ticket_dir("ZIP-7873") / "ci.json").write_text(json.dumps({"pr": 47888, "bot_rounds": 1, "actions": []}))
+        calls = []
+        with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=lambda *a, **k: calls.append(1)):
+            r, steps, t = self.run_once()
+        self.assertEqual(calls, []); self.assertEqual(self.replies[0][0], 5); self.assertEqual(t.state, "human-gate-1")
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

@@ -28,6 +28,7 @@ FOOTER = "— opened by Cody's AI agent loop on his behalf"
 # verb -> allowed. Anything not listed is refused. `merge`, `review`(assign), `--force` never.
 GITHUB_ALLOW = {
     "push": ["git", "push", "-u", "origin", "HEAD"],
+    "push-rebased": None,        # ONLY `--force-with-lease=<branch>:<expected remote sha>`; see push_rebased()
     "pr-create-draft": None,     # built per call; --draft is enforced below
     "pr-view": None,
     "pr-edit-body": None,
@@ -36,6 +37,7 @@ GITHUB_ALLOW = {
     "checks": None,
 }
 FORBIDDEN_TOKENS = ("merge", "--force", "-f", "--force-with-lease", "review", "--reviewer", "delete")
+_LEASE_RE = re.compile(r"^--force-with-lease=[A-Za-z0-9._/-]+:[0-9a-f]{40}$")
 
 
 class PublishError(RuntimeError):
@@ -56,8 +58,12 @@ def github_write(verb: str, argv: list[str], cwd) -> subprocess.CompletedProcess
         raise PublishError(f"github_write: verb {verb!r} is not in the allowlist")
     for tok in argv:
         low = tok.lower()
-        if low in FORBIDDEN_TOKENS or low.startswith("--reviewer"):
+        if verb == "push-rebased" and _LEASE_RE.match(tok):
+            continue                                   # the one sanctioned lease form
+        if low in FORBIDDEN_TOKENS or low.startswith("--reviewer") or low.startswith("--force"):
             raise PublishError(f"github_write: token {tok!r} is forbidden for the loop ({verb})")
+    if verb == "push-rebased" and not any(_LEASE_RE.match(t) for t in argv):
+        raise PublishError("github_write: push-rebased requires --force-with-lease=<branch>:<sha>")
     if verb == "pr-create-draft" and "--draft" not in argv:
         raise PublishError("github_write: pr-create-draft without --draft")
     env = {"AGENT_PR_SKILL": "1"} if verb.startswith("pr-") else None
@@ -115,6 +121,17 @@ def push(wt, branch: str) -> bool:
         return False
     github_write("push", GITHUB_ALLOW["push"], wt)
     return True
+
+
+def push_rebased(wt, branch: str) -> None:
+    """After a rebase the branch history moved; push with a lease pinned to the remote SHA we
+    last saw, so a colleague's concurrent push is never overwritten (the zipline-pr-rebase
+    skill's rule). Never a bare --force."""
+    r = _sh(["git", "rev-parse", f"origin/{branch}"], wt)
+    if r.returncode:
+        raise PublishError(f"no remote ref for {branch}; cannot lease")
+    expected = r.stdout.strip()
+    github_write("push-rebased", ["git", "push", f"--force-with-lease={branch}:{expected}", "origin", "HEAD"], wt)
 
 
 # ----------------------------------------------------------------------------- PR side

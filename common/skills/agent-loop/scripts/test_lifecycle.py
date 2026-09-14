@@ -40,7 +40,7 @@ class FakeRunner:
         tt.attempts.setdefault(f"{t.key}/{task.id}", []).append({"n": n, "outcome": out, "rung": {"agent": "x", "tier": "cheap", "n": 1}})
         state.save(tdir, tt)
         d = self.cfg.state_root / "attempts" / t.key / task.id / str(n); d.mkdir(parents=True, exist_ok=True)
-        (d / "task.md").write_text(f'id = "{task.id}"\nslug = "{task.slug}"\n')
+        (d / "task.toml").write_text(f'id = "{task.id}"\nslug = "{task.slug}"\n')
         return out
 
 
@@ -156,7 +156,7 @@ class LifecycleTests(unittest.TestCase):
         """Re-plans restart numbering at 001; an old accepted 001 with a different slug must not satisfy the new 001."""
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
         tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "rung": {"agent": "x", "tier": "cheap", "n": 1}}]; state.save(tdir, tt)
-        d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True); (d / "task.md").write_text('id = "001"\nslug = "old-hand-task"\n')
+        d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True); (d / "task.toml").write_text('id = "001"\nslug = "old-hand-task"\n')
         r, steps, t = self.run_once(outcomes=("rejected",))
         self.assertEqual(r.calls, ["001"])
 
@@ -177,6 +177,17 @@ class LifecycleTests(unittest.TestCase):
         with patch.object(lifecycle.screenshots, "capture", side_effect=lifecycle.screenshots.VisualGateError("preview 500")):
             r, steps, t = self.run_once()
         self.assertEqual(t.state, "paused"); self.assertIn("visual gate failed", t.reason)
+
+    def test_accepted_task_is_recognised_from_real_attempt_layout(self):
+        """Live 2026-09-14: slug lives in task.toml (attempt.py writes both); checking task.md never matched,
+        so task 001 was re-run/re-published in a loop until max_steps."""
+        import attempt as attempt_mod, contracts as c
+        task = c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")[0]
+        d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True)
+        (d / "task.toml").write_text(attempt_mod.task_toml(task)); (d / "task.md").write_text(attempt_mod.task_md(task, d, self.wt))
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "rung": {"agent": "x", "tier": "cheap", "n": 1}}]; state.save(tdir, tt)
+        self.assertTrue(lifecycle._task_accepted(self.cfg, "ZIP-7873", task))
 
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()

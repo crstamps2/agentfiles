@@ -8,9 +8,14 @@ import procs
 
 
 class PureTests(unittest.TestCase):
-    def test_assignment_alternates_by_hopper_index(self):
-        self.assertEqual(plan.assignment(1), ("flagship-author", "flagship-critic"))
-        self.assertEqual(plan.assignment(2), ("flagship-critic", "flagship-author"))
+    def test_assignment_alternates_models_not_roles(self):
+        """The role definitions are fixed; the MODEL alternates so the critic is never the plan's vendor.
+        (Found live 2026-09-12: swapping definitions told Astra it was the critic of a plan nobody wrote.)"""
+        A = type("D", (), {"model": "anthropic/fable"})(); C = type("D", (), {"model": "openai-codex/astra"})()
+        with patch.object(plan.agentdef, "load", side_effect=lambda d, n: A if n == "flagship-author" else C):
+            cfg = type("Cfg", (), {"pi_agents_dir": "x"})()
+            self.assertEqual(plan.assignment(cfg, 1), {"author_model": "anthropic/fable", "critic_model": "openai-codex/astra"})
+            self.assertEqual(plan.assignment(cfg, 2), {"author_model": "openai-codex/astra", "critic_model": "anthropic/fable"})
 
     def test_review_verdict_parsing(self):
         with tempfile.TemporaryDirectory() as d:
@@ -42,14 +47,14 @@ class LoopTests(unittest.TestCase):
         self.stage = pathlib.Path(self.tmp.name) / "stage"
         self.cfg = type("Cfg", (), {"pi_agents_dir": "/nonexistent"})()
         self.script = []           # list of callables(agent_name) executed in order
-        self.calls = []
+        self.calls = []; self.models = []
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def fake_run_agent(self, cfg, agent_name, prompt, stage_dir, wt, timeout_s):
+    def fake_run_agent(self, cfg, agent_name, prompt, stage_dir, wt, timeout_s, model=None):
         stage_dir.mkdir(parents=True, exist_ok=True); (stage_dir / "prompt.md").write_text(prompt)
-        self.calls.append(agent_name)
+        self.calls.append(agent_name); self.models.append(model)
         marker = self.script.pop(0)(agent_name, self.wt / "planning" / "zip-7873")
         (stage_dir / "stdout.log").write_text(marker + "\n")
         return procs.StageResult(returncode=0, timed_out=False, elapsed_s=1.0, pgid=0)
@@ -69,18 +74,20 @@ class LoopTests(unittest.TestCase):
 
     def go(self):
         with patch.object(plan, "_run_agent", self.fake_run_agent), patch.object(plan, "export_ticket", lambda k, d: d), \
-             patch.object(plan, "shipped_summary", lambda wt: ""):
+             patch.object(plan, "shipped_summary", lambda wt: ""), \
+             patch.object(plan, "assignment", lambda cfg, i: {"author_model": "M-author", "critic_model": "M-critic"}):
             return plan.plan_ticket(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
 
     def test_approve_first_round(self):
         self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
         log = self.go()
-        self.assertEqual(log["result"], "approved"); self.assertEqual(self.calls, ["flagship-critic", "flagship-author"])  # index 2: Astra authors
+        self.assertEqual(log["result"], "approved"); self.assertEqual(self.calls, ["flagship-author", "flagship-critic"])
+        self.assertEqual(self.models, ["M-author", "M-critic"])          # roles fixed; models per assignment
 
     def test_schema_violation_goes_back_to_author_without_critic(self):
         self.script = [self.author_writes('[[tasks]]\nid = "001"\n'), self.author_writes(self.GOOD), self.critic_says("approve")]
         log = self.go()
-        self.assertEqual(log["result"], "approved"); self.assertEqual(self.calls[:2], ["flagship-critic", "flagship-critic"])
+        self.assertEqual(log["result"], "approved"); self.assertEqual(self.calls[:2], ["flagship-author", "flagship-author"])
         self.assertTrue(log["rounds"][0]["schema_violations"])
         self.assertIn("Schema violations", (self.stage / "author-2" / "prompt.md").read_text())
 

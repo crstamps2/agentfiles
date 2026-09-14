@@ -57,9 +57,18 @@ def export_ticket(key: str, dest: pathlib.Path) -> pathlib.Path:
     return dest
 
 
-def assignment(hopper_index: int) -> tuple[str, str]:
-    """(author_agent, critic_agent). Odd hopper index -> Fable authors; even -> Astra authors."""
-    return ("flagship-author", "flagship-critic") if hopper_index % 2 == 1 else ("flagship-critic", "flagship-author")
+AUTHOR_DEF, CRITIC_DEF = "flagship-author", "flagship-critic"
+
+
+def assignment(cfg, hopper_index: int) -> dict:
+    """Vendor assignment for this ticket. ROLE bodies are fixed (the author def always plans, the
+    critic def always reviews); what alternates is the MODEL each role runs on, so the critic is
+    always the vendor that did not write the plan. Odd hopper index -> the author def's own model
+    authors; even -> the two models swap."""
+    a = agentdef.load(cfg.pi_agents_dir, AUTHOR_DEF); c = agentdef.load(cfg.pi_agents_dir, CRITIC_DEF)
+    if hopper_index % 2 == 1:
+        return {"author_model": a.model, "critic_model": c.model}
+    return {"author_model": c.model, "critic_model": a.model}
 
 
 def _author_prompt(key: str, ticket_json: pathlib.Path, wt: pathlib.Path, shipped: str, prior_review: pathlib.Path | None,
@@ -90,8 +99,12 @@ def _critic_prompt(key: str, ticket_json: pathlib.Path, wt: pathlib.Path) -> str
         "End your reply with `REVIEW: approve`, `REVIEW: revise`, or `REVIEW: block`."])
 
 
-def _run_agent(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt: pathlib.Path, timeout_s: int) -> procs.StageResult:
+def _run_agent(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt: pathlib.Path, timeout_s: int,
+               model: str | None = None) -> procs.StageResult:
     a = agentdef.load(cfg.pi_agents_dir, agent_name)
+    if model:
+        import dataclasses
+        a = dataclasses.replace(a, model=model)
     stage_dir.mkdir(parents=True, exist_ok=True)
     (stage_dir / "prompt.md").write_text(prompt); (stage_dir / "body.md").write_text(a.body)
     argv = agentdef.pi_argv(a, stage_dir / "prompt.md", stage_dir / "session", stage_dir / "body.md")
@@ -131,16 +144,16 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
     """Run author -> validate -> critic (-> author ...) and return a summary dict.
     Leaves planning/<key>/{plan.md,tasks.toml,plan-review.md} in the worktree."""
     wt = pathlib.Path(wt); stage_root = pathlib.Path(stage_root); stage_root.mkdir(parents=True, exist_ok=True)
-    author, critic = assignment(hopper_index)
+    asg = assignment(cfg, hopper_index)
     ticket_json = export_ticket(key, stage_root / "ticket.json")
     plan_dir = wt / "planning" / key.lower()
     manifest = plan_dir / "tasks.toml"; review = plan_dir / "plan-review.md"
-    log = {"key": key, "author": author, "critic": critic, "rounds": []}
+    log = {"key": key, "author_model": asg["author_model"], "critic_model": asg["critic_model"], "rounds": []}
     prior_review = None; violations: list[str] = []
     for rnd in range(1, PLAN_ROUNDS + 2):
         t0 = time.monotonic()
-        st = _run_agent(cfg, author, _author_prompt(key, ticket_json, wt, shipped_summary(wt), prior_review, violations),
-                        stage_root / f"author-{rnd}", wt, PLAN_TIMEOUT_S)
+        st = _run_agent(cfg, AUTHOR_DEF, _author_prompt(key, ticket_json, wt, shipped_summary(wt), prior_review, violations),
+                        stage_root / f"author-{rnd}", wt, PLAN_TIMEOUT_S, model=asg["author_model"])
         marker = _last_marker(stage_root / f"author-{rnd}", "PLAN")
         entry = {"round": rnd, "author_rc": st.returncode, "author_s": round(time.monotonic() - t0), "author_marker": marker}
         if marker.lower().startswith("blocked"):
@@ -153,7 +166,7 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
                 log["result"] = "failed"; log["reason"] = f"manifest still invalid after {rnd} author passes: {violations[:3]}"; return log
             prior_review = None; continue
         t1 = time.monotonic()
-        _run_agent(cfg, critic, _critic_prompt(key, ticket_json, wt), stage_root / f"critic-{rnd}", wt, PLAN_TIMEOUT_S)
+        _run_agent(cfg, CRITIC_DEF, _critic_prompt(key, ticket_json, wt), stage_root / f"critic-{rnd}", wt, PLAN_TIMEOUT_S, model=asg["critic_model"])
         verdict = review_verdict(review)
         entry.update(critic_s=round(time.monotonic() - t1), verdict=verdict); log["rounds"].append(entry)
         if verdict == "approve":

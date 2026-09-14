@@ -69,9 +69,16 @@ class LifecycleTests(unittest.TestCase):
             patch.object(lifecycle.botreview, "fetch_bot_comments", side_effect=lambda *a: self.comments),
             patch.object(lifecycle.botreview, "reply", side_effect=lambda pr, c, text, wt: self.replies.append((c["id"], text))),
             patch.object(lifecycle.plan_mod, "_run_agent", side_effect=self.fake_adjudicator),
+            patch.object(lifecycle.screenshots, "ensure_dev_server", return_value="https://admin.wt.test"),
+            patch.object(lifecycle.screenshots, "capture", side_effect=lambda base, comp, out: {"default": out / "x.png"}),
+            patch.object(lifecycle.screenshots, "upload", return_value={}),
+            patch.object(lifecycle, "_component_name", return_value="well"),
+            patch.object(lifecycle.publish, "current_branch", return_value="internal/zip-7873-x"),
+            patch.object(lifecycle.publish, "github_write", side_effect=lambda v, a, c: self.gh_writes.append((v, a))),
+            patch.object(lifecycle.publish, "record_pr_on_worktree"),
         ]
         for p in self.patches: p.start()
-        self.checks = [ci.Check("zipline", "pass")]; self.comments = []; self.marked = []; self.replies = []; self.adjudication = None
+        self.gh_writes = []; self.checks = [ci.Check("zipline", "pass")]; self.comments = []; self.marked = []; self.replies = []; self.adjudication = None
 
     def tearDown(self):
         for p in self.patches: p.stop()
@@ -97,6 +104,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.marked, [47888])
         self.assertEqual([s.stage for s in steps], ["implement", "implement", "implement", "gates", "draft-pr", "ready", "bot-loop", "bot-loop"])
         self.assertEqual(t.state, "human-gate-1"); self.assertEqual(len(self.replies), 1)
+        self.assertEqual([v for v, a in self.gh_writes], ["pr-edit-body"])      # existing PR gets the plan-derived title/body
         self.assertTrue(self.replies[0][1].endswith("on his behalf"))
 
     def test_rejected_task_waits_and_does_not_advance(self):
@@ -151,6 +159,24 @@ class LifecycleTests(unittest.TestCase):
         d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True); (d / "task.md").write_text('id = "001"\nslug = "old-hand-task"\n')
         r, steps, t = self.run_once(outcomes=("rejected",))
         self.assertEqual(r.calls, ["001"])
+
+    def test_visual_task_runs_screenshot_gate_and_pr_body_has_table(self):
+        p = self.wt / "planning" / "zip-7873" / "tasks.toml"; p.write_text(MANIFEST.replace('slug = "b"', 'slug = "b"\nvisual = true'))
+        (self.wt / "planning" / "zip-7873" / "plan.md").write_text("# plan\n\n## Design decisions\n\n- Tier 1: follow the skill\n\n## Evidence\n\n- read things\n")
+        bodies = []
+        with patch.object(lifecycle.publish, "ensure_draft_pr", side_effect=lambda wt, b, title, body: bodies.append((title, body)) or {"number": 1, "isDraft": True}), \
+             patch.object(lifecycle.publish, "existing_pr", return_value=None), patch.object(lifecycle.publish, "record_pr_on_worktree"):
+            r, steps, t = self.run_once(outcomes=("accepted", "accepted"), max_steps=6)
+        self.assertTrue((self.cfg.ticket_dir("ZIP-7873") / "screenshots.json").exists())
+        title, body = bodies[0]
+        self.assertEqual(title, "INTERNAL: Add ZUI Well component ZIP-7873")
+        self.assertIn("|Scenario|AFTER|", body); self.assertIn("Tier 1: follow the skill", body); self.assertIn("planning/zip-7873/plan.md", body)
+
+    def test_visual_gate_failure_pauses(self):
+        p = self.wt / "planning" / "zip-7873" / "tasks.toml"; p.write_text(MANIFEST.replace('slug = "b"', 'slug = "b"\nvisual = true'))
+        with patch.object(lifecycle.screenshots, "capture", side_effect=lifecycle.screenshots.VisualGateError("preview 500")):
+            r, steps, t = self.run_once()
+        self.assertEqual(t.state, "paused"); self.assertIn("visual gate failed", t.reason)
 
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()

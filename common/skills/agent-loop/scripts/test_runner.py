@@ -222,7 +222,7 @@ class RunnerHarness(unittest.TestCase):
 
     def test_dry_run_cli(self):
         with patch("runner.procs.run_stage", side_effect=self.launcher):
-            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--no-publish",
                               "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"), "--scenario", "pass"])
         self.assertEqual(rc, 0)
         self.assertEqual(metrics.read_all(self.cfg.state_root)[-1]["outcome"], "accepted")
@@ -235,7 +235,7 @@ class RunnerHarness(unittest.TestCase):
         state.save(self.cfg.ticket_dir("DRY-1"), t)
         with patch("runner.procs.run_stage", side_effect=self.launcher):
             self.scenarios = ["pass", "pass"]
-            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--no-publish",
                               "--worktree", str(self.wt), "--tasks", str(tasks_toml)])
         self.assertEqual(rc, 0)
         saved = state.load(self.cfg.ticket_dir("DRY-1"))
@@ -261,7 +261,7 @@ class RunnerHarness(unittest.TestCase):
         other = locks.Lease(self.cfg.state_root / "locks" / "runner", "runner")
         self.assertTrue(other.acquire(hold=True))
         try:
-            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--no-publish",
                               "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml")])
             self.assertEqual(rc, 3)
         finally:
@@ -474,6 +474,23 @@ class RunnerHarness(unittest.TestCase):
         # a worker that exits 0 having changed nothing is still a protocol failure.
         outcome, rows = self.run_task("noop", "pass")
         self.assertEqual(rows[0]["outcome"], "protocol")
+
+    def test_dry_run_publishes_accepted_task_paths(self):
+        calls = {}
+        def fake_publish(cfg, key, wt, task):
+            calls["paths"] = runner._accepted_source_paths(cfg, key, task.id, wt); calls["key"] = key
+        with patch("runner.procs.run_stage", side_effect=self.launcher), patch("runner.publish_accepted", side_effect=fake_publish):
+            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                              "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"), "--scenario", "pass"])
+        self.assertEqual(rc, 0); self.assertEqual(calls["key"], "DRY-1")
+        self.assertTrue(calls["paths"]); self.assertTrue(all(not p.startswith(".pi/") for p in calls["paths"]))
+
+    def test_publish_failure_pauses_ticket_and_keeps_acceptance(self):
+        import publish
+        with patch("runner.publish.guard_branch", side_effect=publish.PublishError("wrong branch")):
+            runner.publish_accepted(self.cfg, "ZIP-7873", self.wt, contracts.load_tasks(self.cfg.state_root.parent / "tasks.toml")[0])
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertEqual(t.state, "paused"); self.assertIn("publish failed", t.reason)
 
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
@@ -744,7 +761,7 @@ class RunnerHarness(unittest.TestCase):
             self.scenarios = ["pass"]
             with patch("reconcile.procs_mod.kill_group", side_effect=spy_kill), \
                  patch("runner.procs.run_stage", side_effect=spy_run_stage):
-                rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--no-publish",
                                   "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"),
                                   "--scenario", "pass"])
             self.assertEqual(rc, 0)
@@ -776,7 +793,7 @@ class RunnerHarness(unittest.TestCase):
                 reconcile.fence(self.cfg, rec, "termination unverified", proc=pid.to_dict())
 
             with patch("runner.procs.run_stage", side_effect=self.launcher):
-                rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--no-publish",
                                   "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"),
                                   "--scenario", "pass"])
             self.assertEqual(rc, 3)
@@ -792,7 +809,7 @@ class RunnerHarness(unittest.TestCase):
         with patch("runner.procs.run_stage", side_effect=self.launcher):
             self.scenarios = ["pass"]
             with self.assertRaises(RuntimeError) as cm:
-                runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run",
+                runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--no-publish",
                              "--worktree", str(self.wt), "--tasks", str(tasks_toml)])
         msg = str(cm.exception)
         self.assertIn(bad_model, msg)

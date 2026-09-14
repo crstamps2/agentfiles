@@ -11,6 +11,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import re
 import os
 import pathlib
 import shutil
@@ -150,6 +151,52 @@ def safe_mkdir(path) -> None:
 # a later task once it switches its callers over).
 # ---------------------------------------------------------------------------
 
+READ_FIRST_RE = re.compile(r"Read first:\s*([^\s#]+)(?:#([A-Za-z0-9._-]+))?")
+EXCERPT_MAX_CHARS = 7000
+
+
+def _slug(h: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", h.lower()).strip("-")
+
+
+def required_reading(task: contracts.Task, wt: pathlib.Path) -> str:
+    """Render the `Read first: <path>#<section>` reference from the task summary as a bounded
+    excerpt (the section's heading through the next heading of the same or higher level).
+
+    Why: the cheap local model has a 32K window; reading a 600-line skill whole plus the sibling
+    components exhausted it and the attempt died silently (ZIP-7873/001 attempt 1, 2026-09-14).
+    The excerpt delivers the governing rule to every arm at a fixed cost. The path is resolved
+    inside the worktree only; anything else is ignored (remote text is data, not instructions)."""
+    m = READ_FIRST_RE.search(task.summary or "")
+    if not m:
+        return ""
+    rel, anchor = m.group(1), m.group(2)
+    try:
+        target = (pathlib.Path(wt) / rel).resolve(); target.relative_to(pathlib.Path(wt).resolve())
+        text = target.read_text(errors="replace")
+    except (OSError, ValueError):
+        return f"\n## Required reading\n`{rel}` could not be read from the worktree; read it yourself before editing.\n"
+    body = text
+    if anchor:
+        lines = text.splitlines(); start = None; level = 0
+        for i, ln in enumerate(lines):
+            hm = re.match(r"^(#{1,6})\s+(.*)$", ln)
+            if hm and _slug(hm.group(2)) == anchor:
+                start, level = i, len(hm.group(1)); break
+        if start is not None:
+            end = len(lines)
+            for j in range(start + 1, len(lines)):
+                hm = re.match(r"^(#{1,6})\s+", lines[j])
+                if hm and len(hm.group(1)) <= level:
+                    end = j; break
+            body = "\n".join(lines[start:end])
+    truncated = len(body) > EXCERPT_MAX_CHARS
+    body = body[:EXCERPT_MAX_CHARS]
+    return (f"\n## Required reading (excerpt of `{rel}`" + (f" §{anchor}" if anchor else "") + ")\n"
+            "The rules below are part of the acceptance criteria. Do NOT re-read the whole file; open other sections only if an acceptance line cites them.\n\n"
+            + body + ("\n\n[... excerpt truncated; the cited section continues in the file]" if truncated else "") + "\n")
+
+
 def task_md(task: contracts.Task, task_dir: pathlib.Path, wt: pathlib.Path) -> str:
     def bl(items): return "\n".join(f"- {i}" for i in items) or "- (none)"
     return f"""# Task {task.id}: {task.summary}
@@ -176,7 +223,7 @@ May edit tests/fixtures: {"yes" if task.may_edit_tests else "no"}
 
 ## Stop / escalate when
 {bl(task.stop_when)}
-
+{required_reading(task, wt)}
 If `{task_dir}/feedback.md` exists, read it first. Write `{task_dir}/result.md` when done, even on failure -- that is an ABSOLUTE path; do not prefix it with `./`.
 Do not commit or push. Never weaken an acceptance check.
 """

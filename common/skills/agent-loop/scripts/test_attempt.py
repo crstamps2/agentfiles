@@ -474,3 +474,34 @@ class NextNTests(AttemptTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequiredReadingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.wt = pathlib.Path(self.tmp.name)
+        (self.wt / ".agents/skills/x").mkdir(parents=True)
+        (self.wt / ".agents/skills/x/SKILL.md").write_text("# Skill\n\nintro\n\n## Step 0: Validate the Public Component Boundary\n\nrule A\n\n### sub\n\nrule B\n\n## Step 1: Next\n\nother\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def task(self, summary):
+        return contracts.Task(id="001", slug="s", summary=summary, allowed_files=["a"], verification_commands=["true"], acceptance=["AC-1"])
+
+    def test_section_excerpt_is_rendered_and_bounded_to_the_section(self):
+        md = attempt.task_md(self.task("Do X; Read first: .agents/skills/x/SKILL.md#step-0-validate-the-public-component-boundary"), self.wt / "d", self.wt)
+        self.assertIn("## Required reading (excerpt", md); self.assertIn("rule A", md); self.assertIn("rule B", md)
+        self.assertNotIn("## Step 1: Next", md); self.assertNotIn("intro", md); self.assertIn("Do NOT re-read the whole file", md)
+
+    def test_no_reference_renders_nothing(self):
+        self.assertNotIn("Required reading", attempt.task_md(self.task("Do X"), self.wt / "d", self.wt))
+
+    def test_path_outside_worktree_is_refused(self):
+        md = attempt.task_md(self.task("Do X; Read first: ../../etc/passwd#x"), self.wt / "d", self.wt)
+        self.assertIn("could not be read", md); self.assertNotIn("root:", md)
+
+    def test_long_section_is_truncated(self):
+        (self.wt / ".agents/skills/x/SKILL.md").write_text("## Big\n\n" + ("word " * 3000) + "\n## Next\n")
+        md = attempt.task_md(self.task("Read first: .agents/skills/x/SKILL.md#big"), self.wt / "d", self.wt)
+        self.assertIn("excerpt truncated", md); self.assertLess(len(md), attempt.EXCERPT_MAX_CHARS + 2000)
+

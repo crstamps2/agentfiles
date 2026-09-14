@@ -486,6 +486,11 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rc, 0); self.assertEqual(calls["key"], "DRY-1")
         self.assertTrue(calls["paths"]); self.assertTrue(all(not p.startswith(".pi/") for p in calls["paths"]))
 
+    def test_unexpected_publish_exception_pauses_ticket(self):
+        with patch("runner.publish.guard_branch", side_effect=UnicodeDecodeError("utf-8", b"\x81", 0, 1, "bad")):
+            runner.publish_accepted(self.cfg, "ZIP-7873", self.wt, contracts.load_tasks(self.cfg.state_root.parent / "tasks.toml")[0])
+        t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertEqual(t.state, "paused"); self.assertIn("UnicodeDecodeError", t.reason)
+
     def test_publish_failure_pauses_ticket_and_keeps_acceptance(self):
         import publish
         with patch("runner.publish.guard_branch", side_effect=publish.PublishError("wrong branch")):

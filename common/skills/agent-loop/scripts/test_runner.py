@@ -141,12 +141,12 @@ class RunnerHarness(unittest.TestCase):
         self.assertTrue(fb and "Attempt 1" in fb[0].read_text())
 
     def test_ladder_exhaustion_blocks_and_preserves_diffs(self):
-        outcome, rows = self.run_task("fail", "fail", "fail")
-        self.assertEqual(outcome, "blocked"); self.assertEqual(self.launches, 3)
-        self.assertEqual([r["agent"] for r in rows], ["cloud-worker", "cloud-worker", "premium-worker"])
-        self.assertEqual([r["tier"] for r in rows], ["cheap", "cheap", "premium"])
+        outcome, rows = self.run_task("fail", "fail", "fail", "fail")
+        self.assertEqual(outcome, "blocked"); self.assertEqual(self.launches, 4)
+        self.assertEqual([r["agent"] for r in rows], ["cloud-worker", "cloud-worker", "premium-worker", "premium-worker"])
+        self.assertEqual([r["tier"] for r in rows], ["cheap", "cheap", "premium", "premium"])
         self.assertEqual(git(self.wt, "status", "--porcelain").strip(), "")       # tree restored
-        self.assertEqual(len(list(self.cfg.state_root.glob("attempts/ZIP-7873/001/*/diff.patch"))), 3)
+        self.assertEqual(len(list(self.cfg.state_root.glob("attempts/ZIP-7873/001/*/diff.patch"))), 4)
 
     def test_malformed_result_is_protocol_and_advances(self):
         outcome, rows = self.run_task("malformed", "pass")
@@ -164,7 +164,7 @@ class RunnerHarness(unittest.TestCase):
         self.assertFalse((self.wt / "test" / "x_test.rb").exists())
 
     def test_timeout_keeps_partial_edit_and_advances(self):
-        outcome, rows = self.run_task("timeout", "fail", "fail")
+        outcome, rows = self.run_task("timeout", "fail", "fail", "fail")
         self.assertEqual(rows[0]["outcome"], "timeout"); self.assertEqual(outcome, "blocked")
         # CHANGED: changed_paths now lives on attempt.json (attempt.Record), not on the
         # metrics row -- metrics rows are per-stage, not per-attempt (see the design's
@@ -410,7 +410,7 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual({r["stage_kind"] for r in rows}, {"worker", "verify"})
 
     def test_fail_finalizes_with_restored_tree_and_distinct_observed_tree(self):
-        outcome, rows = self.run_task("fail", "fail", "fail")
+        outcome, rows = self.run_task("fail", "fail", "fail", "fail")
         self.assertEqual(outcome, "blocked")
         aj = json.loads((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "attempt.json").read_text())
         self.assertEqual(aj["tree"], "restored")

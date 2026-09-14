@@ -1,4 +1,8 @@
-"""Escalation ladder B: cheap ×2 (with gate feedback) → premium ×1 → blocked."""
+"""Escalation ladder B': cheap ×2 (with gate feedback) → premium ×2 (with gate feedback) → blocked.
+
+Premium got a second rung on 2026-09-14: Terra's only shot at ZIP-7873/006 did the cop work correctly and
+missed one mechanical final step (regenerate the grandfather list); blocking a ticket at 6/8 for that costs
+far more than one more premium attempt. The daily/total premium USD caps still bound spend."""
 from __future__ import annotations
 import dataclasses
 import pathlib
@@ -34,7 +38,8 @@ def assign_arm(task_index: int, visual: bool, pin: str | None, alternate: list) 
 
 
 def _sequence(arm: str) -> list:
-    return [Rung(f"{arm}-worker", "cheap", 1), Rung(f"{arm}-worker", "cheap", 2), Rung("premium-worker", "premium", 1)]
+    return [Rung(f"{arm}-worker", "cheap", 1), Rung(f"{arm}-worker", "cheap", 2),
+            Rung("premium-worker", "premium", 1), Rung("premium-worker", "premium", 2)]
 
 
 def next_rung(attempts: list, arm: str) -> Rung | None:

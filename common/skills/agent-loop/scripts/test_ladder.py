@@ -26,7 +26,9 @@ class NextRungTests(unittest.TestCase):
         self.assertEqual(r2, Rung("cloud-worker", "cheap", 2))
         r3 = ladder.next_rung([Attempt(r1, "rejected"), Attempt(r2, "timeout")], "cloud")
         self.assertEqual(r3, Rung("premium-worker", "premium", 1))
-        self.assertIsNone(ladder.next_rung([Attempt(r1, "rejected"), Attempt(r2, "timeout"), Attempt(r3, "protocol")], "cloud"))
+        r4 = ladder.next_rung([Attempt(r1, "rejected"), Attempt(r2, "timeout"), Attempt(r3, "protocol")], "cloud")
+        self.assertEqual(r4, Rung("premium-worker", "premium", 2))
+        self.assertIsNone(ladder.next_rung([Attempt(r1, "rejected"), Attempt(r2, "timeout"), Attempt(r3, "protocol"), Attempt(r4, "rejected")], "cloud"))
     def test_local_arm_uses_local_worker(self):
         self.assertEqual(ladder.next_rung([], "local").agent, "local-worker")
     def test_accepted_ends_ladder(self):
@@ -81,8 +83,9 @@ class NextActionTests(unittest.TestCase):
     def test_ladder_exhausted_and_not_accepted_blocks(self):
         r1 = ladder.next_rung([], "cloud")
         r2 = ladder.next_rung([Attempt(r1, "rejected")], "cloud")
-        history = [Attempt(r1, "rejected"), Attempt(r2, "timeout")]
-        # this attempt is the premium rung; a non-accepted outcome exhausts the ladder
+        r3 = ladder.next_rung([Attempt(r1, "rejected"), Attempt(r2, "timeout")], "cloud")
+        history = [Attempt(r1, "rejected"), Attempt(r2, "timeout"), Attempt(r3, "rejected")]
+        # this attempt is the SECOND premium rung; a non-accepted outcome exhausts the ladder
         self.assertEqual(ladder.next_action(history, "cloud", "protocol", 0), "block")
 
     def test_more_rungs_remaining_and_not_accepted_does_not_block(self):

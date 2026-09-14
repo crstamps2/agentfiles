@@ -880,7 +880,10 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         t = self._ticket()
         task = self.tasks[0]
         r = self._runner()
-        self._crash("after-metrics", self._direct_attempt, r, t, task, scenario="owner")
+        # Only the PREMIUM rung's blocked/owner blocks the ticket (a cheap owner-claim escalates), so
+        # this row's attempt runs on the premium rung.
+        premium = ladder.Rung("premium-worker", "premium", 1)
+        self._crash("after-metrics", self._direct_attempt, r, t, task, scenario="owner", rung=premium)
         self.assertEqual(state.load(self.cfg.ticket_dir(t.key)).state, "implement")   # not yet blocked
 
         self._reconcile()

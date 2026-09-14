@@ -21,7 +21,7 @@ import agentdef
 import contracts
 import procs
 
-PLAN_ROUNDS = 2
+PLAN_ROUNDS = 3
 PLAN_TIMEOUT_S = 1800
 
 SCHEMA_EXAMPLE = '''# Task manifest schema (one [[tasks]] table per task, ordered by id)
@@ -149,10 +149,15 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
     plan_dir = wt / "planning" / key.lower()
     manifest = plan_dir / "tasks.toml"; review = plan_dir / "plan-review.md"
     log = {"key": key, "author_model": asg["author_model"], "critic_model": asg["critic_model"], "rounds": []}
-    # A stale review from an earlier (killed/failed) run must not be read as input by the author.
-    if review.exists():
-        review.rename(review.with_name(f"plan-review.stale-{time.strftime('%Y%m%dT%H%M%S')}.md"))
+    # Resume: a plan + manifest with a `revise` review from an earlier run is the author's input for
+    # round 1 (the critic's work is never thrown away). A review WITHOUT its plan is stale noise and
+    # is moved aside so the author does not read it as input.
     prior_review = None; violations: list[str] = []
+    if review.exists():
+        if manifest.exists() and (plan_dir / "plan.md").exists() and review_verdict(review) == "revise":
+            prior_review = review; log["resumed_from_review"] = True
+        else:
+            review.rename(review.with_name(f"plan-review.stale-{time.strftime('%Y%m%dT%H%M%S')}.md"))
     for rnd in range(1, PLAN_ROUNDS + 2):
         t0 = time.monotonic()
         st = _run_agent(cfg, AUTHOR_DEF, _author_prompt(key, ticket_json, wt, shipped_summary(wt), prior_review, violations),

@@ -208,6 +208,7 @@ May edit tests/fixtures: {"yes" if task.may_edit_tests else "no"}
 
 ## Allowed files
 {bl(task.allowed_files)}
+Files or globs listed here that do not exist yet are files you are expected to CREATE. Their absence is the starting point of the task, not a blocker.
 
 ## Invariants
 {bl(task.invariants)}

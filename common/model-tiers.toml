@@ -15,7 +15,7 @@ claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
 pi_model = "opus"
-pi_thinking = "high"
+pi_thinking = "medium"
 
 [specialist]
 claude = "sonnet"
@@ -29,7 +29,7 @@ claude = "sonnet"
 codex_model = "gpt-5.4-mini"
 codex_effort = "high"
 pi_model = "sonnet"
-pi_thinking = "high"
+pi_thinking = "medium"
 
 [data-fetch]
 claude = "haiku"
@@ -66,11 +66,11 @@ claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
 pi_model = "anthropic/claude-fable-5-1"
-pi_thinking = "high"
+pi_thinking = "medium"
 
 [flagship-critic]
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
 pi_model = "openai-codex/gpt-6-astra"
-pi_thinking = "xhigh"
+pi_thinking = "high"

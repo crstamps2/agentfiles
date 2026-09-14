@@ -21,6 +21,8 @@ EDGES["blocked"] |= {"implement", "plan"}
 for s in ("ready", "bot-loop", "colleague-loop", "human-gate-1", "human-gate-2"):
     EDGES[s].add("gates")            # any new SHA invalidates evidence
 EDGES["plan-review"].add("plan")     # critic sends the plan back
+for s_ in ("gates", "ready", "bot-loop"):
+    EDGES[s_].add("implement")       # a failed gate / CI code failure / accepted review finding becomes a fix task
 EDGES["paused"] = set()              # resolved dynamically: only `previous`
 
 

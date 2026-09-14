@@ -126,3 +126,11 @@ figma_node = ["x"]
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SuffixIdTests(unittest.TestCase):
+    def test_letter_suffix_ids_order_between_neighbours(self):
+        mk = lambda i: {"id": i, "slug": "s", "summary": "x", "allowed_files": ["a"], "verification_commands": ["true"], "acceptance": ["y"]}
+        self.assertEqual(contracts.validate_tasks({"tasks": [mk("006"), mk("006a"), mk("007")]}), [])
+        self.assertTrue(any("ascending" in e for e in contracts.validate_tasks({"tasks": [mk("007"), mk("006a")]})))
+

@@ -160,7 +160,12 @@ class Runner:
                 return "paused"
 
             history = t.attempts.get(lineage, [])
-            arm = history[0].get("arm") if history else None
+            # The arm is sticky for a task once an attempt has produced a REAL outcome. Attempts that
+            # never got a fair shot (environment / interrupted) do not pin it, so an operator can
+            # re-pin a ticket after an environment defect (ZIP-7873/001: three local attempts died on
+            # the 32K window; pin_arm = "cloud" must take effect on the next attempt).
+            real = [e for e in history if e.get("outcome") in ladder.ADVANCING | {"accepted"}]
+            arm = real[0].get("arm") if real else None
             if arm is None:
                 arm = ladder.assign_arm(stratum_index, task.visual, spec.pin_arm if spec else None, self.cfg.arms_alternate)
             attempts = [ladder.Attempt(ladder.Rung(**e["rung"]), e["outcome"])

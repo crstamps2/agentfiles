@@ -492,6 +492,21 @@ class RunnerHarness(unittest.TestCase):
         t = state.load(self.cfg.ticket_dir("ZIP-7873"))
         self.assertEqual(t.state, "paused"); self.assertIn("publish failed", t.reason)
 
+    def test_environment_only_history_does_not_pin_the_arm(self):
+        """ZIP-7873/001: three local attempts died on the context window (environment); a later pin_arm
+        must take effect. Only ADVANCING/accepted outcomes make the arm sticky."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); t = state.load(tdir)
+        t.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "environment", "arm": "local", "rung": {"agent": "local-worker", "tier": "cheap", "n": 1}},
+                                      {"n": 2, "outcome": "interrupted", "arm": "local", "rung": {"agent": "local-worker", "tier": "cheap", "n": 2}}]
+        state.save(tdir, t)
+        import config as config_mod
+        with patch.object(config_mod.TicketSpec, "pin_arm", "cloud", create=True):
+            spec = self.cfg.tickets.get("ZIP-7873")
+            if spec is not None:
+                object.__setattr__(spec, "pin_arm", "cloud")
+            outcome, rows = self.run_task("pass")
+        self.assertEqual(rows[0]["outcome"], "accepted"); self.assertEqual(rows[0]["agent"], "cloud-worker")
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

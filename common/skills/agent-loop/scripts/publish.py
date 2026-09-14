@@ -49,7 +49,9 @@ def _sh(cmd: list[str], cwd, *, env=None, timeout=600) -> subprocess.CompletedPr
     e = dict(os.environ); e.update(env or {})
     e.setdefault("GIT_TERMINAL_PROMPT", "0"); e.setdefault("GH_PROMPT_DISABLED", "1")
     joined = " ".join(shlex.quote(c) for c in cmd)
-    return subprocess.run(["bash", "-lc", joined], cwd=str(cwd), env=e, capture_output=True, text=True, timeout=timeout)
+    # errors="replace": lefthook/rubocop output has contained non-UTF-8 bytes (live crash 2026-09-14).
+    return subprocess.run(["bash", "-lc", joined], cwd=str(cwd), env=e, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def github_write(verb: str, argv: list[str], cwd) -> subprocess.CompletedProcess:

@@ -74,7 +74,7 @@ def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
             and (pathlib.Path(wt) / p).exists()]
 
 
-def publish_accepted(cfg, ticket_key: str, wt, task) -> None:
+def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> None:
     """Commit + push the accepted task's paths and make sure the loop's DRAFT PR exists.
     Failures here pause the ticket (the code is safe on disk; publishing can be retried) and
     never undo an acceptance."""
@@ -85,7 +85,7 @@ def publish_accepted(cfg, ticket_key: str, wt, task) -> None:
         sha = publish.commit_paths(wt, paths, publish.commit_message(ticket_key, task))
         pushed = publish.push(wt, branch)
         pr = publish.existing_pr(wt, branch)
-        if pr is None:
+        if pr is None and ensure_pr:
             spec = cfg.tickets.get(ticket_key)
             summary = getattr(spec, "summary", None) or ticket_key
             pr = publish.ensure_draft_pr(wt, branch, publish.pr_title(ticket_key, summary),
@@ -93,7 +93,7 @@ def publish_accepted(cfg, ticket_key: str, wt, task) -> None:
                                                          ["There are automated tests (runner verification gate passed)"],
                                                          {"intent": f"Implement {ticket_key} via the agent loop."}))
             publish.record_pr_on_worktree(wt, pr["number"])
-        print(f"{ticket_key} task {task.id}: published commit={str(sha)[:10] if sha else 'none'} pushed={pushed} pr=#{pr['number']}", flush=True)
+        print(f"{ticket_key} task {task.id}: published commit={str(sha)[:10] if sha else 'none'} pushed={pushed} pr={'#' + str(pr['number']) if pr else 'none yet'}", flush=True)
     except publish.PublishError as e:
         t = state.load(tdir)
         if t.state != "paused":

@@ -450,7 +450,7 @@ def identity(ticket: str, task: contracts.Task, worktree, n: int) -> tuple[str, 
 
 def _repo_id(wt) -> str:
     r = subprocess.run(["git", "-C", str(wt), "rev-parse", "--git-common-dir"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise ValueError(f"not a git worktree: {wt}: {r.stderr.strip()}")
     gd = pathlib.Path(r.stdout.strip())

@@ -11,7 +11,7 @@ import tempfile
 
 
 def _git(wt, *args, env=None) -> str:
-    r = subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True, env=env)
+    r = subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     if r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
     return r.stdout

@@ -1209,3 +1209,18 @@ class ClearFenceTests(ReconcilePart2TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BinaryDiffTests(unittest.TestCase):
+    def test_finalize_patch_survives_binary_blobs(self):
+        import subprocess, tempfile, worktree
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d)
+            subprocess.run(["git", "-C", d, "init", "-q"], check=True); subprocess.run(["git", "-C", d, "commit", "-q", "--allow-empty", "-m", "i"], check=True,
+                                                                                        env={**__import__("os").environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+            base = worktree.snapshot(wt)
+            (wt / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4)
+            observed = worktree.snapshot(wt)
+            patch = reconcile._diff_patch(wt, base, observed)
+            self.assertIn("GIT binary patch", patch); patch.encode("utf-8")   # must be valid UTF-8 text
+

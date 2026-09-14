@@ -149,6 +149,9 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
     plan_dir = wt / "planning" / key.lower()
     manifest = plan_dir / "tasks.toml"; review = plan_dir / "plan-review.md"
     log = {"key": key, "author_model": asg["author_model"], "critic_model": asg["critic_model"], "rounds": []}
+    # A stale review from an earlier (killed/failed) run must not be read as input by the author.
+    if review.exists():
+        review.rename(review.with_name(f"plan-review.stale-{time.strftime('%Y%m%dT%H%M%S')}.md"))
     prior_review = None; violations: list[str] = []
     for rnd in range(1, PLAN_ROUNDS + 2):
         t0 = time.monotonic()

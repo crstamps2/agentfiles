@@ -78,6 +78,12 @@ class LoopTests(unittest.TestCase):
              patch.object(plan, "assignment", lambda cfg, i: {"author_model": "M-author", "critic_model": "M-critic"}):
             return plan.plan_ticket(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
 
+    def test_stale_review_is_moved_aside_before_round_one(self):
+        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True); (pd / "plan-review.md").write_text("VERDICT: revise\nstale")
+        self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
+        self.assertEqual(self.go()["result"], "approved")
+        self.assertTrue(list(pd.glob("plan-review.stale-*.md")))
+
     def test_approve_first_round(self):
         self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
         log = self.go()

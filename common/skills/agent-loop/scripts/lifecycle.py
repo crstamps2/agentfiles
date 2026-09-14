@@ -216,7 +216,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 # colleague. They are recorded here and surfaced in the Gate 1 report and the PR body.
                 if _manifest_flag(wt, key, "human_confirm_before_ready"):
                     cis["tier3_pending"] = _manifest_header_comment(wt, key)
-                botreview.mark_ready(pr, wt); cis["ready_marked_sha"] = _head(wt)
+                try:
+                    botreview.mark_ready(pr, wt)
+                except publish.PublishError as e:
+                    return _pause_step(cfg, t, "ready", f"mark ready failed: {e}")
+                cis["ready_marked_sha"] = _head(wt)
             _ci_state_path(cfg, key).write_text(json.dumps(cis))
             t = state.transition(t, "bot-loop"); _save(cfg, t)
             return Step(key, "ready", "CI green; PR marked ready", detail=f"#{pr}")
@@ -262,17 +266,30 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             return Step(key, "bot-loop", "all bot comments adjudicated; CI green", detail="HUMAN GATE 1", wait=True)
         if cis.get("bot_rounds", 0) >= MAX_BOT_ROUNDS:
             return _pause_step(cfg, t, "bot-loop", f"{len(todo)} bot comments outstanding after {MAX_BOT_ROUNDS} rounds")
-        rnd = cis.get("bot_rounds", 0) + 1; cis["bot_rounds"] = rnd; _ci_state_path(cfg, key).write_text(json.dumps(cis))
-        stage = cfg.state_root / "botreview" / key / f"round-{rnd}"; stage.mkdir(parents=True, exist_ok=True)
-        botreview.write_comments_file(todo, stage / "comments.md")
-        prompt = botreview.ADJUDICATION_PROMPT.format(key=key, pr=pr, out=stage / "adjudication.json", schema=stage / "schema.toml",
-                                                      wt=wt, plan=_manifest_path(wt, key).with_name("plan.md"), comments=stage / "comments.md")
-        (stage / "schema.toml").write_text(plan_mod.SCHEMA_EXAMPLE)
-        plan_mod._run_agent(cfg, plan_mod.CRITIC_DEF, prompt, stage, wt, 1800, model=t.critic_vendor or None)
-        try:
-            decisions = botreview.parse_adjudication(stage / "adjudication.json")
-        except RuntimeError as e:
-            return _pause_step(cfg, t, "bot-loop", f"adjudication unusable: {e}")
+        # Reuse a paid-for adjudication if the previous round's file already covers every open comment
+        # (a later step failed after the critic ran -- do not pay the critic twice for the same comments).
+        rnd = cis.get("bot_rounds", 0)
+        prev = cfg.state_root / "botreview" / key / f"round-{rnd}" / "adjudication.json" if rnd else None
+        decisions = None
+        if prev and prev.exists():
+            try:
+                cand = botreview.parse_adjudication(prev)
+                if {c["id"] for c in todo} <= {d.get("id") for d in cand}:
+                    decisions = cand; stage = prev.parent
+            except RuntimeError:
+                decisions = None
+        if decisions is None:
+            rnd += 1; cis["bot_rounds"] = rnd; _ci_state_path(cfg, key).write_text(json.dumps(cis))
+            stage = cfg.state_root / "botreview" / key / f"round-{rnd}"; stage.mkdir(parents=True, exist_ok=True)
+            botreview.write_comments_file(todo, stage / "comments.md")
+            prompt = botreview.ADJUDICATION_PROMPT.format(key=key, pr=pr, out=stage / "adjudication.json", schema=stage / "schema.toml",
+                                                          wt=wt, plan=_manifest_path(wt, key).with_name("plan.md"), comments=stage / "comments.md")
+            (stage / "schema.toml").write_text(plan_mod.SCHEMA_EXAMPLE)
+            plan_mod._run_agent(cfg, plan_mod.CRITIC_DEF, prompt, stage, wt, 1800, model=t.critic_vendor or None)
+            try:
+                decisions = botreview.parse_adjudication(stage / "adjudication.json")
+            except RuntimeError as e:
+                return _pause_step(cfg, t, "bot-loop", f"adjudication unusable: {e}")
         by_id = {c["id"]: c for c in todo}; fixes = []; questions = []
         model_short = (t.critic_vendor or "critic").split("/")[-1]
         for i, d in enumerate(decisions, 1):
@@ -286,7 +303,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             try:
                 botreview.reply(pr, c, botreview.clean_reply(d.get("reply", "") or f"Addressed in a follow-up commit.", model_short), wt)
             except ValueError as e:
+                botreview.save_ledger(ledger_p, ledger)
                 return _pause_step(cfg, t, "bot-loop", f"reply rejected: {e}")
+            except publish.PublishError as e:
+                botreview.save_ledger(ledger_p, ledger)          # keep what was already answered
+                return _pause_step(cfg, t, "bot-loop", f"reply failed: {e}")
             ledger[str(c["id"])] = c["body_hash"]
         botreview.save_ledger(ledger_p, ledger)
         if questions:

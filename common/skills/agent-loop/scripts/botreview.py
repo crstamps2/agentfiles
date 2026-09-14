@@ -130,9 +130,9 @@ def clean_reply(text: str, model: str) -> str:
 
 def reply(pr_number: int, comment: dict, text: str, cwd) -> None:
     if comment["kind"] == "inline":
-        argv = ["gh", "api", "-X", "POST", f"repos/{publish.REPO}/pulls/{pr_number}/comments/{comment['id']}/replies", "-f", f"body={text}"]
+        argv = ["gh", "api", "--method", "POST", f"repos/{publish.REPO}/pulls/{pr_number}/comments/{comment['id']}/replies", "--field", f"body={text}"]
     else:
-        argv = ["gh", "api", "-X", "POST", f"repos/{publish.REPO}/issues/{pr_number}/comments", "-f", f"body={text}"]
+        argv = ["gh", "api", "--method", "POST", f"repos/{publish.REPO}/issues/{pr_number}/comments", "--field", f"body={text}"]
     publish.github_write("pr-comment", argv, cwd)
 
 

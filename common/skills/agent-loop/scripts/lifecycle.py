@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import subprocess
 import time
 
@@ -24,6 +25,7 @@ import ci
 import contracts
 import plan as plan_mod
 import publish
+import screenshots
 import state
 
 MAX_BOT_ROUNDS = 3
@@ -153,7 +155,10 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         return Step(key, "implement", f"task {task.id} -> {out}", detail=t.reason, wait=True)
 
     if t.state == "gates":
-        # Deterministic gates beyond the per-task verification: full component test dir + rubocop on the diff.
+        # Deterministic gates beyond per-task verification: worktree prepared, whole ZUI component
+        # test dir, rubocop on the branch's Ruby diff, and -- when any task is visual -- Lookbook
+        # captures of every scenario of the component (policy: screenshots before leaving draft).
+        _sh(["bin/wt", "prepare", "--for", "rails"], wt, 900)
         r1 = _sh(["bin/rails", "test", "test/views/components/zui/"], wt, 1800)
         changed = _sh(["git", "diff", "--name-only", "origin/main...HEAD", "--", "*.rb"], wt, 60).stdout.split()
         r2 = _sh(["bin/agent_run", "rubocop", "--cache", "false", *changed], wt, 600) if changed else None
@@ -161,16 +166,27 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         (tdir / "gates.out").write_text((r1.stdout + r1.stderr)[-6000:] + ("\n\n" + (r2.stdout + r2.stderr)[-4000:] if r2 else ""))
         if not ok:
             return _pause_step(cfg, t, "gates", f"gates failed: rails test rc={r1.returncode}" + (f", rubocop rc={r2.returncode}" if r2 else ""))
+        tasks = contracts.load_tasks(_manifest_path(wt, key)) if _manifest_path(wt, key).exists() else []
+        component = _component_name(wt)
+        if any(x.visual for x in tasks) and component:
+            try:
+                base = screenshots.ensure_dev_server(wt)
+                shots = screenshots.capture(base, component, tdir / "screenshots" / _head(wt)[:10])
+                (tdir / "screenshots.json").write_text(json.dumps({k: str(v) for k, v in shots.items()}))
+            except screenshots.VisualGateError as e:
+                return _pause_step(cfg, t, "gates", f"visual gate failed: {e}")
         t.evidence_sha = _head(wt); t = state.transition(t, "draft-pr"); _save(cfg, t)
         return Step(key, "gates", "passed", detail=f"evidence_sha={t.evidence_sha[:10]}")
 
     if t.state == "draft-pr":
         branch = publish.guard_branch(wt, key); publish.push(wt, branch)
         pr = publish.existing_pr(wt, branch)
+        title, body = _pr_from_plan(cfg, key, wt, t)
         if not pr:
-            spec = cfg.tickets.get(key); summary = getattr(spec, "summary", None) or key
-            pr = publish.ensure_draft_pr(wt, branch, publish.pr_title(key, summary),
-                                         publish.pr_body(key, summary, "See plan.md on the branch.", [], ["Runner verification gates passed"], {}))
+            pr = publish.ensure_draft_pr(wt, branch, title, body)
+            publish.record_pr_on_worktree(wt, pr["number"])
+        else:
+            publish.github_write("pr-edit-body", ["gh", "pr", "edit", str(pr["number"]), "--repo", publish.REPO, "--title", title, "--body", body], wt)
         cis = _load_json(_ci_state_path(cfg, key), {}); cis["pr"] = pr["number"]; _ci_state_path(cfg, key).write_text(json.dumps(cis))
         t = state.transition(t, "ready"); _save(cfg, t)
         return Step(key, "draft-pr", "draft PR present", detail=f"#{pr['number']}")
@@ -318,3 +334,65 @@ def _append_task(manifest: pathlib.Path, task: dict) -> None:
     with open(manifest, "a") as f:
         f.write("\n" + body)
     manifest.with_name("_append.toml").unlink()
+
+
+def _component_name(wt) -> str | None:
+    """`app/views/components/zui/<name>/` added on this branch."""
+    out = _sh(["git", "diff", "--name-only", "origin/main...HEAD", "--", "app/views/components/zui/"], wt, 60).stdout.split()
+    names = sorted({p.split("/")[4] for p in out if p.count("/") >= 5})
+    return names[0] if names else None
+
+
+def _plan_section(plan_md: str, heading: str) -> str:
+    m = re.search(rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)", plan_md, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def _ticket_summary(cfg, key) -> str:
+    for d in sorted((cfg.state_root / "plans" / key).glob("*/ticket.json"), reverse=True):
+        try:
+            return json.loads(d.read_text())["fields"]["summary"]
+        except Exception:  # noqa: BLE001
+            continue
+    return key
+
+
+def _pr_from_plan(cfg, key, wt, t) -> tuple[str, str]:
+    plan_p = _manifest_path(wt, key).with_name("plan.md")
+    plan_md = plan_p.read_text() if plan_p.exists() else ""
+    summary = _ticket_summary(cfg, key)
+    component = _component_name(wt) or "component"
+    title = publish.pr_title(key, f"Add ZUI {component.replace('_', ' ').title()} component")
+    decisions = _plan_section(plan_md, "Design decisions"); evidence = _plan_section(plan_md, "Evidence")
+    risks = _plan_section(plan_md, "Risks"); oos = _plan_section(plan_md, "Out of scope")
+    tasks = contracts.load_tasks(_manifest_path(wt, key)) if _manifest_path(wt, key).exists() else []
+    task_lines = "\n".join(f"- `{x.id}` {x.summary.split(' Read first:')[0]}" for x in tasks)
+    changed = _sh(["git", "diff", "--name-only", "origin/main...HEAD"], wt, 60).stdout.split()
+    review_start = [p for p in changed if p.startswith("app/") and not p.startswith("app/views/components/previews")][:6]
+    why = (f"Implements **{summary}** ([{key}]({publish.JIRA_BASE}/{key})) as planned in "
+           f"[`planning/{key.lower()}/plan.md`](https://github.com/{publish.REPO}/blob/{publish.current_branch(wt)}/planning/{key.lower()}/plan.md), "
+           f"following `.agents/skills/zui-component-creation`.\n\n**Tasks executed**\n{task_lines}\n\n**Design decisions**\n{decisions or '_see plan.md_'}"
+           + (f"\n\n**Out of scope**\n{oos}" if oos else ""))
+    qa = ["Automated tests: `bin/rails test test/views/components/zui/` (runner gate, green at evidence SHA)",
+          "rubocop clean on the branch's Ruby diff (runner gate)",
+          "Every task judged by the runner's verification commands; plan adversarially reviewed by the opposite-vendor critic before execution"]
+    shots_p = cfg.ticket_dir(key) / "screenshots.json"
+    shots_md = None
+    if shots_p.exists():
+        shots = {k: pathlib.Path(v) for k, v in json.loads(shots_p.read_text()).items()}
+        shots_md = screenshots.screenshots_table(shots, screenshots.upload(list(shots.values()), wt))
+        qa.append("Lookbook scenarios captured in headless Chrome for Testing (see Screenshots)")
+    hist = state.load(cfg.ticket_dir(key)).attempts
+    n_att = sum(len(v) for k, v in hist.items() if not k.split("/")[-1].startswith("hand-"))
+    ai = {"intent": f"Deliver {key} end to end through the autonomous agent loop: flagship plan + adversarial review, cheap-worker implementation judged by a deterministic runner, CI babysitting, bot-review adjudication.",
+          "decisions": decisions or "—", "discovery": evidence or "—",
+          "problems": (risks or "None recorded."), "tokens": "see loop ledger (per-attempt metrics.jsonl)",
+          "tool_uses": "—", "duration": f"{n_att} worker attempt(s) across {len(tasks)} task(s)",
+          "cost": f"author {t.author_vendor.split('/')[-1] if t.author_vendor else '—'}, critic {t.critic_vendor.split('/')[-1] if t.critic_vendor else '—'}; workers per metrics.jsonl"}
+    body = publish.pr_body(key, summary, why, review_start, qa, ai)
+    if shots_md:
+        body = body.replace("_Pending: the loop's QA gate adds before/after captures before this PR leaves draft._", shots_md, 1)
+    body = body.replace("Lookbook preview for the component is part of this ticket and lands in a later commit on this branch.",
+                        f"- Plan and adversarial review: `planning/{key.lower()}/` on this branch\n- Lookbook preview: `/lookbook/inspect/zui/{component}`", 1)
+    return title, body
+

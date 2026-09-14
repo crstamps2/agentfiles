@@ -38,6 +38,26 @@ Write exactly two files inside the worktree:
    own test runner and rubocop on the touched files), `acceptance` (numbered, checkable
    statements), `invariants`, `out_of_scope`, `stop_when`.
 
+## Repository skills are the definition of done
+
+Before anything else, list `.agents/skills/` in the worktree and read IN FULL every skill whose
+name matches the work (for a ZUI component: `zui-component-creation`, plus `css-guide`,
+`lookbook-partial-preview`, `figma-validate-handoff` where the ticket touches those areas).
+These are the repository's own definition of done and outrank your judgement, the ticket's
+prose, and any shipped component's precedent:
+
+- Structure the task graph around the skill's steps. Every step the skill calls part of the
+  definition of done (e.g. the SCSS sidecar migration, the Lookbook preview, Figma Code
+  Connect, documentation, the linter cop) is a task or is explicitly listed under
+  **Out of scope** with the skill line that permits deferring it. Silence is not allowed.
+- Each task's `acceptance` restates the skill rules that apply to it as checkable criteria
+  (e.g. "no root `class_name` option (SKILL.md §Design System Boundary)"), and its
+  `invariants` list the skill's prohibitions. `verification_commands` include the skill's
+  own checks where it names any (tests, rubocop, cop tests).
+- Each task's `summary` ends with `Read first: <skill path>#<section>` so the worker reads the
+  rule before the code.
+- Where a shipped component contradicts the skill, the skill wins; note the divergence.
+
 ## Design-decision tiers
 
 1. Evidence converges (Figma, shipped components, source, conventions agree): decide, record.

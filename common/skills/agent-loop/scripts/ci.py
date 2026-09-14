@@ -54,7 +54,7 @@ class Verdict:
 
 def fetch_checks(pr_number: int, repo: str, cwd) -> list[Check]:
     r = subprocess.run(["gh", "pr", "checks", str(pr_number), "--repo", repo, "--json", "name,state,bucket,link,workflow"],
-                       cwd=str(cwd), capture_output=True, text=True, timeout=120)
+                       cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     # gh exits 8 when checks are pending and 1 when some fail; the JSON is still complete.
     if not r.stdout.strip():
         raise RuntimeError(f"gh pr checks produced no output rc={r.returncode}: {r.stderr.strip()[:300]}")
@@ -66,7 +66,7 @@ def fetch_checks(pr_number: int, repo: str, cwd) -> list[Check]:
 
 def behind_base(cwd, base: str = "main") -> int:
     subprocess.run(["git", "fetch", "-q", "origin", base], cwd=str(cwd), capture_output=True, timeout=300)
-    r = subprocess.run(["git", "rev-list", "--count", f"HEAD..origin/{base}"], cwd=str(cwd), capture_output=True, text=True)
+    r = subprocess.run(["git", "rev-list", "--count", f"HEAD..origin/{base}"], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace")
     return int(r.stdout.strip() or 0)
 
 
@@ -108,7 +108,7 @@ def gha_failure_excerpt(link: str, repo: str, cwd, max_chars: int = 6000) -> str
     if not m:
         return ""
     r = subprocess.run(["gh", "run", "view", m.group(1), "--repo", repo, "--log-failed"],
-                       cwd=str(cwd), capture_output=True, text=True, timeout=300)
+                       cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     txt = r.stdout or r.stderr or ""
     return txt[-max_chars:]
 
@@ -118,7 +118,7 @@ def rerun_gha(link: str, repo: str, cwd) -> bool:
     if not m:
         return False
     r = subprocess.run(["gh", "run", "rerun", m.group(1), "--repo", repo, "--failed"],
-                       cwd=str(cwd), capture_output=True, text=True, timeout=120)
+                       cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     return r.returncode == 0
 
 

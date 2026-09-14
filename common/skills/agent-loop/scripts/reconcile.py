@@ -73,11 +73,14 @@ def _task_id(rec: attempt_mod.Record) -> str:
 
 
 def _diff_patch(wt, base_tree: str, observed_tree: str) -> str:
-    r = subprocess.run(["git", "-C", str(wt), "diff", "--no-color", base_tree, observed_tree],
-                       capture_output=True, text=True)
+    """Text patch for the attempt record. `--binary` keeps binary blobs (a worker committed PNG
+    screenshot fixtures, 2026-09-14) as printable base85 so the patch stays UTF-8 and re-applyable;
+    decoding is lenient regardless so a stray byte can never crash finalize."""
+    r = subprocess.run(["git", "-C", str(wt), "diff", "--no-color", "--binary", base_tree, observed_tree],
+                       capture_output=True)
     if r.returncode != 0:
-        raise RuntimeError(f"git diff failed: {r.stderr.strip()}")
-    return r.stdout
+        raise RuntimeError(f"git diff failed: {r.stderr.decode('utf-8', 'replace').strip()}")
+    return r.stdout.decode("utf-8", "replace")
 
 
 # ---------------------------------------------------------------------------

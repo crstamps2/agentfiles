@@ -505,3 +505,11 @@ class RequiredReadingTests(unittest.TestCase):
         md = attempt.task_md(self.task("Read first: .agents/skills/x/SKILL.md#big"), self.wt / "d", self.wt)
         self.assertIn("excerpt truncated", md); self.assertLess(len(md), attempt.EXCERPT_MAX_CHARS + 2000)
 
+
+class TaskMdWordingTests(unittest.TestCase):
+    def test_missing_allowed_files_are_to_be_created(self):
+        """Cloud 20B twice reported the file it was meant to write as an absent blocker (ZIP-7873/002,003)."""
+        with tempfile.TemporaryDirectory() as d:
+            task = contracts.Task(id="1", slug="s", summary="x", allowed_files=["a/new.rb"], verification_commands=["true"], acceptance=["x"])
+            self.assertIn("expected to CREATE", attempt.task_md(task, pathlib.Path(d), pathlib.Path(d)))
+

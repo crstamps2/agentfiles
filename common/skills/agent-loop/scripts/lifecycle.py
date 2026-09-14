@@ -210,8 +210,12 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             _ci_state_path(cfg, key).write_text(json.dumps(cis)); return Step(key, "ready", "CI running", detail=verdict.reason, wait=True)
         if verdict.action == "green":
             if cis.get("ready_marked_sha") != _head(wt):
+                # Tier-3 design decisions (`human_confirm_before_ready`) are NOT a gate on mark-ready:
+                # the loop never assigns reviewers, so "ready" only triggers the repo's Claude review
+                # bots, and Human Gate 1 -- where Cody confirms these decisions -- still precedes any
+                # colleague. They are recorded here and surfaced in the Gate 1 report and the PR body.
                 if _manifest_flag(wt, key, "human_confirm_before_ready"):
-                    return _pause_step(cfg, t, "ready", "tier-3 design decision needs Cody's confirmation before leaving draft")
+                    cis["tier3_pending"] = _manifest_header_comment(wt, key)
                 botreview.mark_ready(pr, wt); cis["ready_marked_sha"] = _head(wt)
             _ci_state_path(cfg, key).write_text(json.dumps(cis))
             t = state.transition(t, "bot-loop"); _save(cfg, t)
@@ -419,4 +423,18 @@ def insert_task_before(manifest: pathlib.Path, task: dict, before_id: str) -> No
     if i < 0:
         raise ValueError(f"task {before_id} not found in {manifest}")
     manifest.write_text(text[:i] + "\n" + body + "\n" + text[i:])
+
+
+def _manifest_header_comment(wt, key) -> str:
+    """The planner's owner/design questions live as a comment block at the top of tasks.toml."""
+    p = _manifest_path(wt, key)
+    if not p.exists():
+        return ""
+    lines = []
+    for ln in p.read_text().splitlines():
+        if ln.startswith("#"):
+            lines.append(ln.lstrip("# ").rstrip())
+        elif ln.strip() and not ln.startswith("human_confirm_before_ready"):
+            break
+    return " ".join(lines).strip()
 

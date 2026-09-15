@@ -76,6 +76,7 @@ class LifecycleTests(unittest.TestCase):
             patch.object(lifecycle.publish, "current_branch", return_value="internal/zip-7873-x"),
             patch.object(lifecycle.publish, "github_write", side_effect=lambda v, a, c: self.gh_writes.append((v, a))),
             patch.object(lifecycle.publish, "record_pr_on_worktree"),
+            patch.object(lifecycle, "_pr_house_style", side_effect=lambda cfg, key, wt, t: ("INTERNAL: Add ZUI Well component ZIP-7873", self.fake_body())),
         ]
         for p in self.patches: p.start()
         self.gh_writes = []; self.checks = [ci.Check("zipline", "pass")]; self.comments = []; self.marked = []; self.replies = []; self.adjudication = None
@@ -83,6 +84,12 @@ class LifecycleTests(unittest.TestCase):
     def tearDown(self):
         for p in self.patches: p.stop()
         self.tmp.cleanup()
+
+    def fake_body(self):
+        import prbody
+        shots = self.cfg.ticket_dir("ZIP-7873") / "screenshots.json"
+        table = "|Scenario|AFTER|\n|----|----|\n|`default`|x|" if shots.exists() else None
+        return prbody.fallback_body("ZIP-7873", "Well", ["app/a.rb"], table)
 
     def fake_sh(self, cmd, cwd, timeout):
         import subprocess
@@ -191,7 +198,8 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue((self.cfg.ticket_dir("ZIP-7873") / "screenshots.json").exists())
         title, body = bodies[0]
         self.assertEqual(title, "INTERNAL: Add ZUI Well component ZIP-7873")
-        self.assertIn("|Scenario|AFTER|", body); self.assertIn("Tier 1: follow the skill", body); self.assertIn("planning/zip-7873/plan.md", body)
+        self.assertIn("|Scenario|AFTER|", body); self.assertNotIn("planning/", body)
+        import prbody; self.assertEqual(prbody.lint(body), [])
 
     def test_visual_gate_failure_pauses(self):
         p = self.wt / "planning" / "zip-7873" / "tasks.toml"; p.write_text(MANIFEST.replace('slug = "b"', 'slug = "b"\nvisual = true'))

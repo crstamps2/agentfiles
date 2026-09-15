@@ -18,6 +18,7 @@ import json
 import pathlib
 import re
 import subprocess
+import sys
 import time
 
 import botreview
@@ -121,14 +122,9 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if log.get("result") == "approved":
             if t.state == "plan": t = state.transition(t, "plan-review")
             t = state.transition(t, "implement"); _save(cfg, t)
-            # the plan is part of the branch: reviewers see the reasoning
-            try:
-                branch = publish.guard_branch(wt, key)
-                publish.commit_paths(wt, [f"planning/{key.lower()}/plan.md", f"planning/{key.lower()}/tasks.toml", f"planning/{key.lower()}/plan-review.md"],
-                                     f"Add agent-loop plan for {key}\n\nAuthor {log['author_model']}; critic {log['critic_model']} approved.")
-                publish.push(wt, branch)
-            except publish.PublishError as e:
-                return Step(key, "plan", "approved; publish of plan failed (continuing)", detail=str(e))
+            # planning/<key>/ is a worktree-local artifact (MEMORY.md: never committed, excluded from
+            # PR diff/history). Make sure git ignores it for every worktree of this repo.
+            _exclude_planning(wt)
             return Step(key, "plan", "approved", detail=f"{len(log['rounds'])} round(s)")
         if log.get("result") == "blocked":
             t = state.transition(t, "blocked", reason=f"plan: {log.get('reason')}"); _save(cfg, t)
@@ -190,7 +186,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
     if t.state == "draft-pr":
         branch = publish.guard_branch(wt, key); publish.push(wt, branch)
         pr = publish.existing_pr(wt, branch)
-        title, body = _pr_from_plan(cfg, key, wt, t)
+        title, body = _pr_house_style(cfg, key, wt, t)
         if not pr:
             pr = publish.ensure_draft_pr(wt, branch, title, body)
             publish.record_pr_on_worktree(wt, pr["number"])
@@ -391,46 +387,6 @@ def _ticket_summary(cfg, key) -> str:
     return key
 
 
-def _pr_from_plan(cfg, key, wt, t) -> tuple[str, str]:
-    plan_p = _manifest_path(wt, key).with_name("plan.md")
-    plan_md = plan_p.read_text() if plan_p.exists() else ""
-    summary = _ticket_summary(cfg, key)
-    component = _component_name(wt) or "component"
-    title = publish.pr_title(key, f"Add ZUI {component.replace('_', ' ').title()} component")
-    decisions = _plan_section(plan_md, "Design decisions"); evidence = _plan_section(plan_md, "Evidence")
-    risks = _plan_section(plan_md, "Risks"); oos = _plan_section(plan_md, "Out of scope")
-    tasks = contracts.load_tasks(_manifest_path(wt, key)) if _manifest_path(wt, key).exists() else []
-    task_lines = "\n".join(f"- `{x.id}` {x.summary.split(' Read first:')[0]}" for x in tasks)
-    changed = _sh(["git", "diff", "--name-only", "origin/main...HEAD"], wt, 60).stdout.split()
-    review_start = [p for p in changed if p.startswith("app/") and not p.startswith("app/views/components/previews")][:6]
-    why = (f"Implements **{summary}** ([{key}]({publish.JIRA_BASE}/{key})) as planned in "
-           f"[`planning/{key.lower()}/plan.md`](https://github.com/{publish.REPO}/blob/{publish.current_branch(wt)}/planning/{key.lower()}/plan.md), "
-           f"following `.agents/skills/zui-component-creation`.\n\n**Tasks executed**\n{task_lines}\n\n**Design decisions**\n{decisions or '_see plan.md_'}"
-           + (f"\n\n**Out of scope**\n{oos}" if oos else ""))
-    qa = ["Automated tests: `bin/rails test test/views/components/zui/` (runner gate, green at evidence SHA)",
-          "rubocop clean on the branch's Ruby diff (runner gate)",
-          "Every task judged by the runner's verification commands; plan adversarially reviewed by the opposite-vendor critic before execution"]
-    shots_p = cfg.ticket_dir(key) / "screenshots.json"
-    shots_md = None
-    if shots_p.exists():
-        shots = {k: pathlib.Path(v) for k, v in json.loads(shots_p.read_text()).items()}
-        shots_md = screenshots.screenshots_table(shots, screenshots.upload(list(shots.values()), wt))
-        qa.append("Lookbook scenarios captured in headless Chrome for Testing (see Screenshots)")
-    hist = state.load(cfg.ticket_dir(key)).attempts
-    n_att = sum(len(v) for k, v in hist.items() if not k.split("/")[-1].startswith("hand-"))
-    ai = {"intent": f"Deliver {key} end to end through the autonomous agent loop: flagship plan + adversarial review, cheap-worker implementation judged by a deterministic runner, CI babysitting, bot-review adjudication.",
-          "decisions": decisions or "—", "discovery": evidence or "—",
-          "problems": (risks or "None recorded."), "tokens": "see loop ledger (per-attempt metrics.jsonl)",
-          "tool_uses": "—", "duration": f"{n_att} worker attempt(s) across {len(tasks)} task(s)",
-          "cost": f"author {t.author_vendor.split('/')[-1] if t.author_vendor else '—'}, critic {t.critic_vendor.split('/')[-1] if t.critic_vendor else '—'}; workers per metrics.jsonl"}
-    body = publish.pr_body(key, summary, why, review_start, qa, ai)
-    if shots_md:
-        body = body.replace("_Pending: the loop's QA gate adds before/after captures before this PR leaves draft._", shots_md, 1)
-    body = body.replace("Lookbook preview for the component is part of this ticket and lands in a later commit on this branch.",
-                        f"- Plan and adversarial review: `planning/{key.lower()}/` on this branch\n- Lookbook preview: `/lookbook/inspect/zui/{component}`", 1)
-    return title, body
-
-
 def insert_task_before(manifest: pathlib.Path, task: dict, before_id: str) -> None:
     """Insert a prerequisite fix task immediately before `before_id` in manifest order. The runner
     dispatches tasks in file order, so a contract defect found in a LATER task (007 found 001's
@@ -458,4 +414,40 @@ def _manifest_header_comment(wt, key) -> str:
         elif ln.strip() and not ln.startswith("human_confirm_before_ready"):
             break
     return " ".join(lines).strip()
+
+
+def _exclude_planning(wt) -> None:
+    """Add `planning/` to the repo's shared info/exclude (common git dir, so linked worktrees share it)."""
+    common = _sh(["git", "rev-parse", "--git-common-dir"], wt, 30).stdout.strip()
+    if not common:
+        return
+    p = pathlib.Path(common) if pathlib.Path(common).is_absolute() else pathlib.Path(wt) / common
+    ex = p / "info" / "exclude"; ex.parent.mkdir(parents=True, exist_ok=True)
+    cur = ex.read_text() if ex.exists() else ""
+    if "planning/" not in cur.splitlines():
+        ex.write_text(cur.rstrip("\n") + "\nplanning/\n")
+
+
+HOUSE_STYLE_EXAMPLE_PR = 47860     # a PR of Cody's whose structure/voice is the target
+
+
+def _pr_house_style(cfg, key, wt, t) -> tuple[str, str]:
+    import prbody
+    summary = _ticket_summary(cfg, key)
+    component = _component_name(wt) or "component"
+    title = publish.pr_title(key, f"Add ZUI {component.replace('_', ' ').title()} component")
+    shots_p = cfg.ticket_dir(key) / "screenshots.json"; shots_md = None
+    if shots_p.exists():
+        shots = {k: pathlib.Path(v) for k, v in json.loads(shots_p.read_text()).items()}
+        shots_md = screenshots.screenshots_table(shots, screenshots.upload(list(shots.values()), wt))
+    gates_out = (cfg.ticket_dir(key) / "gates.out").read_text(errors="replace") if (cfg.ticket_dir(key) / "gates.out").exists() else ""
+    example = _sh(["gh", "pr", "view", str(HOUSE_STYLE_EXAMPLE_PR), "--repo", publish.REPO, "--json", "body", "--jq", ".body"], wt, 60).stdout
+    stage = cfg.state_root / "prbody" / key / time.strftime("%Y%m%dT%H%M%S")
+    try:
+        body = prbody.write_body(cfg, key, wt, t, summary, example, shots_md, gates_out, stage)
+    except prbody.BodyRejected as e:
+        print(f"{key}: PR body rejected twice ({e}); using the deterministic fallback", file=sys.stderr)
+        files = _sh(["git", "diff", "--name-only", "origin/main...HEAD"], wt, 60).stdout.split()
+        body = prbody.fallback_body(key, summary, [f for f in files if f.startswith("app/")], shots_md)
+    return title, body
 

@@ -105,7 +105,8 @@ def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> 
         print(f"{ticket_key} task {task.id}: publish failed; ticket paused: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
 
-HEAVY_WAIT_MAX_S = 1800     # a verification waits up to 30 min for the heavy lane before deferring the attempt
+HEAVY_WAIT_MAX_S = 1800
+SLOT_WAIT_MAX_S = 3600      # a task waits up to an hour for a worker slot before the ticket pauses (transient)     # a verification waits up to 30 min for the heavy lane before deferring the attempt
 
 
 def _unload_local_model(model: str | None) -> None:
@@ -198,10 +199,17 @@ class Runner:
             # Worker inference is LIGHT (remote model + file edits): it takes one of N worker slots.
             # The HEAVY lane (Rails tests, browser) is taken inside _attempt around verification only,
             # so several tasks can be written concurrently while verification stays serialised.
-            lease = locks.slot(self.cfg.state_root / "locks" / "worker", getattr(self.cfg, "workers_parallel", 1), f"worker {t.key}/{task.id}")
-            if lease is None:
-                t = state.transition(t, "paused", reason="heavy lane held by a live owner")   # reason kept: callers treat it as transient
-                state.save(tdir, t); return "paused"
+            lease = None; waited = 0.0
+            while lease is None:
+                lease = locks.slot(self.cfg.state_root / "locks" / "worker", getattr(self.cfg, "workers_parallel", 1), f"worker {t.key}/{task.id}")
+                if lease is None:
+                    # All slots busy (other tickets' tasks). Wait -- do NOT pause the ticket: with several
+                    # runners each dispatching N tasks, a momentary slot shortage is normal, and pausing here
+                    # cancelled the sibling tasks of the same ticket (live, 2026-09-15).
+                    if waited >= SLOT_WAIT_MAX_S or state.paused(self.cfg.state_root) or (tdir / "HUMAN").exists():
+                        t = state.transition(t, "paused", reason="heavy lane held by a live owner")   # transient wording; callers retry
+                        state.save(tdir, t); return "paused"
+                    __import__("time").sleep(15); waited += 15
             task_root = self.cfg.state_root / "attempts" / t.key / task.id
             try:
                 n = attempt.next_n(task_root)

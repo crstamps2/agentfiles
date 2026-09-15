@@ -216,7 +216,8 @@ class RunnerHarness(unittest.TestCase):
         n = self.cfg.workers_parallel
         slots = [locks.slot(self.cfg.state_root / "locks" / "worker", n, f"other-{i}") for i in range(n)]
         self.assertTrue(all(slots))                                          # every slot held by "others"
-        outcome, rows = self.run_task("pass")
+        with patch.object(runner, "SLOT_WAIT_MAX_S", 0):
+            outcome, rows = self.run_task("pass")
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
 
     def test_admission_red_pauses_with_reason(self):

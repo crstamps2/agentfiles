@@ -33,6 +33,7 @@ summary = "One sentence a worker can act on"
 allowed_files = ["app/views/components/zui/<name>/**", "test/views/components/zui/<name>/**"]
 may_edit_tests = true          # only when the task owns those tests
 visual = false                 # true iff judged by rendering (routes through the browser gate)
+size = "normal"                # "small" = edits <=2 existing files, no browser -> free local model first
 timeout_s = 2400
 verification_commands = ["bin/rails test test/views/components/zui/<name>/<name>_test.rb",
                          "bin/agent_run rubocop --cache false app/views/components/zui/<name>/<name>.rb"]
@@ -61,15 +62,17 @@ def export_ticket(key: str, dest: pathlib.Path) -> pathlib.Path:
 AUTHOR_DEF, CRITIC_DEF, WRITER_DEF = "flagship-author", "flagship-critic", "task-writer"
 
 
+AUTHOR_MODELS = {"anthropic": "anthropic/claude-opus-5", "openai-codex": "openai-codex/gpt-5.6-sol"}
+CRITIC_MODELS = {"anthropic": "anthropic/claude-fable-5-1", "openai-codex": "openai-codex/gpt-6-astra"}
+
+
 def assignment(cfg, hopper_index: int) -> dict:
-    """Vendor assignment for this ticket. ROLE bodies are fixed (the author def always plans, the
-    critic def always reviews); what alternates is the MODEL each role runs on, so the critic is
-    always the vendor that did not write the plan. Odd hopper index -> the author def's own model
-    authors; even -> the two models swap."""
-    a = agentdef.load(cfg.pi_agents_dir, AUTHOR_DEF); c = agentdef.load(cfg.pi_agents_dir, CRITIC_DEF)
-    if hopper_index % 2 == 1:
-        return {"author_model": a.model, "critic_model": c.model}
-    return {"author_model": c.model, "critic_model": a.model}
+    """Vendor assignment for this ticket. Roles are fixed definitions; the MODEL alternates per ticket
+    so the critic is always the vendor that did not write the plan. Author tier is one step below
+    flagship (Opus 5 / Sol); the critic stays flagship (Fable / Astra). Odd hopper index -> Anthropic
+    authors, OpenAI critiques; even -> the reverse."""
+    a_vendor, c_vendor = ("anthropic", "openai-codex") if hopper_index % 2 == 1 else ("openai-codex", "anthropic")
+    return {"author_model": AUTHOR_MODELS[a_vendor], "critic_model": CRITIC_MODELS[c_vendor]}
 
 
 def _author_prompt(key: str, ticket_json: pathlib.Path, wt: pathlib.Path, shipped: str, prior_review: pathlib.Path | None,

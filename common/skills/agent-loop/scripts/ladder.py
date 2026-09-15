@@ -9,7 +9,7 @@ import pathlib
 
 import attempt as attempt_mod
 
-CHEAP_ARMS = ("cloud", "local")
+CHEAP_ARMS = ("cloud", "local", "small")
 ADVANCING = {"rejected", "timeout", "protocol", "unusable"}
 OUTCOMES = ADVANCING | {"accepted", "environment"}
 
@@ -38,6 +38,12 @@ def assign_arm(task_index: int, visual: bool, pin: str | None, alternate: list) 
 
 
 def _sequence(arm: str) -> list:
+    if arm == "small":
+        # Small edit tasks (planner-tagged: 1-2 existing files, no browser): the free local model gets
+        # the first shot -- it is 3/3 on edit-existing-file work when the task fits its 32K window --
+        # then Sonnet, then premium. Everything else never touches local.
+        return [Rung("local-worker", "cheap", 1), Rung("cloud-worker", "cheap", 2),
+                Rung("premium-worker", "premium", 1), Rung("premium-worker", "premium", 2)]
     return [Rung(f"{arm}-worker", "cheap", 1), Rung(f"{arm}-worker", "cheap", 2),
             Rung("premium-worker", "premium", 1), Rung("premium-worker", "premium", 2)]
 

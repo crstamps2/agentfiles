@@ -35,8 +35,8 @@ class Budgets:
     premium_daily_usd: float
     premium_monthly_usd: float
     total_unattended_daily_usd: float
-    cloud_starter_credit_usd: float
     ci_rerun_max: int
+    cloud_starter_credit_usd: float = 0.0     # Ollama Cloud removed 2026-09-15 (security); kept for old configs
 
 
 @dataclasses.dataclass(frozen=True)

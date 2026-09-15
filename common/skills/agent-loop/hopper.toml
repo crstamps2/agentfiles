@@ -13,30 +13,22 @@ owned_epics = ["ZIP-6774"]          # cmux listener skips children of these
 # ZIP-7873 (Well) stays listed only because it already reached Human Gate 1; Cody decides its fate.
 [[hopper.tickets]]
 key = "ZIP-7872"   # Nav Link
-pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-7877"   # Card Header Start
-pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-7875"   # Stepper
-pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-4294"   # Modal
-pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-7874"   # Dropzone
-pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-4281"   # Nav Tabs
-pin_arm = "cloud"
 deps = ["ZIP-7872"]
 [[hopper.tickets]]
 key = "ZIP-4282"   # Nav Pills
-pin_arm = "cloud"
 deps = ["ZIP-7872"]
 [[hopper.tickets]]
 key = "ZIP-7873"   # Well -- at Human Gate 1; Martin's audit says replace with Card secondary
-pin_arm = "cloud"
 
 [paths]
 state_root = "~/.local/state/agent-loop"
@@ -63,7 +55,6 @@ defer_max_s = 1800
 premium_daily_usd = 5.0
 premium_monthly_usd = 40.0
 total_unattended_daily_usd = 15.0
-cloud_starter_credit_usd = 0.0   # fill from ollama.com usage page in slice 1
 ci_rerun_max = 5
 
 [protection]
@@ -78,7 +69,7 @@ harness_artifact_globs = [".pi/**", ".ruby-lsp/**", ".claude/**", ".codex/**", "
 
 [arms]
 # Cheap arms alternate by task index unless a ticket pins one. Values: cloud | local
-alternate = ["local", "cloud"]   # local-first per Cody 2026-09-10: overnight runs trade wall time for $0
+alternate = ["cloud", "cloud"]   # "cloud" arm = anthropic/claude-sonnet-5 (Ollama Cloud disallowed by security). Ollama LOCAL is used only via size="small" tasks (see ladder).
 
 [local]
 model = "ollama-local/gpt-oss-ctx32k:20b"   # MUST be ctx-pinned: stock num_ctx=4096 silently truncates pi's ~11K system prompt

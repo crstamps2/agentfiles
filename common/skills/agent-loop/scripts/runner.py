@@ -166,7 +166,8 @@ class Runner:
             real = [e for e in history if e.get("outcome") not in (None, "environment", "interrupted")]
             arm = real[0].get("arm") if real else None
             if arm is None:
-                arm = ladder.assign_arm(stratum_index, task.visual, spec.pin_arm if spec else None, self.cfg.arms_alternate)
+                arm = "small" if getattr(task, "size", "normal") == "small" and not task.visual else \
+                    ladder.assign_arm(stratum_index, task.visual, spec.pin_arm if spec else None, self.cfg.arms_alternate)
             attempts = [ladder.Attempt(ladder.Rung(**e["rung"]), e["outcome"])
                         for e in history if e.get("outcome") in ladder.OUTCOMES]
             env_failures = 0

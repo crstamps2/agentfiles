@@ -59,6 +59,7 @@ class Task:
     acceptance: list
     may_edit_tests: bool = False
     visual: bool = False
+    size: str = "normal"          # "small" => free local model first (1-2 existing files, no browser)
     timeout_s: int = 4500
     invariants: list = dataclasses.field(default_factory=list)
     out_of_scope: list = dataclasses.field(default_factory=list)
@@ -112,6 +113,12 @@ def validate_tasks(data: dict) -> list:
             extra = [c for c in cmds if isinstance(c, str) and not re.search(r"bin/wt prepare|rails test|rubocop|git diff --check|reek|yarn (build|prettier|eslint)|slim-lint|stylelint", c)]
             if len(extra) > MAX_EXTRA_VERIFICATION:
                 errs.append(f"{p}.verification_commands: {len(extra)} bespoke commands (max {MAX_EXTRA_VERIFICATION} beyond prepare/test/lint); fold checks into a task-owned test")
+        if t.get("size", "normal") not in ("normal", "small"):
+            errs.append(f"{p}.size: must be 'normal' or 'small' (got {t.get('size')!r})")
+        if t.get("size") == "small":
+            af = t.get("allowed_files") or []
+            if not isinstance(af, list) or len(af) > 2 or any("*" in str(x) for x in af) or t.get("visual"):
+                errs.append(f"{p}.size: 'small' requires <=2 explicit allowed_files (no globs) and visual = false")
         tid = str(t.get("id", ""))
         if tid and not _ID_RE.match(tid):
             errs.append(f"{p}.id: must match ^\\d{{3}}[a-z]?$ (got {tid!r})")

@@ -41,13 +41,12 @@ class PureTests(unittest.TestCase):
 
 
 class LoopTests(unittest.TestCase):
-    """Drive plan_ticket with a scripted fake agent: the author writes a manifest, the critic writes a verdict."""
+    """Drive plan_ticket with a scripted fake agent. Shape: author → (critic → task-writer)×≤PLAN_ROUNDS."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.wt = pathlib.Path(self.tmp.name) / "wt"; self.wt.mkdir()
         self.stage = pathlib.Path(self.tmp.name) / "stage"
         self.cfg = type("Cfg", (), {"pi_agents_dir": "/nonexistent"})()
-        self.script = []           # list of callables(agent_name) executed in order
-        self.calls = []; self.models = []
+        self.script = []; self.calls = []; self.models = []
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -72,46 +71,46 @@ class LoopTests(unittest.TestCase):
             (pd / "plan-review.md").write_text(f"VERDICT: {verdict}\nBLOCKERS:\n"); return f"REVIEW: {verdict}"
         return f
 
+    def writer_applies(self, manifest_text=None):
+        def f(agent, pd):
+            if manifest_text is not None: (pd / "tasks.toml").write_text(manifest_text)
+            return "REVISION: applied 1 blockers"
+        return f
+
     def go(self):
         with patch.object(plan, "_run_agent", self.fake_run_agent), patch.object(plan, "export_ticket", lambda k, d: d), \
-             patch.object(plan, "shipped_summary", lambda wt: ""), \
+             patch.object(plan, "shipped_summary", lambda wt: ""), patch.object(plan, "_spent", lambda root: 0.0), \
              patch.object(plan, "assignment", lambda cfg, i: {"author_model": "M-author", "critic_model": "M-critic"}):
             return plan.plan_ticket(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
-
-    def test_stale_review_is_moved_aside_before_round_one(self):
-        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True); (pd / "plan-review.md").write_text("VERDICT: revise\nstale")
-        self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
-        self.assertEqual(self.go()["result"], "approved")
-        self.assertTrue(list(pd.glob("plan-review.stale-*.md")))
-
-    def test_resumes_from_existing_revise_review(self):
-        """Live 2026-09-14: the critic's third `revise` carried a real, mechanical fix; restarting from scratch
-        would have discarded it. With plan+manifest present, round 1 addresses that review."""
-        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
-        (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(self.GOOD); (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. add yarn build")
-        self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
-        log = self.go(); self.assertEqual(log["result"], "approved"); self.assertTrue(log.get("resumed_from_review"))
-        self.assertIn("Critic review to address", (self.stage / "author-1" / "prompt.md").read_text())
-        self.assertFalse(list(pd.glob("plan-review.stale-*.md")))
 
     def test_approve_first_round(self):
         self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
         log = self.go()
         self.assertEqual(log["result"], "approved"); self.assertEqual(self.calls, ["flagship-author", "flagship-critic"])
-        self.assertEqual(self.models, ["M-author", "M-critic"])          # roles fixed; models per assignment
+        self.assertEqual(self.models, ["M-author", "M-critic"])
 
     def test_schema_violation_goes_back_to_author_without_critic(self):
         self.script = [self.author_writes('[[tasks]]\nid = "001"\n'), self.author_writes(self.GOOD), self.critic_says("approve")]
         log = self.go()
         self.assertEqual(log["result"], "approved"); self.assertEqual(self.calls[:2], ["flagship-author", "flagship-author"])
-        self.assertTrue(log["rounds"][0]["schema_violations"])
         self.assertIn("Schema violations", (self.stage / "author-2" / "prompt.md").read_text())
 
-    def test_revise_then_approve(self):
-        self.script = [self.author_writes(self.GOOD), self.critic_says("revise"), self.author_writes(self.GOOD), self.critic_says("approve")]
+    def test_revise_goes_to_task_writer_then_final_critic_round(self):
+        self.script = [self.author_writes(self.GOOD), self.critic_says("revise"), self.writer_applies(), self.critic_says("approve")]
         log = self.go()
-        self.assertEqual(log["result"], "approved"); self.assertEqual(len(log["rounds"]), 2)
-        self.assertIn("Critic review to address", (self.stage / "author-2" / "prompt.md").read_text())
+        self.assertEqual(log["result"], "approved")
+        self.assertEqual(self.calls, ["flagship-author", "flagship-critic", "task-writer", "flagship-critic"])   # NO second author round
+        self.assertIn("FINAL ROUND", (self.stage / "critic-2" / "prompt.md").read_text())
+        self.assertNotIn("FINAL ROUND", (self.stage / "critic-1" / "prompt.md").read_text())
+
+    def test_second_revise_fails_the_plan_bounded(self):
+        self.script = [self.author_writes(self.GOOD), self.critic_says("revise"), self.writer_applies(), self.critic_says("revise")]
+        log = self.go()
+        self.assertEqual(log["result"], "failed"); self.assertIn("after 2 rounds", log["reason"]); self.assertEqual(len(self.calls), 4)
+
+    def test_writer_leaving_invalid_manifest_fails(self):
+        self.script = [self.author_writes(self.GOOD), self.critic_says("revise"), self.writer_applies('[[tasks]]\nid = "001"\n')]
+        log = self.go(); self.assertEqual(log["result"], "failed"); self.assertIn("task-writer left", log["reason"])
 
     def test_block_stops_immediately(self):
         self.script = [self.author_writes(self.GOOD), self.critic_says("block")]
@@ -123,15 +122,24 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(log["result"], "blocked"); self.assertIn("tier-4", log["reason"])
 
     def test_budget_stops_planning(self):
-        self.script = [self.author_writes(self.GOOD), self.critic_says("revise")] * 4
-        with patch.object(plan, "_spent", side_effect=[0.0, 30.0, 30.0, 30.0, 30.0]):
-            log = self.go()
-        self.assertEqual(log["result"], "failed"); self.assertIn("budget exceeded", log["reason"]); self.assertEqual(len(self.calls), 2)
+        self.script = [self.author_writes(self.GOOD), self.critic_says("revise"), self.writer_applies(), self.critic_says("revise")]
+        with patch.object(plan, "_run_agent", self.fake_run_agent), patch.object(plan, "export_ticket", lambda k, d: d), \
+             patch.object(plan, "shipped_summary", lambda wt: ""), patch.object(plan, "_spent", side_effect=[0.0, 30.0]), \
+             patch.object(plan, "assignment", lambda cfg, i: {"author_model": "a", "critic_model": "c"}):
+            log = plan.plan_ticket(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
+        self.assertEqual(log["result"], "failed"); self.assertIn("budget exceeded", log["reason"])
 
-    def test_rounds_are_bounded(self):
-        self.script = [self.author_writes(self.GOOD), self.critic_says("revise")] * 4
-        log = self.go()
-        self.assertEqual(log["result"], "failed"); self.assertLessEqual(len(self.calls), 2 * (plan.PLAN_ROUNDS + 1))
+    def test_stale_review_is_moved_aside_before_round_one(self):
+        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True); (pd / "plan-review.md").write_text("VERDICT: revise\nstale")
+        self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
+        self.assertEqual(self.go()["result"], "approved"); self.assertTrue(list(pd.glob("plan-review.stale-*.md")))
+
+    def test_resumes_from_existing_revise_review(self):
+        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
+        (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(self.GOOD); (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
+        self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]
+        log = self.go(); self.assertEqual(log["result"], "approved"); self.assertTrue(log.get("resumed_from_review"))
+        self.assertIn("Critic review to address", (self.stage / "author-1" / "prompt.md").read_text())
 
 
 if __name__ == "__main__":

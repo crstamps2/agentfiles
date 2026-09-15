@@ -468,6 +468,9 @@ def main(argv=None) -> int:
     ro = sub.add_parser("run-once", help="advance one ticket through plan -> implement -> gates -> draft PR -> CI -> ready -> bot review -> Human Gate 1")
     ro.add_argument("--ticket", required=True); ro.add_argument("--worktree", required=True)
     ro.add_argument("--max-steps", type=int, default=12); ro.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES")
+    ro.add_argument("--supervised", action="store_true", help="launchd mode: exit 0 only at human-gate-1/done; exit 1 on any wait so KeepAlive restarts us")
+    sv = sub.add_parser("supervise", help="start/stop/status launchd agents that keep run-once alive per ticket")
+    sv.add_argument("action", choices=["start", "stop", "status"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
     rh = sub.add_parser("run-hopper", help="drive eligible hopper tickets to Human Gate 1 unattended (spinup + lifecycle, round-robin)")
     rh.add_argument("--max-new-tickets", type=int, default=3); rh.add_argument("--max-hours", type=float, default=13.0)
     rh.add_argument("--report", default=None, help="write the morning report JSON here")
@@ -486,6 +489,15 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
+    if a.cmd == "supervise":
+        import supervise
+        if a.action == "status":
+            for k in (supervise.active() if not a.ticket else [a.ticket]): print(k, supervise.status(k))
+            return 0
+        if a.action == "stop":
+            supervise.stop(a.ticket); print("stopped", a.ticket); return 0
+        wt = a.worktree or str(pathlib.Path("~/workspace/zipline-worktrees").expanduser() / a.ticket.lower())
+        print("started", supervise.start(a.ticket, wt, cfg.state_root)); return 0
     if a.cmd == "ledger":
         import ledger
         print(ledger.report(cfg.state_root, a.since)); return 0
@@ -515,7 +527,7 @@ def main(argv=None) -> int:
     # Every subcommand except `status` and `clear-fence` (handled above) reconciles first,
     # under the global runner lease, before any ticket selection or dispatch.
     try:
-        ctx = reconcile.reconcile(cfg, r.run_id)
+        ctx = reconcile.reconcile(cfg, r.run_id, ticket=a.ticket if a.cmd in ("run-once", "dry-run") and getattr(a, "ticket", None) else None)
     except reconcile.FenceExit as e:
         print(f"fenced: {e.reason}", file=sys.stderr); return 3
     try:
@@ -539,6 +551,11 @@ def main(argv=None) -> int:
                                 and ("resource:" in (last.detail or "") or "heavy lane" in (last.detail or "")))
                 external_wait = last is not None and last.wait and last.action in ("CI running", "CI rerun requested",
                                                                                     "checks (incl. claude-review) still running", "no bot comments yet")
+                if a.supervised:
+                    if t.state in ("human-gate-1", "done"):
+                        import supervise; supervise.stop(a.ticket)      # unload our own LaunchAgent; nothing left to do
+                        return 0
+                    return 1                                            # launchd restarts us after ThrottleInterval
                 if (transient or external_wait) and _time.monotonic() < deadline:
                     for _ in range(18):                       # 3 min in 10 s slices; PAUSE exits
                         if state.paused(cfg.state_root): print("PAUSE appeared; exiting", file=sys.stderr); return 1

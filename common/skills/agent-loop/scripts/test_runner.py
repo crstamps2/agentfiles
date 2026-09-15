@@ -254,21 +254,16 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rc, 0); self.assertIn("ZIP-7873", buf.getvalue())
 
     def test_second_runner_instance_exits_3(self):
-        # CHANGED: the concurrency guard now lives entirely in reconcile.reconcile(), which
-        # takes the "runner" lease with `hold=True` (a held flock, not the old PID+boot_id
-        # owner-file check) -- see test_reconcile.py's
-        # test_reconcile_exits_3_if_runner_lease_held for the same contract.
+        """A second runner on the SAME ticket is fenced (exit 3); a global runner holding the sweep lease
+        does not fence a per-ticket runner (it just narrows the sweep to that ticket)."""
         import locks
-        other = locks.Lease(self.cfg.state_root / "locks" / "runner", "runner")
-        self.assertTrue(other.acquire(hold=True))
+        mine = locks.Lease(self.cfg.state_root / "locks" / "runner-dry-1", "runner-dry-1"); self.assertTrue(mine.acquire(hold=True))
         try:
             rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "dry-run", "--no-publish",
-                              "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml")])
+                              "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"), "--scenario", "pass"])
             self.assertEqual(rc, 3)
         finally:
-            other.release()
-
-    # ----- Fix round 1: six controller-ruled fixes -----------------------------
+            mine.release()
 
     def _fresh_ticket(self, key="ZIP-7873"):
         t = state.load(self.cfg.ticket_dir(key)); t.worktree = str(self.wt)

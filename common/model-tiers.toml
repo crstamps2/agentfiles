@@ -74,3 +74,10 @@ codex_model = "gpt-5.5"
 codex_effort = "high"
 pi_model = "openai-codex/gpt-6-astra"
 pi_thinking = "high"
+
+[task-writer]
+claude = "sonnet"
+codex_model = "gpt-5.4-mini"
+codex_effort = "medium"
+pi_model = "anthropic/claude-sonnet-5"    # field guide tier 2: turns a critic finding into a precise manifest edit; never a full re-plan
+pi_thinking = "medium"

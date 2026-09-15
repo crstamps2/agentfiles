@@ -199,9 +199,23 @@ class RunnerHarness(unittest.TestCase):
         outcome, rows = self.run_task("pass")
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
 
-    def test_heavy_lane_held_by_live_owner_pauses(self):
+    def test_heavy_lane_busy_defers_verification_as_environment(self):
+        """Worker stages are light and run regardless; VERIFICATION needs the heavy lane. If it stays busy
+        past the wait budget the attempt is `environment` (tree restored, rung NOT consumed) and the
+        ticket pauses -- never a hang, never a rejected worker."""
         import locks
         held = locks.Lease(self.cfg.state_root / "locks" / "heavy", "other"); self.assertTrue(held.acquire())
+        with patch.object(runner, "HEAVY_WAIT_MAX_S", 0):
+            outcome, rows = self.run_task("pass", "pass")
+        self.assertEqual(self.launches, 2)                                   # two workers ran (light); both deferred
+        self.assertEqual([r["outcome"] for r in rows], ["environment", "environment"]); self.assertIn("heavy lane busy", rows[0]["reason"])
+        self.assertEqual(outcome, "paused")                                  # env pause after 2; no rung consumed
+
+    def test_worker_slots_exhausted_pauses_without_launching(self):
+        import locks
+        n = self.cfg.workers_parallel
+        slots = [locks.slot(self.cfg.state_root / "locks" / "worker", n, f"other-{i}") for i in range(n)]
+        self.assertTrue(all(slots))                                          # every slot held by "others"
         outcome, rows = self.run_task("pass")
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
 
@@ -520,6 +534,56 @@ class RunnerHarness(unittest.TestCase):
     def test_premium_owner_block_still_blocks_ticket(self):
         outcome, rows = self.run_task("fail", "fail", "owner")
         self.assertEqual(outcome, "blocked"); self.assertEqual(rows[2]["outcome"], "blocked")
+
+    def test_parallel_implement_lands_independent_tasks_in_manifest_order(self):
+        """workers_parallel > 1: independent tasks run concurrently in their own worktrees; accepted diffs
+        land on the ticket worktree in manifest order and each is published; dependent tasks wait."""
+        import parallel
+        (self.cfg.state_root.parent / "tasks3.toml").write_text('''
+[[tasks]]
+id = "001"
+slug = "a"
+summary = "a"
+allowed_files = ["app/a/**"]
+verification_commands = ["true"]
+acceptance = ["x"]
+[[tasks]]
+id = "002"
+slug = "b"
+summary = "b"
+allowed_files = ["app/b/**"]
+verification_commands = ["true"]
+acceptance = ["x"]
+[[tasks]]
+id = "003"
+slug = "c"
+summary = "c"
+allowed_files = ["app/c/**"]
+verification_commands = ["true"]
+acceptance = ["x"]
+after = ["001"]
+''')
+        tasks = contracts.load_tasks(self.cfg.state_root.parent / "tasks3.toml")
+        self.scenarios = ["pass", "pass", "pass"]
+        # the fake launcher pops scenarios from a shared list -- fine across threads for 3 passes
+        r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
+        t = state.load(self.cfg.ticket_dir("ZIP-7873")); t.worktree = str(self.wt)
+        for s_ in ("spinup", "plan", "plan-review", "implement"): t = state.transition(t, s_)
+        state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        published = []
+        object.__setattr__(self.cfg, "workers_parallel", 2)
+        ctx = reconcile.reconcile(self.cfg, "test")
+        try:
+            out = parallel.implement_parallel(self.cfg, r, ctx, t, tasks, self.wt,
+                                              is_done=lambda tk: False, publish_one=lambda tk, paths: published.append((tk.id, sorted(paths))),
+                                              log=lambda m: None)
+        finally:
+            ctx.close()
+        self.assertEqual(out, "accepted")
+        self.assertEqual([p[0] for p in published], ["001", "002", "003"])           # manifest order
+        for sub in ("a", "b", "c"):
+            self.assertTrue((self.wt / "app" / sub / "worker_touch.rb").exists(), sub)  # landed on the ticket worktree
+        self.assertFalse((self.wt.parent / ".al-tasks" / "zip-7873").exists() and any((self.wt.parent / ".al-tasks" / "zip-7873").iterdir()))
 
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 

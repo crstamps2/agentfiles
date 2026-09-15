@@ -52,6 +52,7 @@ class LifecycleTests(unittest.TestCase):
         toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
         (root / "hopper.toml").write_text(toml)
         self.cfg = config.load(root / "hopper.toml"); self.cfg.ensure_dirs()
+        object.__setattr__(self.cfg, "workers_parallel", 1)      # these tests exercise the state machine with a FakeRunner; parallel path has its own tests
         self.wt = root / "wt"; (self.wt / "planning" / "zip-7873").mkdir(parents=True)
         (self.wt / "planning" / "zip-7873" / "tasks.toml").write_text(MANIFEST)
         (self.wt / "planning" / "zip-7873" / "plan-review.md").write_text("VERDICT: approve\n")

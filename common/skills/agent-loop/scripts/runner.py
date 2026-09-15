@@ -400,7 +400,16 @@ class Runner:
                 __import__("time").sleep(10); waited += 10
             if not heavy.held:
                 outcome, reason = "environment", f"heavy lane busy for {int(waited)}s; verification deferred"
-            for i, cmd in enumerate(task.verification_commands if heavy.held else []):
+            # The repository's pre-commit hooks (rubocop + reek on staged Ruby) are part of every
+            # acceptance, whether or not the planner listed them: a task that passes its own
+            # verification but fails the hook cannot be published (ZIP-4294 modal.rb, 2 reek warnings).
+            cmds = list(task.verification_commands) if heavy.held else []
+            if heavy.held:
+                rb = [p for p in changed if p.endswith(".rb") and not p.startswith(("tmp/", ".pi/"))]
+                if rb and (pathlib.Path(wt) / "bin" / "agent_run").exists() and (pathlib.Path(wt) / ".reek.yml").exists():
+                    cmds.append("bin/agent_run rubocop --cache false --force-exclusion " + " ".join(__import__("shlex").quote(p) for p in rb))
+                    cmds.append("bin/agent_run bundle exec reek --force-exclusion " + " ".join(__import__("shlex").quote(p) for p in rb))
+            for i, cmd in enumerate(cmds):
                 stages = list(rec.stages) + [{"kind": "verify", "idx": i, "proc": None}]
                 rec = attempt.transition(rec, "LAUNCHING", stages=stages)
                 holder["rec"] = rec

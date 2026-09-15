@@ -46,7 +46,11 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
             return "environment", "worker transport failure"
         return "protocol", "result.md missing or without STATUS"
     if res.status == "blocked":
-        return ("blocked", "owner") if res.reason == "owner" else ("protocol", f"blocked/{res.reason or 'unspecified'}")
+        if res.reason == "owner":
+            return "blocked", "owner"
+        if res.reason == "environment":
+            return "environment", res.next or "worker reported an environment problem"     # never a ticket block
+        return "protocol", f"blocked/{res.reason or 'unspecified'}"
     if res.reason == "environment":
         return "environment", res.next or "environment"
     if res.status == "pass":

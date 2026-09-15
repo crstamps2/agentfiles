@@ -68,7 +68,7 @@ test_path_globs = ["test/**", "spec/**", "**/fixtures/**", "**/__snapshots__/**"
 harness_artifact_globs = [".pi/**", ".ruby-lsp/**", ".claude/**", ".codex/**", ".pi-subagents/**"]
 
 [arms]
-workers_parallel = 1        # parallel dispatch disabled until implement_task is made thread-safe per ticket (see parallel.py)
+workers_parallel = 4        # MACHINE-WIDE worker slots (light: remote inference + edits). One per in-flight ticket; verification is still one-at-a-time on the heavy lane.
 # Cheap arms alternate by task index unless a ticket pins one. Values: cloud | local
 alternate = ["cloud", "cloud"]   # "cloud" arm = anthropic/claude-sonnet-5 (Ollama Cloud disallowed by security). Ollama LOCAL is used only via size="small" tasks (see ladder).
 

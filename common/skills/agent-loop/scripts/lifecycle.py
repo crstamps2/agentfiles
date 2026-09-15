@@ -142,7 +142,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             t = state.transition(t, "gates"); _save(cfg, t)
             return Step(key, "implement", "all tasks accepted")
         import runner as runner_mod
-        if int(getattr(cfg, "workers_parallel", 1)) > 1:
+        if getattr(cfg, "tasks_parallel", False):          # intra-ticket parallelism: off until implement_task is thread-safe per ticket
             import parallel
             def publish_one(tk, paths):
                 runner_mod.publish_accepted(cfg, key, str(wt), tk, ensure_pr=False)

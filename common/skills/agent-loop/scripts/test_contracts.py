@@ -134,3 +134,21 @@ class SuffixIdTests(unittest.TestCase):
         self.assertEqual(contracts.validate_tasks({"tasks": [mk("006"), mk("006a"), mk("007")]}), [])
         self.assertTrue(any("ascending" in e for e in contracts.validate_tasks({"tasks": [mk("007"), mk("006a")]})))
 
+
+class VerificationShapeTests(unittest.TestCase):
+    def mk(self, cmds):
+        return {"tasks": [{"id": "001", "slug": "s", "summary": "x", "allowed_files": ["a"], "verification_commands": cmds, "acceptance": ["y"]}]}
+
+    def test_planning_probe_references_are_rejected(self):
+        errs = contracts.validate_tasks(self.mk(["bin/agent_run ruby planning/zip-7872/qa/contract_probe.rb"]))
+        self.assertTrue(any("references planning/" in e for e in errs))
+        errs = contracts.validate_tasks(self.mk(["bash planning/x/qa/with_chrome.sh bin/rails test t.rb"]))
+        self.assertTrue(any("references planning/" in e for e in errs))
+
+    def test_bespoke_command_budget(self):
+        std = ["bin/agent_run bin/wt prepare --for rails", "bin/agent_run rails test test/a_test.rb", "bin/agent_run rubocop --cache false a.rb", "git diff --check"]
+        ok = std + ["bin/rails runner 'abort unless X'", "ruby -e 'exit 1 unless File.read(\"a\").include?(\"b\")'", "grep -q foo a.rb"]
+        self.assertEqual(contracts.validate_tasks(self.mk(ok)), [])
+        errs = contracts.validate_tasks(self.mk(ok + ["bin/rails runner 'one more'"]))
+        self.assertTrue(any("bespoke commands" in e for e in errs))
+

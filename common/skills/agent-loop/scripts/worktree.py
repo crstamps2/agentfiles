@@ -27,6 +27,9 @@ def _has_head(wt) -> bool:
     ).returncode == 0
 
 
+SNAPSHOT_EXCLUDE = ("node_modules", "aaa/*/node_modules", "tmp/cache")
+
+
 def snapshot(wt) -> str:
     """Tree OID of the current working state using a throwaway index (real index untouched)."""
     with tempfile.NamedTemporaryFile(prefix="al-index-", delete=False) as tf:
@@ -40,8 +43,11 @@ def snapshot(wt) -> str:
         if _has_head(wt):
             _git(wt, "read-tree", "HEAD", env=env)
         # --force: capture untracked-but-ignored paths a worker may have written (e.g. tmp/x),
-        # not just tracked-ignored content already seeded from HEAD above.
-        _git(wt, "add", "-A", "--force", env=env)
+        # not just tracked-ignored content already seeded from HEAD above. Package trees are
+        # excluded: they are huge, never a worker deliverable (the allowlist would reject them),
+        # and `yarn install` rewrites them mid-snapshot -- `git add` then dies with
+        # "unable to stat node_modules/..." (ZIP-4294 during a global orphan sweep, 2026-09-15).
+        _git(wt, "add", "-A", "--force", "--", ".", *[f":(exclude){p}" for p in SNAPSHOT_EXCLUDE], env=env)
         return _git(wt, "write-tree", env=env).strip()
     finally:
         try:

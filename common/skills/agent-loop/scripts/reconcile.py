@@ -564,13 +564,17 @@ def _leaf_dirs(attempts_root) -> list:
     return leaves
 
 
-def _sweep(cfg) -> None:
+def _sweep(cfg, ticket: str | None = None) -> None:
     """Step 2 of recovery: every attempt leaf dir under `attempts/`, all tickets, all tasks,
     sorted by leaf mtime. A record this recovery cannot understand (unreadable/corrupt/
     legacy), or a leaf directory with no `attempt.json` at all (or a non-regular one -- e.g.
     a crash between mkdir and the first write, or a booby-trapped symlink), is never
     skipped -- it exits 3 and waits for an operator."""
     attempts_root = pathlib.Path(cfg.state_root) / "attempts"
+    if ticket:
+        attempts_root = attempts_root / ticket           # per-ticket runner: recover only this ticket's attempts
+        if not attempts_root.exists():
+            return
     leaves = _leaf_dirs(attempts_root)
     for leaf in leaves:
         record_path = leaf / "attempt.json"
@@ -614,17 +618,34 @@ class RunContext:
         self.lease.release()
 
 
-def reconcile(cfg, run_id) -> RunContext:
+def reconcile(cfg, run_id, ticket: str | None = None) -> RunContext:
     """The single global recovery entry point, run under the global runner lease before any
     ticket selection, admission, or dispatch. `_recover` no longer exists: this is the one
     `reconcile(state_root)` the design calls for, and `implement_task` requires a
     `RunContext` produced by it."""
-    lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "runner", "runner")
+    # Global runner lease (whole state) for the sweep/operator paths; a per-TICKET lease when
+    # `ticket` is given so several supervised run-once processes can drive different tickets at
+    # once. The heavy lane is still one global lease; attempt records are per ticket.
+    name = f"runner-{ticket.lower()}" if ticket else "runner"
+    lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / name, name)
     if not lease.acquire(hold=True):
-        raise FenceExit("runner live")
+        raise FenceExit(f"{name} live")
     try:
         _check_global_fence(cfg)
-        _sweep(cfg)
+        # Orphan safety across tickets: a per-ticket runner sweeps EVERYTHING if it can take the
+        # global lease for the duration of the sweep (no other runner is live); otherwise another
+        # live runner owns the other tickets' records and we sweep only our own.
+        if ticket:
+            glob_lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "runner", "runner")
+            if glob_lease.acquire(hold=True):
+                try:
+                    _sweep(cfg, None)
+                finally:
+                    glob_lease.release()
+            else:
+                _sweep(cfg, ticket)
+        else:
+            _sweep(cfg, None)
     except BaseException:
         lease.release()
         raise

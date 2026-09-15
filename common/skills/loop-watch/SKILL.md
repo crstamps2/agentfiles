@@ -1,74 +1,73 @@
 ---
 name: loop-watch
-description: Coordinator seat for one agent-loop ticket, run in the cmux agent pane. Tails the ticket's lifecycle (plan → implement → gates → PR → CI → bot review → Human Gate 1) driven by the launchd-supervised runner, reports every stage transition in the pane, and TRIAGES paused/blocked states from evidence -- editing the manifest, answering the planner's question, or escalating to Cody -- recording each decision in planning/<ticket>/transcript.md. Use when a workspace was spun up for the autonomous loop or Cody asks what a loop ticket is doing.
+description: Coordinator seat for one agent-loop ticket, run in the cmux agent pane. Shows the ticket's live progress (deterministic, free) and wakes the model ONLY when the ticket is paused/blocked to triage from evidence, record the decision in planning/<ticket>/transcript.md, and resume. Use when a workspace was spun up for the autonomous loop or Cody asks what a loop ticket is doing.
 ---
 
 # /loop-watch <TICKET>
 
-You are the **coordinator** for one ticket (field guide, tier 1): you observe, decide, and record.
-You do not implement, and you do not run the runner -- `launchd` does (`runner.py supervise`).
-Your pane is where Cody looks to see what is happening.
+You are the **coordinator** for one ticket (field guide, tier 1). Two rules govern this pane:
 
-Paths: scripts `~/workspace/agentfiles/common/skills/agent-loop/scripts` (`R` below), state
-`~/.local/state/agent-loop` (`S`), worktree = the pane's cwd, transcript
+1. **Visibility is free.** The live view is `runner.py watch`, a zero-token loop that prints a line
+   on every change (stage, task/attempt, worker, elapsed, PR, CI, supervisor, spend) and a heartbeat
+   every 5 minutes. You do not poll state files yourself and you do not summarise the same state
+   twice. (A watcher that re-read state every few minutes on a flagship model cost $151 in one day.)
+2. **You act only on `paused` / `blocked`.** Everything else is the runner's business.
+
+Paths: scripts `~/workspace/agentfiles/common/skills/agent-loop/scripts` (`R`), state
+`~/.local/state/agent-loop` (`S`), worktree = this pane's cwd, transcript
 `<worktree>/planning/<ticket-lower>/transcript.md` (append-only; create if missing).
 
-## On start
+## On start (once)
 
-1. `cd $R && python3 runner.py supervise status --ticket <TICKET>`. If **not loaded**, start it:
-   `python3 runner.py supervise start --ticket <TICKET> --worktree <cwd>`. Say so in one line.
-2. Read `$S/tickets/<TICKET>/state.json` (state, reason, author/critic vendors) and print a
-   one-line status: `<TICKET> [<state>] <reason or ->  pr=#<n or ->  spend=$<ledger for ticket>`.
-3. Append a `## <UTC ISO> coordinator started` entry to the transcript.
+1. `cd $R && python3 runner.py supervise status --ticket <TICKET>`; if **not loaded**:
+   `python3 runner.py supervise start --ticket <TICKET> --worktree <cwd>`.
+2. `python3 runner.py watch --ticket <TICKET> --once` and print its line verbatim.
+3. Append `## <UTC ISO> coordinator started` to the transcript.
+4. **Hand the pane to the live view**: run `python3 runner.py watch --ticket <TICKET>` in the
+   FOREGROUND with a long timeout (it exits by itself at Human Gate 1). Cody reads its output.
+   Wrap it: `python3 runner.py watch --ticket <TICKET> 2>&1 | tee -a <worktree>/planning/<t>/watch.log`
+   is fine. When the command returns, go to **Triage** (if paused/blocked) or **Gate** (if READY).
 
-## Loop (use the idle trigger: LoopCreate triggerType "idle", trigger "idle", recurring, readOnly false)
+Because `watch` blocks, use the idle loop (LoopCreate triggerType "idle", trigger "idle", recurring)
+ONLY as a fallback wake: on each idle wake run `watch --once`; if the state is paused/blocked run
+Triage, otherwise re-enter the foreground `watch` and say nothing else.
 
-Each wake, in order, and print ONLY what changed since the last wake:
+## Triage (the only time you spend tokens)
 
-- **State transition** → one line, `HH:MM  <old> → <new>  <detail>`. Detail per stage:
-  - plan: newest `$S/plans/<TICKET>/*/plan-log.json` (rounds, verdicts, author/critic, `$` from
-    `python3 runner.py ledger --since <today>`)
-  - implement: newest `$S/attempts/<TICKET>/<task>/<n>/attempt.json` (agent, outcome, reason ≤120 chars)
-  - gates / draft-pr / ready / bot-loop: `$S/tickets/<TICKET>/ci.json` (pr, actions, bot_rounds)
-- **PR exists** (first time): print the URL.
-- **human-gate-1**: print `READY FOR CODY: <PR url>` plus the tier-3 items from `ci.json.tier3_pending`,
-  append the Gate 1 summary to the transcript, and set the loop's `nextInterval` to 1h (keep watching
-  for Cody's review comments; do not exit).
+When `watch` shows **paused** or **blocked**, read the reason line and classify:
 
-## Triage (the part that matters)
+- `resource:` / `heavy lane` / `slot` → transient. `python3 runner.py resume --ticket X --from implement`.
+- `plan failed` / `budget exceeded` → read `planning/<t>/plan-review.md` BLOCKERS + `tasks.toml`.
+  Mechanical blockers → fix `tasks.toml` yourself (smallest edit), validate:
+  `python3 -c 'import plan,pathlib; print(plan.validate_manifest(pathlib.Path("planning/<t>/tasks.toml")))'`
+  must print `[]`, then `resume --from implement`. Otherwise `resume` (re-plan) with your notes
+  appended to plan.md under `## Coordinator notes`.
+- planner/premium `blocked` with an owner question → answer FROM EVIDENCE (ticket text, the repo
+  skill, a shipped sibling; quote the line), write it under `## Coordinator decisions` in plan.md,
+  `resume`. If evidence genuinely conflicts: print `NEEDS CODY: <question>` + both pieces of
+  evidence, append to transcript, and re-enter `watch` (do not resume).
+- worker asked for a **browser / tool it does not have** (e.g. "grant this session a browser tool")
+  → the task is mis-scoped as a worker task. Add `visual = true` if it is a screenshot task, or move
+  the browser check into a system test the task owns; `resume --from implement`.
+- `gates failed` → read `$S/tickets/<T>/gates.out`; real failure → append a fix task (id `8nn`,
+  allowed_files = branch's changed files, may_edit_tests true, verification = the failing command),
+  `resume --from implement`; environmental → `resume --from gates`.
+- `publish failed` / `reply failed` / traceback / `adjudication unusable` / `verification ... passes
+  on re-run` → **runner defect**. Print `RUNNER DEFECT: <reason>`, append to transcript, do NOT patch
+  `$R`, re-enter `watch`. The operator session fixes the runner.
 
-When `state.json.state` is **paused** or **blocked**:
+Every decision = one transcript entry `## <UTC ISO> decision — <one line>` with reason/evidence/action.
+Then re-enter the foreground `watch`.
 
-1. Read the reason. Classify:
-   - `resource:` / `heavy lane` → transient; say so; nothing to do.
-   - `plan failed: critic verdict 'revise'` / `budget exceeded` → read `planning/<t>/plan-review.md`
-     BLOCKERS and `tasks.toml`. If every blocker is mechanical (a command, a path, a wording) apply
-     it yourself with the smallest edit, validate with
-     `python3 -c 'import plan,pathlib; print(plan.validate_manifest(pathlib.Path("planning/<t>/tasks.toml")))'`
-     (must print `[]`), then set the ticket back: `python3 - <<'PY' ... state='implement' ...` ONLY if
-     plan.md exists and the manifest validates; otherwise set `state='plan'` so the planner re-runs
-     with your notes appended to plan.md under `## Coordinator notes`.
-   - `blocked` from the planner or a premium worker with an owner question → answer it FROM
-     EVIDENCE if the ticket text, the repository skill, or a shipped sibling settles it (quote the
-     line); write the answer to `## Coordinator decisions` in plan.md and to the transcript; set
-     `state='plan'`. If evidence genuinely conflicts, STOP: print `NEEDS CODY: <question>` and the
-     two pieces of evidence, append to transcript, set `nextInterval` 30m. Do not guess product/design.
-   - `publish failed` / traceback / `adjudication unusable` / `verification ... passes on re-run` →
-     runner defect. Do NOT patch the runner from this pane. Print `RUNNER DEFECT: <reason>`, append
-     to transcript, and leave the ticket paused for the operator session.
-   - `gates failed` → read `$S/tickets/<TICKET>/gates.out`; if it is a real code failure, append a
-     fix task via `lifecycle.insert_task_before`/`_append_task` pattern (id `8nn`, allowed_files =
-     the branch's changed files, may_edit_tests true, verification = the failing command), set
-     `state='implement'`. If it is environmental (yarn/db), set `state='gates'` to retry once.
-2. Every decision = one transcript entry: `## <UTC ISO> decision` with reason, evidence, action.
-3. After changing state, `launchd` restarts the runner within 3 minutes; you do not launch anything.
+## Gate
+
+When `watch` prints `READY FOR CODY`, append the PR URL and `ci.json.tier3_pending` (the design
+decisions Cody must confirm) to the transcript and print them once. Then stop the loop; the pane
+is done until Cody reviews.
 
 ## Rules
 
-- Never commit, push, comment on GitHub, or touch Jira from this pane; the runner owns all of that
-  through its allowlist. Never edit application code. Never edit files under `$R`.
-- Never delete attempt records or `planning/`. Never `git reset`/`checkout` in the worktree.
-- `touch $S/PAUSE` is Cody's kill switch; if it exists, say so and wait.
-- Keep output terse: one line per event. Cody reads this pane, not a log.
-- On Cody's questions about this ticket, answer from `state.json`, the attempt records, the
-  transcript and the ledger -- with the numbers.
+- Never commit, push, comment on GitHub, or touch Jira from this pane. Never edit application code
+  or anything under `$R`. Never delete attempt records or `planning/`. Never `git reset`/`checkout`.
+- `touch $S/PAUSE` is Cody's kill switch; if present, say so and re-enter `watch`.
+- Keep model output to the decision lines above. The watch loop is the pane's voice.

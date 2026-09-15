@@ -508,6 +508,8 @@ def main(argv=None) -> int:
     rs.add_argument("--ticket", required=True); rs.add_argument("--from", dest="from_state", default="plan", choices=["plan", "implement", "gates", "ready", "bot-loop"])
     rs.add_argument("--worktree", default=None)
     ov = sub.add_parser("overview", help="one line per hopper ticket: state, reason, PR, supervisor, spend")
+    wa = sub.add_parser("watch", help="pane-friendly live view of ONE ticket: stage, task/attempt, worker, elapsed, PR, spend; prints a line on every change")
+    wa.add_argument("--ticket", required=True); wa.add_argument("--once", action="store_true"); wa.add_argument("--interval", type=int, default=20)
     lg = sub.add_parser("ledger", help="tokens and cost by model / role / ticket / day from the pi session logs")
     lg.add_argument("--since", default=None, metavar="YYYY-MM-DD")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
@@ -535,6 +537,9 @@ def main(argv=None) -> int:
             print(f"{a.ticket}: already {t.state}; restarting supervisor only")
         wt = a.worktree or t.worktree or str(pathlib.Path("~/workspace/zipline-worktrees").expanduser() / a.ticket.lower())
         print("supervisor", supervise.start(a.ticket, wt, cfg.state_root)); return 0
+    if a.cmd == "watch":
+        import watch
+        return watch.run(cfg, a.ticket, once=a.once, interval=a.interval)
     if a.cmd == "overview":
         import supervise, ledger
         rows = ledger.collect(cfg.state_root); spend = {}

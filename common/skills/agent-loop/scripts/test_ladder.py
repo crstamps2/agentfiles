@@ -112,3 +112,10 @@ class SummarizeFeedbackTests(unittest.TestCase):
     def test_short_reason_passes_through(self):
         self.assertEqual(ladder.summarize_feedback("verification failed: bin/rails test x"), "verification failed: bin/rails test x")
 
+
+class SmallArmTests(unittest.TestCase):
+    def test_small_arm_is_local_then_cloud_then_premium_twice(self):
+        r1 = ladder.next_rung([], "small"); self.assertEqual(r1, Rung("local-worker", "cheap", 1))
+        r2 = ladder.next_rung([Attempt(r1, "rejected")], "small"); self.assertEqual(r2, Rung("cloud-worker", "cheap", 2))
+        r3 = ladder.next_rung([Attempt(r1, "rejected"), Attempt(r2, "rejected")], "small"); self.assertEqual(r3, Rung("premium-worker", "premium", 1))
+

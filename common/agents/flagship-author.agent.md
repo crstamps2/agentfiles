@@ -95,6 +95,10 @@ not the absence of evidence for a case nobody requested.
 
 ## Slicing rules
 
+- **`size = "small"`**: tag a task `small` when it edits at most 2 EXISTING files (explicit paths, no
+  globs), needs no browser, and a competent junior could do it from the acceptance criteria alone
+  (rename, reorder, add a documented option, fix a lint, small test). Small tasks run on the free
+  local model first. Never tag a task small if it creates a file or touches SCSS/system tests.
 - A task is small enough when one worker can finish it inside its timeout and the runner can
   judge it from `verification_commands` alone. Prefer 3–6 tasks over 1 large one.
 - Each task's `allowed_files` must be disjoint from other tasks' where possible; shared files

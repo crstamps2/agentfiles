@@ -44,14 +44,14 @@ pi_thinking = "low"
 claude = "sonnet"                    # workers are pi-only; other tools get a sane default
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "ollama-cloud/gpt-oss:20b"   # Free-plan starter set; deepseek/glm are 402 without credits
-pi_thinking = "medium"
+pi_model = "anthropic/claude-sonnet-5"   # security: Ollama Cloud not allowed; 'cloud' arm = Sonnet 5 (cheap-1), see worker-local for cheap-2
+pi_thinking = "low"
 
 [worker-local]
 claude = "sonnet"
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "ollama-local/gpt-oss-ctx32k:20b"   # ctx-pinned derived model; stock 4K ctx truncates pi's system prompt
+pi_model = "ollama-local/gpt-oss-ctx32k:20b"   # ctx-pinned derived model; stock 4K ctx truncates pi's system prompt. Free; small tasks only.
 pi_thinking = "medium"
 
 [worker-premium]
@@ -65,7 +65,7 @@ pi_thinking = "max"
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "anthropic/claude-fable-5-1"
+pi_model = "anthropic/claude-opus-5"   # author tier: Opus 5; alternates with openai-codex/gpt-5.6-sol per ticket (Cody 2026-09-15: bring cost down)
 pi_thinking = "medium"
 
 [flagship-critic]

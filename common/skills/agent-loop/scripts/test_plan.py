@@ -8,14 +8,10 @@ import procs
 
 
 class PureTests(unittest.TestCase):
-    def test_assignment_alternates_models_not_roles(self):
-        """The role definitions are fixed; the MODEL alternates so the critic is never the plan's vendor.
-        (Found live 2026-09-12: swapping definitions told Astra it was the critic of a plan nobody wrote.)"""
-        A = type("D", (), {"model": "anthropic/fable"})(); C = type("D", (), {"model": "openai-codex/astra"})()
-        with patch.object(plan.agentdef, "load", side_effect=lambda d, n: A if n == "flagship-author" else C):
-            cfg = type("Cfg", (), {"pi_agents_dir": "x"})()
-            self.assertEqual(plan.assignment(cfg, 1), {"author_model": "anthropic/fable", "critic_model": "openai-codex/astra"})
-            self.assertEqual(plan.assignment(cfg, 2), {"author_model": "openai-codex/astra", "critic_model": "anthropic/fable"})
+    def test_assignment_alternates_vendors_author_below_flagship(self):
+        cfg = type("Cfg", (), {"pi_agents_dir": "x"})()
+        self.assertEqual(plan.assignment(cfg, 1), {"author_model": "anthropic/claude-opus-5", "critic_model": "openai-codex/gpt-6-astra"})
+        self.assertEqual(plan.assignment(cfg, 2), {"author_model": "openai-codex/gpt-5.6-sol", "critic_model": "anthropic/claude-fable-5-1"})
 
     def test_review_verdict_parsing(self):
         with tempfile.TemporaryDirectory() as d:

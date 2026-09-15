@@ -24,6 +24,20 @@ LABEL_PREFIX = "com.cody.agent-loop"
 AGENTS_DIR = pathlib.Path("~/Library/LaunchAgents").expanduser()
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 PYTHON = "/opt/homebrew/bin/python3"
+LAUNCHER = pathlib.Path("~/.local/bin/agent-loop-python").expanduser()
+LAUNCHER_SRC = SCRIPTS.parent / "launcher" / "agent-loop-python.c"
+
+
+def ensure_launcher() -> str:
+    """Build + ad-hoc codesign the stable-identity launcher if missing/stale. macOS TCC keys its
+    'access data from other apps' grant to the launchd job's binary; Homebrew python3's identity
+    changes on every rebuild, so without this Cody was prompted on every launch (2026-09-15)."""
+    if LAUNCHER.exists() and LAUNCHER.stat().st_mtime >= LAUNCHER_SRC.stat().st_mtime:
+        return str(LAUNCHER)
+    LAUNCHER.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["cc", "-O2", "-o", str(LAUNCHER), str(LAUNCHER_SRC)], check=True)
+    subprocess.run(["codesign", "--force", "--sign", "-", "--identifier", "com.cody.agent-loop.python", "--options", "runtime", str(LAUNCHER)], check=True)
+    return str(LAUNCHER)
 
 
 def label(key: str) -> str:
@@ -38,7 +52,7 @@ def write_plist(key: str, worktree: str, state_root: pathlib.Path, throttle_s: i
     logs = state_root / "launchd"; logs.mkdir(parents=True, exist_ok=True)
     plist = {
         "Label": label(key),
-        "ProgramArguments": [PYTHON, str(SCRIPTS / "runner.py"), "run-once", "--ticket", key, "--worktree", worktree,
+        "ProgramArguments": [ensure_launcher(), str(SCRIPTS / "runner.py"), "run-once", "--ticket", key, "--worktree", worktree,
                              "--max-steps", "40", "--wait-on-resource", "120", "--supervised"],
         "WorkingDirectory": str(SCRIPTS),
         # mise shims FIRST: under launchd there is no login shell, so `bundle`/`ruby`/`node` must

@@ -471,6 +471,8 @@ def main(argv=None) -> int:
     rh = sub.add_parser("run-hopper", help="drive eligible hopper tickets to Human Gate 1 unattended (spinup + lifecycle, round-robin)")
     rh.add_argument("--max-new-tickets", type=int, default=3); rh.add_argument("--max-hours", type=float, default=13.0)
     rh.add_argument("--report", default=None, help="write the morning report JSON here")
+    lg = sub.add_parser("ledger", help="tokens and cost by model / role / ticket / day from the pi session logs")
+    lg.add_argument("--since", default=None, metavar="YYYY-MM-DD")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
     pl = sub.add_parser("plan", help="flagship author writes planning/<key>/tasks.toml; opposite-vendor critic reviews")
     pl.add_argument("--ticket", required=True); pl.add_argument("--worktree", required=True)
@@ -484,6 +486,9 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
+    if a.cmd == "ledger":
+        import ledger
+        print(ledger.report(cfg.state_root, a.since)); return 0
     if a.cmd == "clear-fence":
         return reconcile.clear_fence(cfg, a.force)
     if a.cmd == "plan":

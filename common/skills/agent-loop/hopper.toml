@@ -68,6 +68,7 @@ test_path_globs = ["test/**", "spec/**", "**/fixtures/**", "**/__snapshots__/**"
 harness_artifact_globs = [".pi/**", ".ruby-lsp/**", ".claude/**", ".codex/**", ".pi-subagents/**"]
 
 [arms]
+workers_parallel = 3        # worker stages (remote inference + edits) run concurrently; Rails/browser verification is still one-at-a-time
 # Cheap arms alternate by task index unless a ticket pins one. Values: cloud | local
 alternate = ["cloud", "cloud"]   # "cloud" arm = anthropic/claude-sonnet-5 (Ollama Cloud disallowed by security). Ollama LOCAL is used only via size="small" tasks (see ladder).
 

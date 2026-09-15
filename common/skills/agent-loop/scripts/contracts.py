@@ -60,6 +60,7 @@ class Task:
     may_edit_tests: bool = False
     visual: bool = False
     size: str = "normal"          # "small" => free local model first (1-2 existing files, no browser)
+    after: list = dataclasses.field(default_factory=list)   # task ids that must LAND before this one runs (implied when allowed_files overlap)
     timeout_s: int = 4500
     invariants: list = dataclasses.field(default_factory=list)
     out_of_scope: list = dataclasses.field(default_factory=list)
@@ -119,6 +120,9 @@ def validate_tasks(data: dict) -> list:
             af = t.get("allowed_files") or []
             if not isinstance(af, list) or len(af) > 2 or any("*" in str(x) for x in af) or t.get("visual"):
                 errs.append(f"{p}.size: 'small' requires <=2 explicit allowed_files (no globs) and visual = false")
+        aft = t.get("after", [])
+        if not isinstance(aft, list) or any(not isinstance(a, str) for a in aft):
+            errs.append(f"{p}.after: must be a list of task ids")
         tid = str(t.get("id", ""))
         if tid and not _ID_RE.match(tid):
             errs.append(f"{p}.id: must match ^\\d{{3}}[a-z]?$ (got {tid!r})")

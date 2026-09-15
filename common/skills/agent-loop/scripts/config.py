@@ -58,6 +58,7 @@ class Config:
     outcomes: dict
     local_model: str | None = None
     local_unload_after_attempt: bool = True
+    workers_parallel: int = 1        # concurrent worker (light) stages; verification stays serialised on the heavy lane
 
     def ticket_dir(self, key: str) -> pathlib.Path:
         return self.state_root / "tickets" / key
@@ -109,7 +110,7 @@ def load(path: pathlib.Path | None = None) -> Config:
         protected_paths=list(pr["protected_paths"]),
         test_path_globs=list(pr["test_path_globs"]),
         harness_artifact_globs=list(pr.get("harness_artifact_globs", [])),
-        arms_alternate=list(arms["alternate"]),
+        arms_alternate=list(arms["alternate"]), workers_parallel=int(arms.get("workers_parallel", 1)),
         outcomes=dict(oc),
         local_model=local_model,
         local_unload_after_attempt=local_unload_after_attempt,

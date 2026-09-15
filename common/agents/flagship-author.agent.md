@@ -101,6 +101,12 @@ not the absence of evidence for a case nobody requested.
   local model first. Never tag a task small if it creates a file or touches SCSS/system tests.
 - A task is small enough when one worker can finish it inside its timeout and the runner can
   judge it from `verification_commands` alone. Prefer 3–6 tasks over 1 large one.
+- **Tasks run in parallel when independent.** The runner dispatches every task whose `allowed_files`
+  cannot overlap another running task's and whose `after` list is satisfied. So: make
+  `allowed_files` disjoint wherever the work allows (the component file vs. its SCSS vs. its
+  preview vs. its cop are naturally disjoint), and when a task must see another's output (the
+  preview needs the component; the docs page needs the preview) say so with `after = ["001"]`.
+  Overlapping `allowed_files` are treated as an implicit `after` in manifest order.
 - Each task's `allowed_files` must be disjoint from other tasks' where possible; shared files
   are named in both and the later task's `invariants` say what not to change.
 - Work already shipped on the branch (given to you as attempt records / git log) is NOT

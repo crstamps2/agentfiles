@@ -34,6 +34,7 @@ allowed_files = ["app/views/components/zui/<name>/**", "test/views/components/zu
 may_edit_tests = true          # only when the task owns those tests
 visual = false                 # true iff judged by rendering (routes through the browser gate)
 size = "normal"                # "small" = edits <=2 existing files, no browser -> free local model first
+after = []                     # task ids that must land first (e.g. ["001"]); independent tasks run in parallel
 timeout_s = 2400
 verification_commands = ["bin/rails test test/views/components/zui/<name>/<name>_test.rb",
                          "bin/agent_run rubocop --cache false app/views/components/zui/<name>/<name>.rb"]

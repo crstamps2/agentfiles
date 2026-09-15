@@ -141,10 +141,22 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if task is None:
             t = state.transition(t, "gates"); _save(cfg, t)
             return Step(key, "implement", "all tasks accepted")
+        import runner as runner_mod
+        if int(getattr(cfg, "workers_parallel", 1)) > 1:
+            import parallel
+            def publish_one(tk, paths):
+                runner_mod.publish_accepted(cfg, key, str(wt), tk, ensure_pr=False)
+            out = parallel.implement_parallel(cfg, runner, ctx, t, tasks, pathlib.Path(wt),
+                                              is_done=lambda tk: _task_accepted(cfg, key, tk), publish_one=publish_one,
+                                              log=lambda m: print(m, flush=True))
+            if out == "accepted":
+                t = state.load(tdir); t = state.transition(t, "gates"); _save(cfg, t)
+                return Step(key, "implement", "all tasks accepted (parallel)")
+            t = state.load(tdir)
+            return Step(key, "implement", f"parallel implement -> {out}", detail=t.reason, wait=True)
         seen = sum(1 for x in tasks if x.visual == task.visual and tasks.index(x) < tasks.index(task))
         out = runner.implement_task(ctx, t, task, seen, str(wt))
         if out == "accepted":
-            import runner as runner_mod
             runner_mod.publish_accepted(cfg, key, str(wt), task, ensure_pr=False)   # the draft-pr stage owns PR creation
             return Step(key, "implement", f"task {task.id} accepted + published")
         t = state.load(tdir)

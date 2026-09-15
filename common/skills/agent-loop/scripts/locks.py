@@ -140,3 +140,14 @@ class Lease:
 
     def __exit__(self, *exc) -> None:
         self.release()
+
+
+def slot(base: pathlib.Path, n: int, name: str) -> "Lease | None":
+    """Acquire one of `n` numbered leases `<base>-0..n-1` (a counting semaphore made of flocks).
+    Returns the held Lease or None if all slots are busy. `n <= 1` degrades to a single lease."""
+    for i in range(max(1, int(n))):
+        lease = Lease(pathlib.Path(f"{base}-{i}"), f"{name} [slot {i}]")
+        if lease.acquire():
+            return lease
+    return None
+

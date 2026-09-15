@@ -360,7 +360,9 @@ def load(adir, validate_worktree: bool = True) -> Record:
     try:
         text = safe_read(adir / "attempt.json")
         rec = from_json(text, path=adir)
-        if validate_worktree:
+        # A TERMINAL record has nothing left to do in its worktree; the worktree may legitimately be
+        # gone (a disposable per-task worktree removed after landing/rollback). Validate only live ones.
+        if validate_worktree and rec.status not in TERMINAL:
             _validate_worktree(rec)
         return rec
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError,

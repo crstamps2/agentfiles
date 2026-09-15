@@ -58,6 +58,17 @@ prose, and any shipped component's precedent:
   rule before the code.
 - Where a shipped component contradicts the skill, the skill wins; note the divergence.
 
+## Do not manufacture blockers
+
+Before writing `blocked = ...`, re-read the ticket's own scope statement. If the ticket names the
+intended content or use ("leading content such as an icon or avatar"), the plan is for THAT
+content; a hypothetical the ticket does not ask for (interactive controls inside a link Card, a
+tone the ticket never mentions) is not a blocker — it is an explicit **Out of scope** line with
+one sentence of rationale, or at most a tier-3 note. ZIP-7877 was blocked overnight on
+"interactive Header Start controls" when the ticket asked for icons/avatars. A block costs a
+whole night; an out-of-scope line costs a sentence. Tier 4 requires evidence that CONFLICTS,
+not the absence of evidence for a case nobody requested.
+
 ## Design-decision tiers
 
 1. Evidence converges (Figma, shipped components, source, conventions agree): decide, record.

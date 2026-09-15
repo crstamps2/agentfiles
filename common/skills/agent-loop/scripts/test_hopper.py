@@ -57,6 +57,17 @@ class HopperTests(unittest.TestCase):
         t.state = "done"; state.save(self.cfg.ticket_dir("ZIP-7872"), t)
         self.assertEqual(hopper.eligible(self.cfg, "ZIP-4281"), (True, ""))
 
+    def test_exits_when_every_ticket_is_paused_or_blocked(self):
+        """Overnight 2026-09-15: all three tickets paused in planning; the hopper idled 8 hours holding caffeinate."""
+        def pausing_run_once(cfg, runner, ctx, key, wt, hopper_index, max_steps):
+            tdir = cfg.ticket_dir(key); t = state.load(tdir); t.state = "paused"; t.reason = "plan failed: critic verdict 'revise' after 4 rounds"; state.save(tdir, t)
+            return [lifecycle.Step(key, "plan", "paused", detail=t.reason, wait=True)]
+        sleeps = []
+        with patch.object(lifecycle, "run_once", side_effect=pausing_run_once), patch.object(hopper.time, "sleep", lambda s: sleeps.append(s)):
+            rep = hopper.run_hopper(self.cfg, None, None, max_new_tickets=3, max_hours=1, log=lambda m: None)
+        self.assertEqual(len(self.spun), 3); self.assertEqual(sleeps, [])        # no idle sleeping once everything is stopped
+        self.assertTrue(all(v["state"] == "paused" for v in rep["tickets"].values()))
+
     def test_pause_file_stops_the_hopper(self):
         (self.cfg.state_root / "PAUSE").touch()
         hopper.run_hopper(self.cfg, None, None, max_new_tickets=2, max_hours=1, log=lambda m: None)

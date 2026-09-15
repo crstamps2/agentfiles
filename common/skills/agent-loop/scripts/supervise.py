@@ -41,8 +41,11 @@ def write_plist(key: str, worktree: str, state_root: pathlib.Path, throttle_s: i
         "ProgramArguments": [PYTHON, str(SCRIPTS / "runner.py"), "run-once", "--ticket", key, "--worktree", worktree,
                              "--max-steps", "40", "--wait-on-resource", "120", "--supervised"],
         "WorkingDirectory": str(SCRIPTS),
-        "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + os.path.expanduser("~/.local/share/mise/shims"),
-                                 "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8"},
+        # mise shims FIRST: under launchd there is no login shell, so `bundle`/`ruby`/`node` must
+        # resolve to the repo's pinned versions via the shims, not /usr/bin (system Ruby 2.6 broke
+        # `bin/wt prepare` for a premium worker on ZIP-4294, 2026-09-15).
+        "EnvironmentVariables": {"PATH": os.path.expanduser("~/.local/share/mise/shims") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                                 "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8", "MISE_YES": "1"},
         "RunAtLoad": True,
         # restart whenever the job exits non-zero (waiting / paused / fenced); a zero exit (gate reached) unloads
         "KeepAlive": {"SuccessfulExit": False},

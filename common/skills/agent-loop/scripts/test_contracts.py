@@ -152,3 +152,14 @@ class VerificationShapeTests(unittest.TestCase):
         errs = contracts.validate_tasks(self.mk(ok + ["bin/rails runner 'one more'"]))
         self.assertTrue(any("bespoke commands" in e for e in errs))
 
+
+class SizeTests(unittest.TestCase):
+    def mk(self, **kw):
+        t = {"id": "001", "slug": "s", "summary": "x", "allowed_files": ["a.rb"], "verification_commands": ["true"], "acceptance": ["y"]}; t.update(kw)
+        return {"tasks": [t]}
+    def test_small_requires_two_explicit_files_and_no_visual(self):
+        self.assertEqual(contracts.validate_tasks(self.mk(size="small", allowed_files=["a.rb", "test/a_test.rb"])), [])
+        self.assertTrue(contracts.validate_tasks(self.mk(size="small", allowed_files=["app/**"])))
+        self.assertTrue(contracts.validate_tasks(self.mk(size="small", visual=True)))
+        self.assertTrue(contracts.validate_tasks(self.mk(size="huge")))
+

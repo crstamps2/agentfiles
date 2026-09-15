@@ -1224,3 +1224,19 @@ class BinaryDiffTests(unittest.TestCase):
             patch = reconcile._diff_patch(wt, base, observed)
             self.assertIn("GIT binary patch", patch); patch.encode("utf-8")   # must be valid UTF-8 text
 
+
+class PerTicketLeaseTests(unittest.TestCase):
+    def test_two_tickets_reconcile_concurrently_but_same_ticket_fences(self):
+        import tempfile, config as config_mod
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"').replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
+            (root / "hopper.toml").write_text(toml); cfg = config_mod.load(root / "hopper.toml"); cfg.ensure_dirs()
+            a = reconcile.reconcile(cfg, "r1", ticket="ZIP-1")
+            b = reconcile.reconcile(cfg, "r2", ticket="ZIP-2")          # different ticket: allowed
+            with self.assertRaises(reconcile.FenceExit):
+                reconcile.reconcile(cfg, "r3", ticket="ZIP-1")          # same ticket: fenced
+            a.close(); b.close()
+            reconcile.reconcile(cfg, "r4", ticket="ZIP-1").close()      # released
+

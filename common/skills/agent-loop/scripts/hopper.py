@@ -22,7 +22,7 @@ import lifecycle
 import state
 
 TERMINAL_FOR_TONIGHT = ("human-gate-1", "done")
-STOPPED = TERMINAL_FOR_TONIGHT + ("blocked",)
+STOPPED = TERMINAL_FOR_TONIGHT + ("blocked", "paused")   # paused needs an operator; the hopper does not retry it
 SPINUP_SCRIPTS = pathlib.Path("~/.claude/skills/spinup/scripts").expanduser()
 WORKTREES = pathlib.Path("~/workspace/zipline-worktrees").expanduser()
 
@@ -114,12 +114,14 @@ def run_hopper(cfg, runner, ctx, *, max_new_tickets: int, max_hours: float, log=
                 report["tickets"][key] = {"state": t.state, "reason": t.reason, "last": repr(last), "worktree": str(wt)}
                 if t.state in TERMINAL_FOR_TONIGHT:
                     stop_dev_server(wt, log); progressed = True
+                elif t.state in ("blocked", "paused") and not (t.reason.startswith("resource:") or t.reason.startswith("heavy lane")):
+                    log(f"{key}: {t.state}: {t.reason[:160]}"); progressed = True     # stopped; next pass skips it
                 elif last is not None and not last.wait:
                     progressed = True
                 elif last is not None and last.wait and last.stage == "implement" and ("resource:" in (last.detail or "") or "heavy lane" in (last.detail or "")):
                     progressed = True     # transient; loop again after the sleep below
             if all_stopped:
-                log("every eligible ticket is at Human Gate 1 / stopped"); break
+                log("every eligible ticket is at Human Gate 1 / blocked / paused -- nothing left to do"); break
             if not progressed:
                 for _ in range(18):        # 3 min in 10 s slices; PAUSE exits
                     if state.paused(cfg.state_root): break

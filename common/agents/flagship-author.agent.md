@@ -90,14 +90,21 @@ prose, and any shipped component's precedent:
   are named in both and the later task's `invariants` say what not to change.
 - Work already shipped on the branch (given to you as attempt records / git log) is NOT
   re-planned; reference it and plan only what remains.
-- **Every contract-bearing acceptance criterion gets its own verification command.** Tests the
-  worker writes itself do not verify the contract — a worker can implement the wrong API and write
-  tests that agree with it (ZIP-7873/001: the AC said `enum(:div)`; the worker shipped
-  `enum(:div, :button, :a)` and tested `tag: :button`; the gate saw green). For any AC that fixes
-  an API shape, an allowed/forbidden value, a rendered attribute, or a file's presence, add a
-  `verification_commands` entry the RUNNER executes that fails if the AC is violated (e.g.
-  `bin/rails runner 'ZUI::Well.new(tag: :button); abort "button accepted"' ... ; test $? -ne 0`
-  or a one-line `ruby -e` assertion). ACs without such a command are advisory only.
+- **Contract-bearing acceptance criteria get a runner-executed check — a ONE-LINER, not a harness.**
+  A worker can implement the wrong API and write tests that agree with it (ZIP-7873/001 shipped
+  `enum(:div,:button,:a)` against an AC of `enum(:div)`; its own tests were green). So for an AC that
+  fixes an API shape, an enum member, a rendered attribute, or a file's presence, add ONE
+  `verification_commands` entry that fails when the AC is violated, using only the repository's
+  own tools: `bin/rails runner '<one assertion>'`, `bin/rails test <existing or task-owned file>`,
+  `rubocop`, `git diff --check`, `ruby -e`/`grep -q` on a file. Hard limits:
+  - **Never write probe scripts, helper files, or tests under `planning/`** (ZIP-7872 round 4: nine
+    bespoke probes, 38 commands, four critic rounds finding bugs in the probes — $30 of planning and
+    no code). The critic must reject any manifest whose commands reference `planning/`.
+  - At most **3 verification commands per task** beyond the standard `bin/wt prepare`, the task's
+    own test file, and rubocop. If an AC needs more than a one-liner to check, it is a TEST the
+    task owns (`may_edit_tests = true`, the test file in `allowed_files`) or it is advisory.
+  - Browser/pixel/computed-style parity is checked by system tests the task OWNS and CI runs, never
+    by planner-written comparison scripts.
 - Never authorize edits to tests the task does not own; never authorize weakening a check.
 - Migrations of existing styles must leave a tombstone comment where the rules were removed,
   when the ticket asks for it, and must keep existing call sites rendering (say how you know).

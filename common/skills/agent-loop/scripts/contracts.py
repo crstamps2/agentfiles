@@ -7,6 +7,7 @@ import tomllib
 STATUSES = {"pass", "fail", "blocked"}
 REASONS = {"none", "implementation", "test", "environment", "timeout", "owner", "protocol"}
 _KEY_RE = re.compile(r"^\s*(?:[#*\-]+\s*)?(status|reason|base|files|evidence|unverified|next)\s*[:=]\s*(.*)$", re.I)
+MAX_EXTRA_VERIFICATION = 3
 _ID_RE = re.compile(r"^\d{3}[a-z]?$")   # optional letter suffix: a prerequisite fix inserted between planned tasks (006a)
 
 
@@ -101,6 +102,16 @@ def validate_tasks(data: dict) -> list:
         for k in t:
             if k not in allowed_keys:
                 errs.append(f"{p}: unknown key {k!r}")
+        # Verification must use the repository's own tools, not planner-written probes: a manifest
+        # whose commands reference planning/ is a test harness, not a plan (ZIP-7872, 2026-09-15).
+        cmds = t.get("verification_commands") or []
+        if isinstance(cmds, list):
+            for c in cmds:
+                if isinstance(c, str) and re.search(r"(^|[\s'\"=/])planning/", c):
+                    errs.append(f"{p}.verification_commands: references planning/ ({c[:60]!r}); use repo tools or a task-owned test")
+            extra = [c for c in cmds if isinstance(c, str) and not re.search(r"bin/wt prepare|rails test|rubocop|git diff --check|reek|yarn (build|prettier|eslint)|slim-lint|stylelint", c)]
+            if len(extra) > MAX_EXTRA_VERIFICATION:
+                errs.append(f"{p}.verification_commands: {len(extra)} bespoke commands (max {MAX_EXTRA_VERIFICATION} beyond prepare/test/lint); fold checks into a task-owned test")
         tid = str(t.get("id", ""))
         if tid and not _ID_RE.match(tid):
             errs.append(f"{p}.id: must match ^\\d{{3}}[a-z]?$ (got {tid!r})")

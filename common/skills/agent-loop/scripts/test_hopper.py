@@ -46,8 +46,8 @@ class HopperTests(unittest.TestCase):
 
     def test_spins_up_at_most_max_new_and_round_robins_to_the_gate(self):
         rep = hopper.run_hopper(self.cfg, None, None, max_new_tickets=2, max_hours=1, log=lambda m: None)
-        self.assertEqual(self.spun, ["ZIP-7872", "ZIP-4293"])                 # hopper order, 7873 skipped (at gate)
-        self.assertEqual(sorted(self.stopped), ["zip-4293", "zip-7872"])       # dev servers stopped at the gate
+        self.assertEqual(self.spun, ["ZIP-7872", "ZIP-7877"])                 # hopper order, 7873 skipped (at gate)
+        self.assertEqual(sorted(self.stopped), ["zip-7872", "zip-7877"])       # dev servers stopped at the gate
         self.assertEqual(rep["tickets"]["ZIP-7872"]["state"], "human-gate-1")
         self.assertNotIn("ZIP-4281", rep["tickets"])                           # dep ZIP-7872 not done -> ineligible
 

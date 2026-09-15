@@ -585,6 +585,11 @@ after = ["001"]
             self.assertTrue((self.wt / "app" / sub / "worker_touch.rb").exists(), sub)  # landed on the ticket worktree
         self.assertFalse((self.wt.parent / ".al-tasks" / "zip-7873").exists() and any((self.wt.parent / ".al-tasks" / "zip-7873").iterdir()))
 
+    def test_blocked_environment_from_worker_is_environment_not_block(self):
+        """ZIP-4294 live: a premium worker wrote STATUS: blocked / REASON: environment and the ticket BLOCKED."""
+        res = contracts.Result(status="blocked", reason="environment", next="db down")
+        self.assertEqual(runner._classify(res, type("S", (), {"timed_out": False, "returncode": 0})(), [], "")[0], "environment")
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

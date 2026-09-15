@@ -468,6 +468,9 @@ def main(argv=None) -> int:
     ro = sub.add_parser("run-once", help="advance one ticket through plan -> implement -> gates -> draft PR -> CI -> ready -> bot review -> Human Gate 1")
     ro.add_argument("--ticket", required=True); ro.add_argument("--worktree", required=True)
     ro.add_argument("--max-steps", type=int, default=12); ro.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES")
+    rh = sub.add_parser("run-hopper", help="drive eligible hopper tickets to Human Gate 1 unattended (spinup + lifecycle, round-robin)")
+    rh.add_argument("--max-new-tickets", type=int, default=3); rh.add_argument("--max-hours", type=float, default=13.0)
+    rh.add_argument("--report", default=None, help="write the morning report JSON here")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
     pl = sub.add_parser("plan", help="flagship author writes planning/<key>/tasks.toml; opposite-vendor critic reviews")
     pl.add_argument("--ticket", required=True); pl.add_argument("--worktree", required=True)
@@ -511,6 +514,12 @@ def main(argv=None) -> int:
     except reconcile.FenceExit as e:
         print(f"fenced: {e.reason}", file=sys.stderr); return 3
     try:
+        if a.cmd == "run-hopper":
+            import hopper
+            rep = hopper.run_hopper(cfg, r, ctx, max_new_tickets=a.max_new_tickets, max_hours=a.max_hours,
+                                    log=lambda m: print(m, file=sys.stderr, flush=True))
+            out = pathlib.Path(a.report) if a.report else cfg.state_root / "hopper-report.json"
+            out.write_text(json.dumps(rep, indent=2)); print(json.dumps(rep, indent=2)); return 0
         if a.cmd == "run-once":
             import lifecycle
             import time as _time

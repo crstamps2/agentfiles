@@ -8,28 +8,37 @@ owned_epics = ["ZIP-6774"]          # cmux listener skips children of these
 # Dependency graph. Order here is also the tie-break order.
 [[hopper.tickets]]
 key = "ZIP-7872"   # Nav Link
+pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-7873"   # Well — pilot ticket
 pin_arm = "cloud"  # local 32K window fills on the skill excerpt + Card precedent alone (attempts 1,3 hit 32.2K);
                    # cloud runs the same 20B weights with full context at $0 on the Free plan
 [[hopper.tickets]]
 key = "ZIP-4293"   # Section
+pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-7877"   # Card Header Start
+pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-7876"   # Card Spotlight
+pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-4281"   # Nav Tabs
+pin_arm = "cloud"
 deps = ["ZIP-7872"]
 [[hopper.tickets]]
 key = "ZIP-4282"   # Nav Pills
+pin_arm = "cloud"
 deps = ["ZIP-7872"]
 [[hopper.tickets]]
 key = "ZIP-7875"   # Stepper
+pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-4294"   # Modal
+pin_arm = "cloud"
 [[hopper.tickets]]
 key = "ZIP-7874"   # Dropzone
+pin_arm = "cloud"
 
 [paths]
 state_root = "~/.local/state/agent-loop"

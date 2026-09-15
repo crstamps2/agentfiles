@@ -19,6 +19,11 @@ import subprocess
 
 import agentdef
 import plan as plan_mod
+
+
+def _plan_section(plan_md: str, heading: str) -> str:
+    m = re.search(rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)", plan_md, re.M | re.S)
+    return m.group(1).strip() if m else ""
 import publish
 
 FORBIDDEN = [
@@ -87,9 +92,9 @@ structure and level of detail as the example below, which is one of this team's 
 {key}: {ticket_summary}
 
 ## Design decisions and discovery (from the local design notes; restate in product terms, never cite the notes)
-{plan_mod._plan_section(plan_p.read_text(), "Design decisions") if plan_p.exists() else ""}
+{_plan_section(plan_p.read_text(), "Design decisions") if plan_p.exists() else ""}
 
-{plan_mod._plan_section(plan_p.read_text(), "Evidence")[:3000] if plan_p.exists() else ""}
+{_plan_section(plan_p.read_text(), "Evidence")[:3000] if plan_p.exists() else ""}
 
 ## Commits on the branch
 {log}

@@ -1240,3 +1240,38 @@ class PerTicketLeaseTests(unittest.TestCase):
             a.close(); b.close()
             reconcile.reconcile(cfg, "r4", ticket="ZIP-1").close()      # released
 
+
+class MultiRunnerSweepTests(unittest.TestCase):
+    def test_global_sweep_leaves_a_live_sibling_runners_records_alone(self):
+        import tempfile, config as config_mod, locks, attempt as attempt_mod, agentdef, ladder, contracts, subprocess, os
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"').replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}/agents"')
+            (root / "hopper.toml").write_text(toml); (root / "agents").mkdir()
+            (root / "agents" / "cloud-worker.md").write_text("---\nname: cloud-worker\nmodel: x/y\nthinking: low\ntools: read\n---\nbody\n")
+            cfg = config_mod.load(root / "hopper.toml"); cfg.ensure_dirs()
+            wt = root / "wt"; wt.mkdir(); subprocess.run(["git", "-C", str(wt), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(wt), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"], check=True)
+            task = contracts.Task(id="001", slug="s", summary="x", allowed_files=["a"], verification_commands=["true"], acceptance=["y"])
+            agent = agentdef.load(cfg.pi_agents_dir, "cloud-worker")
+            # ZIP-B has a RUNNING record with a live process, and ZIP-B's runner lease is HELD (its runner is alive)
+            p = subprocess.Popen(["sleep", "300"], start_new_session=True); import time, threading; time.sleep(0.2)
+            threading.Thread(target=p.wait, daemon=True).start()          # reap on death so the group reads `dead`, not a zombie
+            try:
+                import procid
+                rec = attempt_mod.create(cfg, "ZIP-B", task, wt, 1, agent, "cloud", ladder.Rung("cloud-worker", "cheap", 1), "runB")
+                rec = attempt_mod.transition(rec, "LAUNCHING", stages=[{"kind": "worker", "idx": 0, "proc": None}])
+                rec = attempt_mod.transition(rec, "RUNNING", proc=procid.capture(p.pid).to_dict())
+                b_lease = locks.Lease(cfg.state_root / "locks" / "runner-zip-b", "runner-zip-b"); self.assertTrue(b_lease.acquire(hold=True))
+                # ZIP-A's runner reconciles with the GLOBAL sweep (global lease is free)
+                ctx = reconcile.reconcile(cfg, "runA", ticket="ZIP-A"); ctx.close()
+                self.assertIsNone(p.poll(), "sibling's live worker was killed")
+                self.assertEqual(attempt_mod.load(rec.path, validate_worktree=False).status, "RUNNING")
+                # once ZIP-B's runner is gone, the record IS an orphan and gets reaped
+                b_lease.release()
+                ctx = reconcile.reconcile(cfg, "runA2", ticket="ZIP-A"); ctx.close()
+                self.assertEqual(attempt_mod.load(rec.path, validate_worktree=False).status, "INTERRUPTED")
+            finally:
+                if p.poll() is None: p.kill()
+

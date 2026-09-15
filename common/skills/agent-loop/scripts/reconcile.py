@@ -564,6 +564,11 @@ def _leaf_dirs(attempts_root) -> list:
     return leaves
 
 
+def _ticket_runner_live(cfg, key: str) -> bool:
+    """Is a per-ticket runner for `key` currently alive? Its records are then NOT orphans."""
+    return locks.is_held(pathlib.Path(cfg.state_root) / "locks" / f"runner-{key.lower()}")
+
+
 def _sweep(cfg, ticket: str | None = None) -> None:
     """Step 2 of recovery: every attempt leaf dir under `attempts/`, all tickets, all tasks,
     sorted by leaf mtime. A record this recovery cannot understand (unreadable/corrupt/
@@ -590,6 +595,12 @@ def _sweep(cfg, ticket: str | None = None) -> None:
             rec = attempt_mod.load(adir)
         except attempt_mod.UnreadableRecord as e:
             raise FenceExit(f"unreadable record: {adir}: {e}")
+        # Multi-runner rule: a record that belongs to ANOTHER ticket whose own runner is alive is
+        # that runner's business. Touching it here killed two live premium workers (ZIP-4294,
+        # 2026-09-15) when a sibling runner's global sweep mistook them for orphans.
+        key = _ticket_key(rec)
+        if (ticket is None or key != ticket) and _ticket_runner_live(cfg, key):
+            continue
         _reconcile_one(cfg, rec)
 
 

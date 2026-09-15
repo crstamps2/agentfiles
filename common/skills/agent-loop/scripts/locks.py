@@ -40,6 +40,20 @@ def owner(path: pathlib.Path) -> dict | None:
         return None
 
 
+def is_held(path: pathlib.Path) -> bool:
+    """True iff some live process holds the flock for this lease (non-blocking probe)."""
+    fl = pathlib.Path(path).with_suffix(pathlib.Path(path).suffix + ".flock")
+    if not fl.exists():
+        return False
+    with open(fl, "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return False
+
+
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

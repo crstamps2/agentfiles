@@ -147,7 +147,9 @@ def slot(base: pathlib.Path, n: int, name: str) -> "Lease | None":
     Returns the held Lease or None if all slots are busy. `n <= 1` degrades to a single lease."""
     for i in range(max(1, int(n))):
         lease = Lease(pathlib.Path(f"{base}-{i}"), f"{name} [slot {i}]")
-        if lease.acquire():
+        # hold=True: the slot is owned by an OPEN FILE DESCRIPTOR, not by a pid record. Several
+        # threads of one runner process each hold their own slot, and a slot dies with its holder.
+        if lease.acquire(hold=True):
             return lease
     return None
 

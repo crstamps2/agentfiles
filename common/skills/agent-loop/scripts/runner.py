@@ -386,7 +386,7 @@ class Runner:
             # heavy lane here (bounded) rather than failing the attempt -- the worker's edits are done.
             heavy = locks.Lease(self.cfg.state_root / "locks" / "heavy", f"verify {t.key}/{task.id}")
             waited = 0.0
-            while not heavy.acquire():
+            while not heavy.acquire(hold=True):                 # fd-held: thread-safe within one runner process
                 if waited >= HEAVY_WAIT_MAX_S:
                     break
                 __import__("time").sleep(10); waited += 10
@@ -476,7 +476,7 @@ class Runner:
         return rec.outcome, rec.reason, rec
 
     def status(self) -> int:
-        tickets_dir = self.cfg.state_root / "tickets"; heavy = locks.owner(self.cfg.state_root / "locks" / "heavy")
+        tickets_dir = self.cfg.state_root / "tickets"; heavy = locks.owner(self.cfg.state_root / "locks" / "heavy") if locks.is_held(self.cfg.state_root / "locks" / "heavy") else None
         print(f"epic {self.cfg.epic}  paused={state.paused(self.cfg.state_root)}  heavy_lane={'held by ' + str(heavy['pid']) if heavy else 'free'}")
         for key in self.cfg.tickets:
             t = state.load(tickets_dir / key); human = " HUMAN" if state.human_owned(tickets_dir / key) else ""

@@ -252,3 +252,16 @@ class VerifyRestoredIgnoresCachesTests(unittest.TestCase):
         (self.wt/"app"/"a.rb").write_text("changed\n")
         self.assertFalse(worktree.verify_restored(self.wt, base))
 
+
+class SnapshotExcludesPackageTreesTests(unittest.TestCase):
+    def test_node_modules_churn_does_not_change_or_break_the_snapshot(self):
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d); git(wt, "init", "-q", "-b", "main"); git(wt, "config", "user.email", "t@t"); git(wt, "config", "user.name", "t")
+            (wt / "a.rb").write_text("a\n"); (wt / ".gitignore").write_text("node_modules/\n"); git(wt, "add", "-A"); git(wt, "commit", "-qm", "i")
+            (wt / "node_modules" / "globals").mkdir(parents=True); (wt / "node_modules" / "globals" / "package.json").write_text("{}")
+            before = worktree.snapshot(wt)
+            (wt / "node_modules" / "globals" / "package.json").unlink(); (wt / "node_modules" / "other").mkdir(); (wt / "node_modules" / "other" / "x.js").write_text("1")
+            self.assertEqual(worktree.snapshot(wt), before)                   # package churn is invisible
+            (wt / "b.rb").write_text("b\n")
+            self.assertNotEqual(worktree.snapshot(wt), before)                # real edits still show
+

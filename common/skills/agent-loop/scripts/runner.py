@@ -474,6 +474,10 @@ def main(argv=None) -> int:
     rh = sub.add_parser("run-hopper", help="drive eligible hopper tickets to Human Gate 1 unattended (spinup + lifecycle, round-robin)")
     rh.add_argument("--max-new-tickets", type=int, default=3); rh.add_argument("--max-hours", type=float, default=13.0)
     rh.add_argument("--report", default=None, help="write the morning report JSON here")
+    rs = sub.add_parser("resume", help="operator: put a paused/blocked ticket back in motion (default: re-plan) and (re)start its supervisor")
+    rs.add_argument("--ticket", required=True); rs.add_argument("--from", dest="from_state", default="plan", choices=["plan", "implement", "gates", "ready", "bot-loop"])
+    rs.add_argument("--worktree", default=None)
+    ov = sub.add_parser("overview", help="one line per hopper ticket: state, reason, PR, supervisor, spend")
     lg = sub.add_parser("ledger", help="tokens and cost by model / role / ticket / day from the pi session logs")
     lg.add_argument("--since", default=None, metavar="YYYY-MM-DD")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
@@ -489,6 +493,33 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
+    if a.cmd == "resume":
+        import supervise
+        tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
+        if t.state in ("human-gate-1", "done"):
+            print(f"{a.ticket} is at {t.state}; nothing to resume"); return 0
+        if t.state in ("paused", "blocked"):
+            t.state = a.from_state; t.previous = "blocked"; t.reason = f"operator resume → {a.from_state}"; state.save(tdir, t)
+            print(f"{a.ticket}: {a.from_state}")
+        else:
+            print(f"{a.ticket}: already {t.state}; restarting supervisor only")
+        wt = a.worktree or t.worktree or str(pathlib.Path("~/workspace/zipline-worktrees").expanduser() / a.ticket.lower())
+        print("supervisor", supervise.start(a.ticket, wt, cfg.state_root)); return 0
+    if a.cmd == "overview":
+        import supervise, ledger
+        rows = ledger.collect(cfg.state_root); spend = {}
+        for row in rows: spend[row["ticket"]] = spend.get(row["ticket"], 0.0) + row["billed_usd"]
+        loaded = set(supervise.active())
+        for key, spec in cfg.tickets.items():
+            tdir = cfg.ticket_dir(key); t = state.load(tdir) if (tdir / "state.json").exists() else None
+            pr = "-"
+            cij = tdir / "ci.json"
+            if cij.exists():
+                pr = "#" + str(json.loads(cij.read_text()).get("pr", "-"))
+            wt = pathlib.Path("~/workspace/zipline-worktrees").expanduser() / key.lower()
+            sup = supervise.status(key) if key in loaded else "-"
+            print(f"{key:9} {(t.state if t else 'queued'):13} pr={pr:7} wt={'yes' if wt.exists() else 'no ':3} spend=${spend.get(key, 0):6.2f} deps={','.join(spec.deps) or '-':10} sup={sup[:40]}" + (f"  | {t.reason[:70]}" if t and t.reason else ""))
+        return 0
     if a.cmd == "supervise":
         import supervise
         if a.action == "status":

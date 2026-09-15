@@ -122,6 +122,12 @@ class LoopTests(unittest.TestCase):
         self.script = [f]; log = self.go()
         self.assertEqual(log["result"], "blocked"); self.assertIn("tier-4", log["reason"])
 
+    def test_budget_stops_planning(self):
+        self.script = [self.author_writes(self.GOOD), self.critic_says("revise")] * 4
+        with patch.object(plan, "_spent", side_effect=[0.0, 30.0, 30.0, 30.0, 30.0]):
+            log = self.go()
+        self.assertEqual(log["result"], "failed"); self.assertIn("budget exceeded", log["reason"]); self.assertEqual(len(self.calls), 2)
+
     def test_rounds_are_bounded(self):
         self.script = [self.author_writes(self.GOOD), self.critic_says("revise")] * 4
         log = self.go()

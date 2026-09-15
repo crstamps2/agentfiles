@@ -158,7 +158,16 @@ def project_history(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
 
 
 def _metrics_row(rec: attempt_mod.Record, stage: dict) -> dict:
-    return {
+    # Worker stages carry the attempt's token/cost usage (from the pi session log) so metrics.jsonl
+    # is a usable ledger on its own; verify stages run no model and get zeros.
+    usage = {}
+    if stage.get("kind") == "worker":
+        try:
+            import ledger
+            usage = ledger.attempt_usage(pathlib.Path(rec.path))
+        except Exception:  # noqa: BLE001 -- the ledger must never break projection
+            usage = {}
+    return {**usage,
         "attempt_id": rec.attempt_id,
         "stage_kind": stage.get("kind"),
         "idx": stage.get("idx"),

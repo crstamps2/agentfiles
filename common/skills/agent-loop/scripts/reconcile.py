@@ -639,7 +639,16 @@ def reconcile(cfg, run_id, ticket: str | None = None) -> RunContext:
             glob_lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "runner", "runner")
             if glob_lease.acquire(hold=True):
                 try:
-                    _sweep(cfg, None)
+                    try:
+                        _sweep(cfg, None)
+                    except FenceExit:
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        # Another ticket's record could not be recovered (e.g. its worktree was mid
+                        # `yarn install`). That ticket's own supervisor will retry it; it must not
+                        # take THIS ticket's runner down. Sweep our own records and continue.
+                        print(f"reconcile: global sweep failed ({type(e).__name__}: {str(e)[:160]}); sweeping only {ticket}", file=sys.stderr)
+                        _sweep(cfg, ticket)
                 finally:
                     glob_lease.release()
             else:

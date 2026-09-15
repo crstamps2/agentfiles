@@ -204,7 +204,7 @@ class RunnerHarness(unittest.TestCase):
         past the wait budget the attempt is `environment` (tree restored, rung NOT consumed) and the
         ticket pauses -- never a hang, never a rejected worker."""
         import locks
-        held = locks.Lease(self.cfg.state_root / "locks" / "heavy", "other"); self.assertTrue(held.acquire())
+        held = locks.Lease(self.cfg.state_root / "locks" / "heavy", "other"); self.assertTrue(held.acquire(hold=True))
         with patch.object(runner, "HEAVY_WAIT_MAX_S", 0):
             outcome, rows = self.run_task("pass", "pass")
         self.assertEqual(self.launches, 2)                                   # two workers ran (light); both deferred
@@ -589,6 +589,15 @@ after = ["001"]
         """ZIP-4294 live: a premium worker wrote STATUS: blocked / REASON: environment and the ticket BLOCKED."""
         res = contracts.Result(status="blocked", reason="environment", next="db down")
         self.assertEqual(runner._classify(res, type("S", (), {"timed_out": False, "returncode": 0})(), [], "")[0], "environment")
+
+    def test_worker_slots_are_per_holder_not_per_pid(self):
+        """Live 2026-09-15: three parallel tasks in ONE runner process fought over slots keyed by pid."""
+        import locks
+        base = self.cfg.state_root / "locks" / "worker"
+        a = locks.slot(base, 3, "t1"); b = locks.slot(base, 3, "t2"); c = locks.slot(base, 3, "t3")
+        self.assertTrue(a and b and c); self.assertEqual(len({a.path, b.path, c.path}), 3)   # three distinct slots, same pid
+        self.assertIsNone(locks.slot(base, 3, "t4"))
+        b.release(); self.assertIsNotNone(locks.slot(base, 3, "t5"))
 
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 

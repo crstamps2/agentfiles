@@ -101,6 +101,9 @@ def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> 
         print(f"{ticket_key} task {task.id}: publish failed; ticket paused: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
 
+HEAVY_WAIT_MAX_S = 1800     # a verification waits up to 30 min for the heavy lane before deferring the attempt
+
+
 def _unload_local_model(model: str | None) -> None:
     """Best-effort `ollama stop <model>`; never raises. `model` is `ollama-local/<id>` -> `<id>`."""
     if not model:
@@ -188,9 +191,12 @@ class Runner:
             if not decision.ok:
                 t = state.transition(t, "paused", reason="resource: " + "; ".join(decision.reasons))
                 state.save(tdir, t); return "paused"
-            lease = locks.Lease(self.cfg.state_root / "locks" / "heavy", f"implement {t.key}/{task.id}")
-            if not lease.acquire():
-                t = state.transition(t, "paused", reason="heavy lane held by a live owner")
+            # Worker inference is LIGHT (remote model + file edits): it takes one of N worker slots.
+            # The HEAVY lane (Rails tests, browser) is taken inside _attempt around verification only,
+            # so several tasks can be written concurrently while verification stays serialised.
+            lease = locks.slot(self.cfg.state_root / "locks" / "worker", getattr(self.cfg, "workers_parallel", 1), f"worker {t.key}/{task.id}")
+            if lease is None:
+                t = state.transition(t, "paused", reason="heavy lane held by a live owner")   # reason kept: callers treat it as transient
                 state.save(tdir, t); return "paused"
             task_root = self.cfg.state_root / "attempts" / t.key / task.id
             try:
@@ -207,9 +213,6 @@ class Runner:
                 print(f"{t.key}/{task.id}: finalize failed; ticket paused: {e}", file=sys.stderr, flush=True)
                 return "paused"
             finally:
-                # Local arm: free the 12 GB before the lane is handed to anything else (gates,
-                # the next attempt, or Cody). The spec makes local inference and Rails/Chrome
-                # mutually exclusive in time; this is the unload half of that rule.
                 if rung.agent == "local-worker" and getattr(self.cfg, "local_unload_after_attempt", True):
                     _unload_local_model(getattr(self.cfg, "local_model", None))
                 lease.release()
@@ -375,7 +378,17 @@ class Runner:
         verification_seconds = 0.0
         if outcome == "accepted":
             verify_outcome, verify_reason = "accepted", "none"
-            for i, cmd in enumerate(task.verification_commands):
+            # Verification runs the repo's tests/browser: ONE at a time machine-wide. Wait for the
+            # heavy lane here (bounded) rather than failing the attempt -- the worker's edits are done.
+            heavy = locks.Lease(self.cfg.state_root / "locks" / "heavy", f"verify {t.key}/{task.id}")
+            waited = 0.0
+            while not heavy.acquire():
+                if waited >= HEAVY_WAIT_MAX_S:
+                    break
+                __import__("time").sleep(10); waited += 10
+            if not heavy.held:
+                outcome, reason = "environment", f"heavy lane busy for {int(waited)}s; verification deferred"
+            for i, cmd in enumerate(task.verification_commands if heavy.held else []):
                 stages = list(rec.stages) + [{"kind": "verify", "idx": i, "proc": None}]
                 rec = attempt.transition(rec, "LAUNCHING", stages=stages)
                 holder["rec"] = rec
@@ -431,10 +444,14 @@ class Runner:
             violations = worktree.check_allowlist(changed, task, self.cfg.protected_paths, self.cfg.test_path_globs, wt=wt, harness_globs=getattr(self.cfg, 'harness_artifact_globs', ()))
             if violations:
                 outcome, reason = "rejected", "verification introduced forbidden change: " + "; ".join(violations)
+            elif not heavy.held:
+                pass                                          # deferred: `environment` set above; the tree is restored and the rung not consumed
             else:
                 outcome, reason = verify_outcome, verify_reason
                 if evidence_only and outcome == "accepted":
                     reason = "accepted from evidence: worker omitted result.md; allowlist clean; verification passed"
+            if heavy.held:
+                heavy.release()
         else:
             final_tree = worktree.snapshot(wt)
 

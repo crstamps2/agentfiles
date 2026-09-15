@@ -43,6 +43,10 @@ You do not fix the plan and you do not touch application code. You write one ver
   Name any AC with no task, and any task with no AC.
 - **Precedent fidelity**: does the plan match how the sibling component actually does it
   (slot API, sidecar SCSS location, preview shape, test style)? Quote the file that proves it.
+- **Parallel safety**: for every pair of tasks with disjoint `allowed_files` and no `after` edge,
+  confirm they really can run at the same time (neither reads a file the other creates). A missing
+  `after` where one task consumes another's new file is a BLOCKER (the worker would find the file
+  absent and fail).
 - **Ordering and disjointness**: dependencies stated; overlapping `allowed_files` justified.
 - **Design tiers**: is each decision at the right tier? Anything tier 3/4 that the author
   called tier 1/2?

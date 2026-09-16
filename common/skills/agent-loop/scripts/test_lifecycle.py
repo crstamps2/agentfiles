@@ -97,6 +97,7 @@ class LifecycleTests(unittest.TestCase):
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def fake_adjudicator(self, cfg, agent, prompt, stage, wt, timeout, model=None):
+        self.assertEqual(agent, "review-adjudicator")            # never the plan critic's definition
         (stage / "adjudication.json").write_text(json.dumps(self.adjudication or {"decisions": []}))
 
     def run_once(self, outcomes=("accepted", "accepted"), max_steps=12):

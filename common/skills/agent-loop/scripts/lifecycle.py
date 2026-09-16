@@ -166,7 +166,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         behind = ci.behind_base(wt)
         if behind and _tree_clean(wt):
             r = _sh(["git", "rebase", "origin/main"], wt, 600)
-            if r.returncode:
+            if r.returncode and not _resolve_generated_conflicts(wt):
                 _sh(["git", "rebase", "--abort"], wt, 60)
                 return _pause_step(cfg, t, "implement", f"rebase onto origin/main conflicted before task {task.id}; needs a human")
             try:
@@ -508,4 +508,30 @@ def _pr_house_style(cfg, key, wt, t) -> tuple[str, str]:
 def _tree_clean(wt) -> bool:
     out = _sh(["git", "status", "--porcelain"], wt, 60).stdout
     return not any(l and not l.startswith("??") for l in out.splitlines())
+
+
+GENERATED = {".rubocop/zui_todo.yml": "bin/agent_run bundle exec ruby linters/generate_zui_todo.rb"}
+
+
+def _resolve_generated_conflicts(wt) -> bool:
+    """During a rebase, a conflict confined to GENERATED files is resolved by taking the upstream
+    version and re-running the generator, then continuing -- for every remaining commit. Any
+    conflict in a hand-written file returns False (the caller aborts and pauses for a human).
+    (ZIP-7872: .rubocop/zui_todo.yml conflicted after main gained new grandfather entries.)"""
+    for _ in range(50):                                  # bounded: one iteration per rebased commit at most
+        conflicted = _sh(["git", "diff", "--name-only", "--diff-filter=U"], wt, 60).stdout.split()
+        if not conflicted:
+            return True
+        if any(p not in GENERATED for p in conflicted):
+            return False
+        for p in conflicted:
+            _sh(["git", "checkout", "--ours", p], wt, 60)      # during rebase, --ours = the upstream side
+            g = _sh(["bash", "-lc", GENERATED[p]], wt, 900)
+            if g.returncode:
+                return False
+            _sh(["git", "add", p], wt, 60)
+        r = _sh(["git", "-c", "core.editor=true", "rebase", "--continue"], wt, 600)
+        if r.returncode == 0 and not _sh(["git", "diff", "--name-only", "--diff-filter=U"], wt, 60).stdout.strip():
+            return True
+    return False
 

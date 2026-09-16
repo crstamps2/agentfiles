@@ -600,6 +600,20 @@ after = ["001"]
         self.assertIsNone(locks.slot(base, 3, "t4"))
         b.release(); self.assertIsNotNone(locks.slot(base, 3, "t5"))
 
+    def test_premium_pass_rejected_by_guard_pauses_for_coordinator(self):
+        """A premium worker's honest pass rejected by a verification one-liner pauses the ticket
+        (guard disagreement) instead of consuming premium-2 on the same guard."""
+        tasks = self.tasks_with(verification_commands=["false"])
+        outcome, rows = self.run_task("fail", "fail", "pass_but_guard_fails", tasks=tasks)
+        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 3)
+        t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertIn("guard disagreement", t.reason)
+
+    def test_cheap_pass_rejected_by_guard_still_escalates(self):
+        tasks = self.tasks_with(verification_commands=["false"])
+        outcome, rows = self.run_task("pass_but_guard_fails", "pass_but_guard_fails", "pass_but_guard_fails", tasks=tasks)
+        self.assertEqual([r["outcome"] for r in rows[:2]], ["rejected", "rejected"])   # cheap rungs are consumed as usual
+        self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 3)         # first PREMIUM disagreement pauses
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

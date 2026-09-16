@@ -71,7 +71,24 @@ def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
             recs.append(rec)
     if not recs:
         return []
-    changed = list(recs[-1].changed_paths or [])
+    changed = set(recs[-1].changed_paths or [])
+    # ALSO every uncommitted change on the tree that matches the task's allowlist: an earlier
+    # `environment` attempt keeps its tree, so the accepted attempt's own delta can be empty or
+    # partial even though the task's work is all there (ZIP-7872/003: SCSS accepted, nothing committed).
+    task = recs[-1]
+    try:
+        import contracts as _c
+        tdef = _c.load_tasks(pathlib.Path(wt) / "planning" / ticket_key.lower() / "tasks.toml")
+        tk = next((x for x in tdef if x.id == task_id), None)
+    except Exception:  # noqa: BLE001
+        tk = None
+    if tk is not None:
+        st = subprocess.run(["git", "-C", str(wt), "status", "--porcelain", "--untracked-files=all"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        for line in st.stdout.splitlines():
+            p = line[3:].strip()
+            if any(worktree._match(p, g) for g in tk.allowed_files):
+                changed.add(p)
+    changed = sorted(changed)
     ignored = worktree.ignored_paths(wt, changed)
     globs = getattr(cfg, "harness_artifact_globs", ())
     return [p for p in changed if p not in ignored and not any(worktree._match(p, g) for g in globs)
@@ -265,6 +282,19 @@ class Runner:
                           f"attempt {n}: {e}", file=sys.stderr)
             if outcome == "accepted":
                 return "accepted"
+            # Guard-disagreement fast path. A PREMIUM worker that honestly reports STATUS: pass and is
+            # then rejected by a `verification failed: <cmd>` has, in every case seen so far (ZIP-7875
+            # x4, ZIP-7872 x2), been right while the planner's one-liner was wrong (regex matching the
+            # required `class_names(`; a generated-file assertion invalidated by an upstream merge).
+            # Burning premium-2 on the same guard is pure cost. Pause for the coordinator instead.
+            if (outcome == "rejected" and rung.tier == "premium" and str(reason).startswith("verification failed:")
+                    and rec is not None and (rec.path / "result.md").exists()
+                    and "STATUS: pass" in (rec.path / "result.md").read_text(errors="replace")[:200]):
+                t = state.load(tdir)
+                if t.state != "paused":
+                    t = state.transition(t, "paused", reason=f"guard disagreement on task {task.id}: premium worker reported pass; {reason[:300]}")
+                    state.save(tdir, t)
+                return "paused"
             # For every other outcome, loop back to the top: re-load the ticket (projections
             # may have already blocked/paused it) and recompute the ladder from persisted
             # history. A "blocked"/"paused" ticket state is caught at the top of the loop.

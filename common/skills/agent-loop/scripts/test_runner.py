@@ -288,7 +288,7 @@ class RunnerHarness(unittest.TestCase):
 
     def test_pass_claim_with_failing_verification_is_rejected(self):
         root = self.cfg.state_root.parent
-        bad = TASKS.replace('verification_commands = ["true"]', 'verification_commands = ["false"]')
+        bad = TASKS.replace('verification_commands = ["true"]', 'verification_commands = ["test ! -e app/components/worker_touch.rb"]')   # passes on base; the worker's edit breaks it
         (root / "tasks_bad_verify.toml").write_text(bad)
         tasks = contracts.load_tasks(root / "tasks_bad_verify.toml")
         r = runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher)
@@ -476,7 +476,7 @@ class RunnerHarness(unittest.TestCase):
         self.assertIn("accepted from evidence", rows[0]["reason"])
 
     def test_missing_result_with_failing_verification_is_still_rejected(self):
-        tasks = self.tasks_with(verification_commands=["false"])
+        tasks = self.tasks_with(verification_commands=["test ! -e app/components/worker_touch.rb"])
         outcome, rows = self.run_task("no_result", "pass", tasks=tasks)
         self.assertEqual(rows[0]["outcome"], "rejected"); self.assertIn("verification failed", rows[0]["reason"])
 
@@ -601,15 +601,15 @@ after = ["001"]
         b.release(); self.assertIsNotNone(locks.slot(base, 3, "t5"))
 
     def test_premium_pass_rejected_by_guard_pauses_for_coordinator(self):
-        """A premium worker's honest pass rejected by a verification one-liner pauses the ticket
-        (guard disagreement) instead of consuming premium-2 on the same guard."""
-        tasks = self.tasks_with(verification_commands=["false"])
+        """A premium worker's honest pass rejected by a guard the WORKER broke (passes on base) pauses
+        the ticket (guard disagreement) instead of consuming premium-2 on the same guard."""
+        tasks = self.tasks_with(verification_commands=["test ! -e app/components/worker_touch.rb"])   # passes on base; the fake worker creates that file
         outcome, rows = self.run_task("fail", "fail", "pass_but_guard_fails", tasks=tasks)
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 3)
         t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertIn("guard disagreement", t.reason)
 
     def test_cheap_pass_rejected_by_guard_still_escalates(self):
-        tasks = self.tasks_with(verification_commands=["false"])
+        tasks = self.tasks_with(verification_commands=["test ! -e app/components/worker_touch.rb"])
         outcome, rows = self.run_task("pass_but_guard_fails", "pass_but_guard_fails", "pass_but_guard_fails", tasks=tasks)
         self.assertEqual([r["outcome"] for r in rows[:2]], ["rejected", "rejected"])   # cheap rungs are consumed as usual
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 3)         # first PREMIUM disagreement pauses

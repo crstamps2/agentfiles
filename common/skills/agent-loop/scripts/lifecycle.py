@@ -326,7 +326,9 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             prompt = botreview.ADJUDICATION_PROMPT.format(key=key, pr=pr, out=stage / "adjudication.json", schema=stage / "schema.toml",
                                                           wt=wt, plan=_manifest_path(wt, key).with_name("plan.md"), comments=stage / "comments.md")
             (stage / "schema.toml").write_text(plan_mod.SCHEMA_EXAMPLE)
-            plan_mod._run_agent(cfg, plan_mod.CRITIC_DEF, prompt, stage, wt, 1800, model=t.critic_vendor or None)
+            # A dedicated role: reusing the critic definition made Astra review the plan and refuse the
+            # adjudication as out of role (ZIP-7872 round 1, 2026-09-16). Model = the ticket's critic vendor.
+            plan_mod._run_agent(cfg, "review-adjudicator", prompt, stage, wt, 1800, model=t.critic_vendor or None)
             try:
                 decisions = botreview.parse_adjudication(stage / "adjudication.json")
             except RuntimeError as e:

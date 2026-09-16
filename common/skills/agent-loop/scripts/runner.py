@@ -493,6 +493,12 @@ class Runner:
                 if rb and (pathlib.Path(wt) / "bin" / "agent_run").exists() and (pathlib.Path(wt) / ".reek.yml").exists():
                     cmds.append("bin/agent_run rubocop --cache false --force-exclusion " + " ".join(__import__("shlex").quote(p) for p in rb))
                     cmds.append("bin/agent_run bundle exec reek --force-exclusion " + " ".join(__import__("shlex").quote(p) for p in rb))
+                # Pre-PUSH hook equivalents: the repo's lefthook pre-push runs these per touched file; a task
+                # that passes its own checks but fails them cannot be published (ZIP-7875: en.yml re-quoted
+                # wholesale by a YAML dump -- 1,478 unrelated lines; the push hook rightly refused).
+                if "config/locales/en.yml" in changed and (pathlib.Path(wt) / "bin" / "agent_run").exists():
+                    cmds.append("bin/agent_run bundle exec i18n-tasks check-normalized en")
+                    cmds.append("test \"$(git diff origin/main --numstat -- config/locales/en.yml | awk '{print $2}')\" -le 40")   # a locale edit is additive; mass re-quoting is a defect
             for i, cmd in enumerate(cmds):
                 stages = list(rec.stages) + [{"kind": "verify", "idx": i, "proc": None}]
                 rec = attempt.transition(rec, "LAUNCHING", stages=stages)

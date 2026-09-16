@@ -52,6 +52,12 @@ class AttributionTests(Fixture):
         cmd = "grep -q Stepper app/x.rb"
         self.assertEqual(guards.attribute_rejection(T([cmd]), cmd, self.wt, self.base), "worker")
 
+    def test_read_only_bundle_exec_checks_are_attributed(self):
+        for cmd in ("bundle exec i18n-tasks check-normalized en", "bin/agent_run rubocop --cache false a.rb", "bundle exec reek a.rb", "npx figma connect parse --file a.ts"):
+            self.assertFalse(guards.is_side_effecting(cmd), cmd)
+        for cmd in ("bundle exec ruby linters/generate_zui_todo.rb", "bin/rails test x", "yarn build", "npx figma connect publish --dry-run"):
+            self.assertTrue(guards.is_side_effecting(cmd), cmd)
+
     def test_side_effecting_commands_are_not_attributed(self):
         self.assertEqual(guards.attribute_rejection(T(["bin/rails test t.rb"]), "bin/rails test t.rb", self.wt, self.base), "unknown")
 

@@ -617,7 +617,7 @@ def main(argv=None) -> int:
     rh.add_argument("--max-new-tickets", type=int, default=3); rh.add_argument("--max-hours", type=float, default=13.0)
     rh.add_argument("--report", default=None, help="write the morning report JSON here")
     rs = sub.add_parser("resume", help="operator: put a paused/blocked ticket back in motion (default: re-plan) and (re)start its supervisor")
-    rs.add_argument("--ticket", required=True); rs.add_argument("--from", dest="from_state", default="plan", choices=["plan", "implement", "gates", "ready", "bot-loop"])
+    rs.add_argument("--ticket", required=True); rs.add_argument("--from", dest="from_state", default="plan", choices=["plan", "implement", "gates", "draft-pr", "ready", "bot-loop"])
     rs.add_argument("--worktree", default=None)
     ov = sub.add_parser("overview", help="one line per hopper ticket: state, reason, PR, supervisor, spend")
     wa = sub.add_parser("watch", help="pane-friendly live view of ONE ticket: stage, task/attempt, worker, elapsed, PR, spend; prints a line on every change")

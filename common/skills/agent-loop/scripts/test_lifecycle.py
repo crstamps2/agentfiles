@@ -64,6 +64,7 @@ class LifecycleTests(unittest.TestCase):
             patch.object(lifecycle.publish, "push", return_value=True),
             patch.object(lifecycle.publish, "existing_pr", return_value={"number": 47888, "isDraft": True}),
             patch.object(lifecycle.ci, "behind_base", return_value=0),
+            patch.object(lifecycle.publish, "push_rebased"),
             patch.object(lifecycle.ci, "fetch_checks", side_effect=lambda *a: self.checks),
             patch.object(lifecycle.botreview, "mark_ready", side_effect=lambda pr, wt: self.marked.append(pr)),
             patch.object(lifecycle.botreview, "fetch_bot_comments", side_effect=lambda *a: self.comments),
@@ -234,6 +235,17 @@ class LifecycleTests(unittest.TestCase):
             step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
         self.assertIn("repaired", step.action); self.assertEqual(state.load(tdir).state, "implement")
         self.assertFalse((tdir / "bad-guards.md").exists())
+
+    def test_behind_main_rebases_before_each_task(self):
+        rebased = []
+        def sh(cmd, cwd, timeout):
+            import subprocess
+            if cmd[:2] == ["git", "rebase"]: rebased.append(cmd)
+            if cmd[:2] == ["git", "status"]: return subprocess.CompletedProcess(cmd, 0, "", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(lifecycle.ci, "behind_base", return_value=3), patch.object(lifecycle, "_sh", side_effect=sh):
+            r, steps, t = self.run_once(outcomes=("rejected",))
+        self.assertEqual(rebased, [["git", "rebase", "origin/main"]]); self.assertEqual(r.calls, ["001"])
 
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()

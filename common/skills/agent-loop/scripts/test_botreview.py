@@ -75,6 +75,12 @@ class AdjudicationTests(unittest.TestCase):
             p.write_text(json.dumps({"decisions": [{"id": 1, "decision": "fix", "reply": "r", "task": {"allowed_files": ["a.rb"], "verification_commands": ["true"]}}]}))
             self.assertEqual(botreview.parse_adjudication(p)[0]["decision"], "fix")
 
+    def test_lenient_json_accepts_shell_quote_escapes_and_fences(self):
+        """Live 2026-09-16: a task command containing '\\'' (shell quoting) made the adjudication unparseable."""
+        raw = "```json\n{\"decisions\": [{\"id\": 1, \"decision\": \"fix\", \"reply\": \"r\", \"task\": {\"verification_commands\": [\"ruby -e 'x == %q{@import '\\''nav'\\'';}'\"], \"allowed_files\": [\"a\"]}}]}\n```"
+        d = botreview._lenient_json(raw)
+        self.assertEqual(d["decisions"][0]["task"]["verification_commands"][0], "ruby -e 'x == %q{@import '\\''nav'\\'';}'")
+
     def test_fix_manifest_is_a_valid_worker_manifest(self):
         with tempfile.TemporaryDirectory() as d:
             t = botreview.fix_task_from({"id": 77, "decision": "fix", "task": {"allowed_files": ["app/x.rb"], "verification_commands": ["bin/rails test test/x_test.rb"],

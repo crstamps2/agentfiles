@@ -40,9 +40,12 @@ def parse_result(text: str) -> Result:
     status = found.get("status", "").lower()
     if status not in STATUSES:
         raise ProtocolError(f"result.md missing or invalid STATUS (got {found.get('status')!r})")
-    reason = found.get("reason", "").lower()
+    reason = found.get("reason", "").lower().strip()
+    # Known reasons are normalised; an UNKNOWN reason is kept verbatim (bounded) rather than erased --
+    # a worker's `blocked / REASON: stale-todo` is a contract complaint the runner routes to plan repair,
+    # and the label is the evidence (ZIP-7872/005).
     if reason not in REASONS:
-        reason = ""
+        reason = re.sub(r"[^a-z0-9_-]+", "-", reason)[:40].strip("-") or ""
     files = [f.strip() for f in re.split(r"[,\s]+", found.get("files", "")) if f.strip()]
     return Result(status=status, reason=reason, base=found.get("base", ""), files=files,
                   evidence=found.get("evidence", ""), unverified=found.get("unverified", ""),

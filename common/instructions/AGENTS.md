@@ -136,13 +136,13 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 
 ## Dispatch Model Hygiene
 
-- Every specialist subagent launch MUST use the model declared in its `.md` frontmatter. When a launch supplies an explicit `model:`, it must match that declaration; otherwise let pi-subagents resolve the declaration and its fallback chain.
-- Default subagent route: `openai-codex/gpt-5.6-terra` at `xhigh`, falling back to `anthropic/claude-sonnet-5` on provider/model failures.
+- Every specialist subagent launch MUST use the single model declared in its `.md` frontmatter. When a launch supplies an explicit `model:`, it must match that declaration; otherwise let pi-subagents resolve the declaration.
+- Default subagent route: `openai-codex/gpt-5.6-terra` at `xhigh`.
 - Execution specialists use Terra at `max`: `android-qa-engineer`, `frontend-engineer`, `qa-engineer`, `rails-engineer`, and `technical-writer`. Builtin `delegate` and `worker` also use Terra at `max`.
 - Other specialists and builtin support/review agents use Terra at `xhigh`.
 - The `writing-plans` skill is a parent-session workflow. Keep the parent on `openai-codex/gpt-5.6-sol:high`; do not raise its effort and do not route it through `technical-writer` solely for model selection.
-- User agent definitions must declare `fallbackModels: anthropic/claude-sonnet-5`. Builtin fallback chains live in `~/.pi/agent/settings.json`.
-- Before submitting a launch with an explicit `model:`, verify the model and thinking level against the agent definition. Do not override the configured Claude fallback with ad hoc provider switching.
+- Do not declare `fallbackModels`; pi-subagents supports one resolved model per launch. If a provider/model failure blocks a launch before useful work, retry through a later explicit launch using `anthropic/claude-sonnet-5`.
+- Before submitting a launch with an explicit `model:`, verify the model and thinking level against the agent definition. A deliberate post-failure Claude retry is a separate launch, not an in-launch provider switch.
 
 ## Skills
 

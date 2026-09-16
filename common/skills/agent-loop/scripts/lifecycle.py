@@ -307,6 +307,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if verdict.action == "rerun":
             for c in checks:
                 if c.name in verdict.failing and "actions/runs" in c.link: ci.rerun_gha(c.link, publish.REPO, wt)
+                elif c.name in verdict.failing and "circleci.com" in c.link: ci.rerun_circleci(c.link)
             return Step(key, "ready", "CI rerun requested", detail=verdict.reason, wait=True)
         if verdict.action == "rebase":
             r = _sh(["git", "rebase", "origin/main"], wt, 600)
@@ -431,8 +432,12 @@ def _head(wt) -> str:
 def _failure_text(checks, wt) -> str:
     parts = []
     for c in checks:
-        if c.bucket in ("fail", "cancel") and "actions/runs" in c.link:
+        if c.bucket not in ("fail", "cancel"):
+            continue
+        if "actions/runs" in c.link:
             parts.append(ci.gha_failure_excerpt(c.link, publish.REPO, wt))
+        elif "circleci.com" in c.link:
+            parts.append(ci.circleci_failure_excerpt(c.link))
     return "\n".join(parts)
 
 

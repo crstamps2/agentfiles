@@ -45,8 +45,13 @@ def is_negative(cmd: str) -> bool:
 
 
 def is_side_effecting(cmd: str) -> bool:
-    """Commands that mutate the tree or need the whole environment are not pre-checked on base."""
-    return bool(re.search(r"\b(rails test|rails runner|rspec|yarn build|yarn install|bundle exec ruby linters/|generate_zui_todo|wt prepare|figma connect|git (commit|push|add))\b", cmd))
+    """Only commands that MUTATE the tree or need running services are exempt from base attribution.
+    Read-only checks -- grep/test/diff, rubocop, reek, i18n-tasks check-*, prettier --check, stylelint,
+    `figma connect parse` -- are attributable and MUST be attributed: the 2026-09-15 stall on ZIP-7875
+    was an `i18n-tasks check-normalized` clause that failed on base, exempted only because it was
+    invoked through `bundle exec`."""
+    return bool(re.search(r"\b(rails test|rails runner|rspec|minitest|yarn (build|install)|npm (ci|install)|generate_zui_todo|wt prepare|wt dev|"
+                          r"figma connect publish|i18n-tasks normalize|git (commit|push|add|rebase|checkout)|rm |mv |sed -i)\b", cmd))
 
 
 def precheck(task, wt) -> list[str]:

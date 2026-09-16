@@ -70,6 +70,18 @@ def vs_out_tail(attempt_dir, idx: int, n: int = 1200) -> str:
     return out
 
 
+def _uncommitted_allowlisted(wt, task) -> list[str]:
+    st = subprocess.run(["git", "-C", str(wt), "status", "--porcelain", "--untracked-files=all"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    out = []
+    for line in st.stdout.splitlines():
+        p = line[3:].strip()
+        if p.startswith(("tmp/", ".pi/", "node_modules/", "planning/")):
+            continue
+        if any(worktree._match(p, g) for g in task.allowed_files):
+            out.append(p)
+    return out
+
+
 def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
     """Source paths from the most recent ACCEPTED attempt of this task (ignored + harness paths dropped)."""
     root = cfg.state_root / "attempts" / ticket_key / task_id
@@ -116,6 +128,12 @@ def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> 
         branch = publish.guard_branch(wt, ticket_key)
         paths = _accepted_source_paths(cfg, ticket_key, task.id, wt)
         sha = publish.commit_paths(wt, paths, publish.commit_message(ticket_key, task))
+        # Completeness: after the commit, NOTHING matching this task's allowlist may remain uncommitted.
+        # (2026-09-15/16: three tickets carried accepted-but-uncommitted files -- a component without
+        # its test, tests without their SCSS -- and CI/bots reviewed incoherent branches.)
+        leftover = _uncommitted_allowlisted(wt, task)
+        if leftover:
+            raise publish.PublishError(f"accepted task {task.id} left allowlisted paths uncommitted: {leftover[:6]}")
         pushed = publish.push(wt, branch)
         pr = publish.existing_pr(wt, branch)
         if pr is None and ensure_pr:
@@ -302,9 +320,14 @@ class Runner:
             if (outcome == "rejected" and rung.tier == "premium" and str(reason).startswith("verification failed:")
                     and rec is not None and (rec.path / "result.md").exists()
                     and "STATUS: pass" in (rec.path / "result.md").read_text(errors="replace")[:200]):
+                # Route to the same self-repair path as a bad guard: the premium worker's evidence goes
+                # to bad-guards.md and the lifecycle sends the task-writer to fix the manifest -- no human.
+                cmd = str(reason)[len("verification failed: "):]
+                self._flag_bad_guard(t, task, cmd, "premium worker reported STATUS: pass; the guard rejected it. The worker's report:\n"
+                                                    + (rec.path / "result.md").read_text(errors="replace")[:1500])
                 t = state.load(tdir)
                 if t.state != "paused":
-                    t = state.transition(t, "paused", reason=f"guard disagreement on task {task.id}: premium worker reported pass; {reason[:300]}")
+                    t = state.transition(t, "paused", reason=f"guard failed on the BASE tree too (independent of the work): guard disagreement on task {task.id}; {reason[:200]}")
                     state.save(tdir, t)
                 return "paused"
             # For every other outcome, loop back to the top: re-load the ticket (projections

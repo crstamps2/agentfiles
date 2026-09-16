@@ -50,7 +50,10 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
             return "blocked", "owner"
         if res.reason == "environment":
             return "environment", res.next or "worker reported an environment problem"     # never a ticket block
-        return "protocol", f"blocked/{res.reason or 'unspecified'}"
+        # Any other blocked reason ("stale-todo", "contract", "ambiguous"...) is the worker saying the TASK
+        # CONTRACT cannot be satisfied as written. That is evidence about the plan, not a worker failure:
+        # classify environment (rung kept) and let the lifecycle route the complaint to the task-writer.
+        return "environment", f"contract complaint ({res.reason or 'unspecified'}): {(res.next or res.unverified or '')[:300]}"
     if res.reason == "environment":
         return "environment", res.next or "environment"
     if res.status == "pass":
@@ -317,6 +320,13 @@ class Runner:
                     f"cannot distinguish right work from wrong. Rewrite it to check only the task's own output, or remove it.\n\n"
                     f"```\n{cmd}\n```\n\nOutput on base:\n\n```\n{output.strip()[-1200:]}\n```\n")
 
+    def _flag_contract_complaint(self, t, task, res) -> None:
+        p = self.cfg.ticket_dir(t.key) / "bad-guards.md"; p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            f.write(f"\n## task {task.id} -- {_now()} -- worker contract complaint ({res.reason})\n\nA premium worker reports that this task's "
+                    f"contract cannot be satisfied as written. Rewrite the acceptance criterion / stop condition it names so a correct "
+                    f"implementation can pass, or drop it. Evidence from the worker:\n\n{(res.evidence or '')[:1200]}\n\nUNVERIFIED: {(res.unverified or '')[:600]}\n\nNEXT: {(res.next or '')[:400]}\n")
+
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
         agentdef.assert_worker_safe(agent)
@@ -411,6 +421,9 @@ class Runner:
             outcome, reason = "protocol", "worker replaced stderr.log"
         else:
             outcome, reason = _classify(res, stage, violations, stderr)
+            if res is not None and res.status == "blocked" and res.reason not in ("owner", "environment") and rung.tier == "premium":
+                # Premium workers' contract complaints are trusted enough to trigger a manifest repair.
+                self._flag_contract_complaint(t, task, res)
             # A CHEAP worker's `blocked/owner` is a claim, not a verdict: twice today the 20B model
             # called a task it simply could not do an "owner" block. Only the premium rung may block
             # the ticket; a cheap owner-claim advances the ladder so premium confirms or does the work.

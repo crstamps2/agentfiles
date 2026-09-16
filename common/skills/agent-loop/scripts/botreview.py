@@ -156,7 +156,10 @@ def fix_task_from(decision: dict, seq: int) -> dict | None:
     t = decision.get("task")
     if not isinstance(t, dict):
         return None
-    t = dict(t); t.setdefault("id", f"9{seq:02d}"); t.setdefault("slug", f"review-fix-{seq}")
+    t = dict(t)
+    t["id"] = f"9{seq:02d}"                          # ALWAYS runner-assigned: model ids collide with the plan's (ZIP-7872: three "001..003" duplicates)
+    t.setdefault("slug", f"review-fix-{seq}")
+    t.pop("after", None)                              # review fixes run after everything already landed; no model-supplied ordering
     t.setdefault("summary", f"Address review comment {decision['id']}")
     t.setdefault("verification_commands", []); t.setdefault("acceptance", [f"AC-1: review comment {decision['id']} is addressed"])
     t.setdefault("allowed_files", []); t.setdefault("may_edit_tests", False); t.setdefault("visual", False)

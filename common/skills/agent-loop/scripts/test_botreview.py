@@ -83,8 +83,8 @@ class AdjudicationTests(unittest.TestCase):
 
     def test_fix_manifest_is_a_valid_worker_manifest(self):
         with tempfile.TemporaryDirectory() as d:
-            t = botreview.fix_task_from({"id": 77, "decision": "fix", "task": {"allowed_files": ["app/x.rb"], "verification_commands": ["bin/rails test test/x_test.rb"],
-                                                                              "summary": "Rename helper", "acceptance": ["AC-1: renamed"]}}, 1)
+            t = botreview.fix_task_from({"id": 77, "decision": "fix", "task": {"id": "001", "allowed_files": ["app/x.rb"], "verification_commands": ["bin/rails test test/x_test.rb"],
+                                                                              "summary": "Rename helper", "acceptance": ["AC-1: renamed"]}}, 1)   # model-supplied id "001" is ignored
             p = botreview.write_fix_manifest([t], pathlib.Path(d) / "fix.toml")
             tasks = contracts.load_tasks(p)
             self.assertEqual(tasks[0].id, "901"); self.assertEqual(tasks[0].allowed_files, ["app/x.rb"])

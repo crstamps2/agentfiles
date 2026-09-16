@@ -134,10 +134,17 @@ def ahead_of_remote(wt, branch: str) -> int | None:
 
 
 def push(wt, branch: str) -> bool:
-    """Push if there is anything to push. Never force."""
+    """Push if there is anything to push. A rebased branch (remote has commits we no longer have)
+    is pushed with a lease pinned to the remote SHA -- never a bare force. (ZIP-4294 sat in draft-pr
+    for hours on a rejected non-fast-forward push after a pre-task rebase, 2026-09-16.)"""
     ahead = ahead_of_remote(wt, branch)
     if ahead == 0:
         return False
+    if ahead is not None:
+        behind = _sh(["git", "rev-list", "--count", f"HEAD..origin/{branch}"], wt).stdout.strip()
+        if behind and int(behind) > 0:
+            push_rebased(wt, branch)
+            return True
     github_write("push", GITHUB_ALLOW["push"], wt)
     return True
 

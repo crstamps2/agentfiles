@@ -77,10 +77,11 @@ class LifecycleTests(unittest.TestCase):
             patch.object(lifecycle.publish, "current_branch", return_value="internal/zip-7873-x"),
             patch.object(lifecycle.publish, "github_write", side_effect=lambda v, a, c: self.gh_writes.append((v, a))),
             patch.object(lifecycle.publish, "record_pr_on_worktree"),
+            patch.object(lifecycle, "_notify_once", side_effect=lambda tdir, key, title, body: self.notified.append(title)),
             patch.object(lifecycle, "_pr_house_style", side_effect=lambda cfg, key, wt, t: ("INTERNAL: Add ZUI Well component ZIP-7873", self.fake_body())),
         ]
         for p in self.patches: p.start()
-        self.gh_writes = []; self.checks = [ci.Check("zipline", "pass")]; self.comments = []; self.marked = []; self.replies = []; self.adjudication = None
+        self.gh_writes = []; self.notified = []; self.checks = [ci.Check("zipline", "pass")]; self.comments = []; self.marked = []; self.replies = []; self.adjudication = None
 
     def tearDown(self):
         for p in self.patches: p.stop()
@@ -113,7 +114,9 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.marked, [47888])
         self.assertEqual([s.stage for s in steps], ["implement", "implement", "implement", "gates", "draft-pr", "ready", "bot-loop", "bot-loop"])
         self.assertEqual(t.state, "human-gate-1"); self.assertEqual(len(self.replies), 1)
-        self.assertEqual([v for v, a in self.gh_writes], ["pr-edit-body"])      # existing PR gets the plan-derived title/body
+        self.assertEqual([v for v, a in self.gh_writes], ["pr-edit-body"])
+        lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)   # one more step at the gate
+        self.assertIn("ZIP-7873 ready for review", self.notified)      # existing PR gets the plan-derived title/body
         self.assertTrue(self.replies[0][1].endswith("on his behalf"))
 
     def test_rejected_task_waits_and_does_not_advance(self):
@@ -302,6 +305,7 @@ class LifecycleTests(unittest.TestCase):
         tt = state.transition(tt, "gates"); tt = state.transition(tt, "paused", reason="gates failed: rails test rc=1"); state.save(tdir, tt)
         r, steps, t = self.run_once()
         self.assertTrue(steps[0].wait); self.assertIn("needs operator", steps[0].action); self.assertEqual(r.calls, [])
+        self.assertIn("ZIP-7873 needs an operator", self.notified)
 
     def test_human_pause_reasons_wait(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)

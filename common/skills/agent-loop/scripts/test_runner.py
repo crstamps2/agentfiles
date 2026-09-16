@@ -637,6 +637,32 @@ after = ["001"]
         push.assert_not_called()
         t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertEqual(t.state, "paused"); self.assertIn("left allowlisted paths uncommitted", t.reason)
 
+    def test_acceptance_appends_repo_hook_lint_when_repo_has_them(self):
+        """9141b0d: rubocop + reek on changed Ruby run at every acceptance so publish cannot fail a hook the worker
+        never saw. Only when the worktree actually has bin/agent_run and .reek.yml (real repo), never in bare fixtures."""
+        seen = []
+        real = procs.run_stage
+        def spy(argv, cwd, timeout_s, env, out, err, on_start=None):
+            if argv[:2] == ["/bin/sh", "-c"]: seen.append(argv[2])
+            return real(argv, cwd, timeout_s, env, out, err, on_start=on_start)
+        (self.wt / "bin").mkdir(exist_ok=True); (self.wt / "bin" / "agent_run").write_text("#!/bin/sh\nexit 0\n"); (self.wt / "bin" / "agent_run").chmod(0o755)
+        (self.wt / ".reek.yml").write_text("---\n"); git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "tools")
+        with patch("runner.procs.run_stage", side_effect=spy):
+            outcome, rows = self.run_task("pass")
+        self.assertEqual(outcome, "accepted")
+        self.assertTrue(any("rubocop --cache false --force-exclusion" in c and "worker_touch.rb" in c for c in seen), seen)
+        self.assertTrue(any("reek --force-exclusion" in c for c in seen), seen)
+
+    def test_arm_pinned_by_first_real_outcome_including_owner_block(self):
+        """0c74e30: environment/interrupted attempts never pin the arm; any other outcome (incl. blocked/owner) does."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); t = state.load(tdir)
+        t.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "environment", "arm": "local", "rung": {"agent": "local-worker", "tier": "cheap", "n": 1}},
+                                      {"n": 2, "outcome": "blocked", "arm": "cloud", "rung": {"agent": "premium-worker", "tier": "premium", "n": 1}}]
+        state.save(tdir, t)
+        object.__setattr__(self.cfg, "arms_alternate", ["local", "local"])
+        outcome, rows = self.run_task("pass")
+        self.assertEqual(rows[-1]["arm"], "cloud")                      # pinned by the blocked (real) outcome, not by alternate[]
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

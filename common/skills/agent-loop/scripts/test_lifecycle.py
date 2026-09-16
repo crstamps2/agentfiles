@@ -247,6 +247,21 @@ class LifecycleTests(unittest.TestCase):
             r, steps, t = self.run_once(outcomes=("rejected",))
         self.assertEqual(rebased, [["git", "rebase", "origin/main"]]); self.assertEqual(r.calls, ["001"])
 
+    def test_gates_rubocop_honours_repo_exclusions_and_builds_assets_first(self):
+        """d1eff6d: explicit file args bypass AllCops Exclude unless --force-exclusion is passed (13 false offenses on linters/**).
+        Also asserts `yarn build` precedes any test/browser step (critic finding: stale app/assets/builds)."""
+        cmds = []
+        def sh(cmd, cwd, timeout):
+            import subprocess
+            cmds.append(" ".join(cmd) if isinstance(cmd, list) else cmd)
+            if cmd[:3] == ["git", "diff", "--name-only"]: return subprocess.CompletedProcess(cmd, 0, "linters/x.rb\napp/y.rb\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(lifecycle, "_sh", side_effect=sh):
+            r, steps, t = self.run_once(outcomes=("accepted", "accepted"))
+        rubocop = [c for c in cmds if "rubocop" in c]; self.assertTrue(rubocop); self.assertIn("--force-exclusion", rubocop[0])
+        build_i = next(i for i, c in enumerate(cmds) if "yarn build" in c); test_i = next(i for i, c in enumerate(cmds) if "rails test" in c)
+        self.assertLess(build_i, test_i)
+
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()
         r, steps, t = self.run_once()

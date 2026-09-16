@@ -99,6 +99,25 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         return Step(key, t.state, "operator PAUSE", wait=True)
     if (tdir / "HUMAN").exists():
         return Step(key, t.state, "HUMAN takeover file present", wait=True)
+    if t.state == "paused" and t.reason.startswith("guard failed on the BASE tree") and (tdir / "bad-guards.md").exists():
+        # Self-repair: the runner proved a verification command fails before the task's work exists,
+        # so the manifest -- not the worker -- is wrong. The task-writer rewrites/drops the guard;
+        # the ticket resumes without a human. (Top cause of lost time 2026-09-14/15.)
+        bad = tdir / "bad-guards.md"
+        stage = cfg.state_root / "guards" / key / time.strftime("%Y%m%dT%H%M%S")
+        prompt = "\n".join([f"# Repair verification guards for {key}\n",
+                            f"Bad guards (each FAILS ON THE BASE TREE, so it tests nothing about the task's work): `{bad}`",
+                            f"Manifest: `{_manifest_path(wt, key)}`   Plan: `{_manifest_path(wt, key).with_name('plan.md')}`   Worktree: `{wt}`",
+                            "For each listed command: rewrite it so it inspects ONLY files the task creates or edits (drop repo-wide checks like",
+                            "i18n normalization, generated-file byte equality, or anything unrelated), or remove it. Do not touch other tasks.",
+                            "Use ABSOLUTE paths when writing. End with `REVISION: applied <n> blockers` or `REVISION: blocked — <one line>`."])
+        plan_mod._run_agent(cfg, plan_mod.WRITER_DEF, prompt, stage, wt, 900)
+        viol = plan_mod.validate_manifest(_manifest_path(wt, key))
+        if viol:
+            return _pause_step(cfg, t, "implement", f"guard repair left the manifest invalid: {viol[:2]}")
+        bad.rename(bad.with_name(f"bad-guards.repaired-{time.strftime('%Y%m%dT%H%M%S')}.md"))
+        t = state.transition(t, "implement", reason="guards repaired by task-writer"); _save(cfg, t)
+        return Step(key, "implement", "bad verification guard repaired; resuming")
     if t.state in ("paused", "blocked"):
         return Step(key, t.state, t.reason, wait=True)
 

@@ -469,8 +469,10 @@ def _exclude_planning(wt) -> None:
     p = pathlib.Path(common) if pathlib.Path(common).is_absolute() else pathlib.Path(wt) / common
     ex = p / "info" / "exclude"; ex.parent.mkdir(parents=True, exist_ok=True)
     cur = ex.read_text() if ex.exists() else ""
-    if "planning/" not in cur.splitlines():
-        ex.write_text(cur.rstrip("\n") + "\nplanning/\n")
+    lines = cur.splitlines()
+    add = [e for e in ("planning/", ".pi/") if e not in lines]     # .pi/: the coordinator pane's own pi session state
+    if add:
+        ex.write_text(cur.rstrip("\n") + "\n" + "\n".join(add) + "\n")
 
 
 HOUSE_STYLE_EXAMPLE_PR = 47860     # a PR of Cody's whose structure/voice is the target

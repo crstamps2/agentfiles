@@ -160,6 +160,20 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if task is None:
             t = state.transition(t, "gates"); _save(cfg, t)
             return Step(key, "implement", "all tasks accepted")
+        # Keep the ticket branch current BEFORE each task: guards on generated files (rubocop todo
+        # lists, i18n normalization) and rebase-sensitive tests go stale as origin/main moves, and a
+        # premium worker then rightly refuses to hand-edit generated output (ZIP-7872/005 x3).
+        behind = ci.behind_base(wt)
+        if behind and _tree_clean(wt):
+            r = _sh(["git", "rebase", "origin/main"], wt, 600)
+            if r.returncode:
+                _sh(["git", "rebase", "--abort"], wt, 60)
+                return _pause_step(cfg, t, "implement", f"rebase onto origin/main conflicted before task {task.id}; needs a human")
+            try:
+                publish.push_rebased(wt, publish.current_branch(wt))
+            except publish.PublishError:
+                pass                                            # no remote yet, or nothing to push: fine
+            print(f"{key}: rebased onto origin/main ({behind} commit(s) behind) before task {task.id}", flush=True)
         import runner as runner_mod
         if getattr(cfg, "tasks_parallel", False):          # intra-ticket parallelism: off until implement_task is thread-safe per ticket
             import parallel
@@ -485,4 +499,9 @@ def _pr_house_style(cfg, key, wt, t) -> tuple[str, str]:
         files = _sh(["git", "diff", "--name-only", "origin/main...HEAD"], wt, 60).stdout.split()
         body = prbody.fallback_body(key, summary, [f for f in files if f.startswith("app/")], shots_md)
     return title, body
+
+
+def _tree_clean(wt) -> bool:
+    out = _sh(["git", "status", "--porcelain"], wt, 60).stdout
+    return not any(l and not l.startswith("??") for l in out.splitlines())
 

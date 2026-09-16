@@ -124,6 +124,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         import heal
         action, why = heal.decide(tdir, t.reason)
         if action == "human":
+            _notify_once(tdir, key, f"{key} needs an operator", f"{why}: {t.reason[:120]}")
             return Step(key, "paused", f"needs operator: {why}", detail=t.reason, wait=True)
         heal.record(tdir, action, t.reason, t.previous or "?", why)
         back = t.previous if t.previous in ("plan", "implement", "gates", "draft-pr", "ready", "bot-loop") else "implement"
@@ -143,6 +144,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         print(f"{key}: self-heal {action} ({why}) -> {back}", flush=True)
         return Step(key, back, f"self-heal: {action}", detail=why)
     if t.state == "blocked":
+        _notify_once(tdir, key, f"{key} blocked", t.reason[:140])
         return Step(key, t.state, t.reason, wait=True)
 
     if t.state in ("queued", "spinup"):
@@ -396,6 +398,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         return Step(key, "bot-loop", f"{len(decisions)} comment(s) answered; none required code changes")
 
     if t.state == "human-gate-1":
+        pr = _load_json(_ci_state_path(cfg, key), {}).get("pr")
+        _notify_once(tdir, key, f"{key} ready for review", f"PR #{pr}" if pr else "at Human Gate 1")
         return Step(key, "human-gate-1", "waiting for Cody", wait=True)
     return Step(key, t.state, "no handler", wait=True)
 
@@ -568,4 +572,21 @@ def _resolve_generated_conflicts(wt) -> bool:
         if r.returncode == 0 and not _sh(["git", "diff", "--name-only", "--diff-filter=U"], wt, 60).stdout.strip():
             return True
     return False
+
+
+def _notify_once(tdir, key: str, title: str, body: str) -> None:
+    """One macOS + cmux notification per (ticket, state, reason) -- the only two moments a human is
+    needed: a ticket at Human Gate 1, or a pause/block the heal policy will not retry."""
+    import hashlib, subprocess
+    sig = hashlib.sha256(f"{title}|{body}".encode()).hexdigest()[:12]
+    marker = pathlib.Path(tdir) / f".notified-{sig}"
+    if marker.exists():
+        return
+    marker.touch()
+    for cmd in (["cmux", "notify", "--title", title, "--body", body],
+                ["osascript", "-e", f'display notification {json.dumps(body)} with title {json.dumps(title)}']):
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=10)
+        except Exception:  # noqa: BLE001
+            pass
 

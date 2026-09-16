@@ -73,9 +73,17 @@ class GitSideTests(unittest.TestCase):
         with patch.object(publish, "ahead_of_remote", return_value=0), patch.object(publish, "github_write") as gw:
             self.assertFalse(publish.push(self.wt, "internal/zip-7873-well")); gw.assert_not_called()
 
+    def test_push_after_rebase_uses_lease_not_plain_push(self):
+        with patch.object(publish, "ahead_of_remote", return_value=3), \
+             patch.object(publish, "_sh", return_value=subprocess.CompletedProcess([], 0, "2\n", "")), \
+             patch.object(publish, "push_rebased") as lease, patch.object(publish, "github_write") as gw:
+            self.assertTrue(publish.push(self.wt, "internal/zip-7873-well"))
+        lease.assert_called_once(); gw.assert_not_called()
+
     def test_push_pushes_when_no_remote_branch_or_ahead(self):
         for ahead in (None, 2):
-            with patch.object(publish, "ahead_of_remote", return_value=ahead), patch.object(publish, "github_write") as gw:
+            with patch.object(publish, "ahead_of_remote", return_value=ahead), patch.object(publish, "github_write") as gw, \
+                 patch.object(publish, "_sh", return_value=subprocess.CompletedProcess([], 0, "0\n", "")):
                 self.assertTrue(publish.push(self.wt, "internal/zip-7873-well"))
                 gw.assert_called_once_with("push", ["git", "push", "-u", "origin", "HEAD"], self.wt)
 

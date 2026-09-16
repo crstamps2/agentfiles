@@ -21,7 +21,7 @@ class WorkerSourceTests(unittest.TestCase):
             self.assertNotIn("fallbackModels", f)
     def test_tiers_define_all_five_new_tables_with_all_keys(self):
         t = tomllib.loads(TIERS.read_text())
-        for name in ("worker-cloud", "worker-local", "worker-premium", "flagship-author", "flagship-critic"):
+        for name in ("worker-cloud", "worker-local", "worker-premium", "flagship-author", "flagship-critic", "task-writer"):
             self.assertIn(name, t, name)
             for k in ("claude", "codex_model", "codex_effort", "pi_model", "pi_thinking"):
                 self.assertIn(k, t[name], f"{name}.{k}")

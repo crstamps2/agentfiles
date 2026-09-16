@@ -607,6 +607,8 @@ after = ["001"]
         outcome, rows = self.run_task("fail", "fail", "pass_but_guard_fails", tasks=tasks)
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 3)
         t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertIn("guard disagreement", t.reason)
+        self.assertTrue(t.reason.startswith("guard failed on the BASE tree"))          # same prefix the lifecycle self-repairs on
+        self.assertTrue((self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md").exists())
 
     def test_cheap_pass_rejected_by_guard_still_escalates(self):
         tasks = self.tasks_with(verification_commands=["test ! -e app/components/worker_touch.rb"])
@@ -622,6 +624,18 @@ after = ["001"]
         self.assertIn("contract complaint", rows[2]["reason"])
         bad = self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md"; self.assertTrue(bad.exists()); self.assertIn("stale-todo", bad.read_text())
         self.assertEqual(outcome, "paused")
+
+    def test_publish_refuses_to_leave_allowlisted_paths_uncommitted(self):
+        """If the commit step misses a file the task owns (ignored-by-mistake, hook skipped it), publishing
+        must fail loudly rather than push an incoherent branch."""
+        import contracts as c, publish as pub
+        task = c.load_tasks(self.cfg.state_root.parent / "tasks.toml")[0]
+        (self.wt / "app" / "components").mkdir(parents=True, exist_ok=True); (self.wt / "app" / "components" / "stray.rb").write_text("x\n")
+        with patch.object(pub, "guard_branch", return_value="internal/zip-7873-x"), patch.object(pub, "commit_paths", return_value=None), \
+             patch("runner._accepted_source_paths", return_value=[]), patch.object(pub, "push") as push:
+            runner.publish_accepted(self.cfg, "ZIP-7873", self.wt, task, ensure_pr=False)
+        push.assert_not_called()
+        t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertEqual(t.state, "paused"); self.assertIn("left allowlisted paths uncommitted", t.reason)
 
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 

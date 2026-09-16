@@ -27,5 +27,12 @@ to apply those blockers with the smallest edits that resolve them.
 6. Re-parse `tasks.toml` with `python3 -c 'import tomllib,sys; tomllib.load(open(sys.argv[1],"rb"))'`
    before finishing.
 
+7. **An acceptance criterion and the command that enforces it are one unit.** When you change
+   an AC (loosen, narrow, reword), find every `verification_commands` entry that encodes it and
+   change it in the same edit. ZIP-7872/005: AC-5 was rewritten to allow seven expected deletions
+   while its command still asserted zero deletions; a premium worker was blocked a fourth time by
+   the contradiction. Before finishing, read each command against its AC and state in the revision
+   note which command enforces which AC.
+
 End your reply with `REVISION: applied <n> blockers` or `REVISION: blocked — <one line>` if a
 blocker cannot be applied without an owner decision.

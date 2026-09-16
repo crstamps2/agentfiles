@@ -58,6 +58,15 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
     return "rejected", f"{res.status}/{res.reason}: {res.next}"
 
 
+def vs_out_tail(attempt_dir, idx: int, n: int = 1200) -> str:
+    out = ""
+    for suf in (".out", ".err"):
+        p = pathlib.Path(attempt_dir) / f"verify-{idx}{suf}"
+        if p.exists():
+            out += p.read_text(errors="replace")[-n:]
+    return out
+
+
 def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
     """Source paths from the most recent ACCEPTED attempt of this task (ignored + harness paths dropped)."""
     root = cfg.state_root / "attempts" / ticket_key / task_id
@@ -299,6 +308,15 @@ class Runner:
             # may have already blocked/paused it) and recompute the ladder from persisted
             # history. A "blocked"/"paused" ticket state is caught at the top of the loop.
 
+    def _flag_bad_guard(self, t, task, cmd: str, output: str) -> None:
+        """Append the bad guard to planning/<key>/bad-guards.md; the lifecycle hands that file to the
+        task-writer, which rewrites the guard (or drops it) before the task is retried."""
+        p = self.cfg.ticket_dir(t.key) / "bad-guards.md"; p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            f.write(f"\n## task {task.id} -- {_now()}\n\nThis verification command FAILS ON THE BASE TREE (before the task's work), so it "
+                    f"cannot distinguish right work from wrong. Rewrite it to check only the task's own output, or remove it.\n\n"
+                    f"```\n{cmd}\n```\n\nOutput on base:\n\n```\n{output.strip()[-1200:]}\n```\n")
+
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
         agentdef.assert_worker_safe(agent)
@@ -485,7 +503,17 @@ class Runner:
                     verify_outcome, verify_reason = "environment", f"verification timeout: {cmd}"
                     break
                 if vs.returncode != 0:
-                    verify_outcome, verify_reason = "rejected", f"verification failed: {cmd}"
+                    # Before charging the worker: does this guard ALSO fail on the pre-work base tree?
+                    # Then the failure is independent of the worker's change (a wrong or environment-
+                    # bound guard). The rung is not consumed and the manifest is flagged for repair.
+                    import guards
+                    who = guards.attribute_rejection(task, cmd, wt, rec.base_tree) if i < len(task.verification_commands) else "worker"
+                    if who == "guard":
+                        verify_outcome = "environment"
+                        verify_reason = f"guard failed on the BASE tree too (independent of the work): {cmd}"
+                        self._flag_bad_guard(t, task, cmd, (vs_out_tail(rec.path, i)))
+                    else:
+                        verify_outcome, verify_reason = "rejected", f"verification failed: {cmd}"
                     break
 
             # ALWAYS recheck the tree after verification ran, whatever its exit -- a test that

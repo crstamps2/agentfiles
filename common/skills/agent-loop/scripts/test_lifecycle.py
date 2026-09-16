@@ -224,6 +224,17 @@ class LifecycleTests(unittest.TestCase):
         lifecycle.insert_task_before(m, {"id": "001a", "slug": "fix", "summary": "fix", "allowed_files": ["a"], "verification_commands": ["true"], "acceptance": ["z"]}, "002")
         self.assertEqual([x.id for x in c.load_tasks(m)], ["001", "001a", "002"])
 
+    def test_bad_guard_pause_is_self_repaired_by_task_writer_and_resumes(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir); tt.worktree = str(self.wt)
+        tt = state.transition(tt, "paused", reason="guard failed on the BASE tree too (independent of the work): sort -c config/en.yml"); state.save(tdir, tt)
+        (tdir / "bad-guards.md").write_text("## task 001\n```\nsort -c config/en.yml\n```\n")
+        def writer(cfg, agent, prompt, stage, wt, timeout, model=None):
+            self.assertEqual(agent, "task-writer"); self.assertIn("bad-guards.md", prompt)
+        with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=writer):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertIn("repaired", step.action); self.assertEqual(state.load(tdir).state, "implement")
+        self.assertFalse((tdir / "bad-guards.md").exists())
+
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()
         r, steps, t = self.run_once()

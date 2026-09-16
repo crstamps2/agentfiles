@@ -60,6 +60,11 @@ class GitSideTests(unittest.TestCase):
         self.assertEqual(git(self.wt, "show", "--name-only", "--format=", sha).split(), ["b.rb"])
         self.assertIn("stray.rb", git(self.wt, "status", "--porcelain"))
 
+    def test_commit_paths_commits_a_deletion(self):
+        (self.wt / "a.rb").unlink()
+        sha = publish.commit_paths(self.wt, ["a.rb"], "remove a")
+        self.assertIsNotNone(sha); self.assertEqual(git(self.wt, "ls-files").strip(), "")
+
     def test_commit_paths_returns_none_when_nothing_staged(self):
         self.assertIsNone(publish.commit_paths(self.wt, ["a.rb"], "noop"))
         self.assertIsNone(publish.commit_paths(self.wt, [], "noop"))

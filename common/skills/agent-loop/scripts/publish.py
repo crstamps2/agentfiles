@@ -96,7 +96,7 @@ def commit_paths(wt, paths: list[str], message: str) -> str | None:
     """Stage exactly `paths` and commit. Returns the new sha, or None if nothing to commit."""
     if not paths:
         return None
-    r = _sh(["git", "add", "--", *paths], wt)
+    r = _sh(["git", "add", "-A", "--", *paths], wt)          # -A: stage deletions of tracked paths too
     if r.returncode:
         raise PublishError(f"git add failed: {r.stderr.strip()[:400]}")
     staged = _sh(["git", "diff", "--cached", "--quiet"], wt)

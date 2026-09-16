@@ -118,7 +118,31 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         bad.rename(bad.with_name(f"bad-guards.repaired-{time.strftime('%Y%m%dT%H%M%S')}.md"))
         t = state.transition(t, "implement", reason="guards repaired by task-writer"); _save(cfg, t)
         return Step(key, "implement", "bad verification guard repaired; resuming")
-    if t.state in ("paused", "blocked"):
+    if t.state == "paused":
+        # SELF-HEALING. Every pause reason has a recovery policy with a per-reason budget (heal.py);
+        # a human is consulted only when the policy says so or the budget is spent.
+        import heal
+        action, why = heal.decide(tdir, t.reason)
+        if action == "human":
+            return Step(key, "paused", f"needs operator: {why}", detail=t.reason, wait=True)
+        heal.record(tdir, action, t.reason, t.previous or "?", why)
+        back = t.previous if t.previous in ("plan", "implement", "gates", "draft-pr", "ready", "bot-loop") else "implement"
+        if action == "prepare-retry":
+            _sh(["bash", "-lc", "bin/wt prepare --for rails"], wt, 900)
+        if action == "repair" and (tdir / "bad-guards.md").exists():
+            # bad guards / contract complaints -> the task-writer repairs the manifest (existing path below);
+            # fall through by restoring the specific reason prefix that path keys on
+            t = state.transition(t, back, reason=t.reason); _save(cfg, t)
+            t = state.transition(t, "paused", reason="guard failed on the BASE tree too (independent of the work): " + t.reason[:200]); _save(cfg, t)
+            return step(cfg, runner, ctx, key, wt, hopper_index=hopper_index, pr_number=pr_number)
+        if action == "repair":
+            back = "plan"                                  # no recorded guard evidence: re-plan under current rules
+        if action == "republish":
+            back = "implement"                             # implement re-runs publish for the accepted task before moving on
+        t = state.transition(t, back, reason=f"self-heal: {action} — {why}"); _save(cfg, t)
+        print(f"{key}: self-heal {action} ({why}) -> {back}", flush=True)
+        return Step(key, back, f"self-heal: {action}", detail=why)
+    if t.state == "blocked":
         return Step(key, t.state, t.reason, wait=True)
 
     if t.state in ("queued", "spinup"):
@@ -156,6 +180,16 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             t = state.transition(t, "paused", reason="implement: no manifest"); _save(cfg, t)
             return Step(key, "implement", "no manifest", wait=True)
         tasks = contracts.load_tasks(manifest)
+        # Accepted work that never got committed (a publish defect, later fixed) is published now,
+        # before anything else runs: the branch must be coherent at every step.
+        import runner as runner_mod
+        for tk in tasks:
+            if _task_accepted(cfg, key, tk) and runner_mod._uncommitted_allowlisted(wt, tk):
+                runner_mod.publish_accepted(cfg, key, str(wt), tk, ensure_pr=False)
+                t = state.load(tdir)
+                if t.state == "paused":
+                    return Step(key, "implement", f"republish of task {tk.id} failed", detail=t.reason, wait=True)
+                return Step(key, "implement", f"task {tk.id}: published previously accepted work")
         task = _next_task(cfg, key, tasks)
         if task is None:
             t = state.transition(t, "gates"); _save(cfg, t)

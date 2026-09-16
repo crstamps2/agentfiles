@@ -56,6 +56,8 @@ def load(pi_agents_dir, name: str) -> AgentDef:
 
 def assert_worker_safe(a: AgentDef) -> None:
     if a.fallback_models:
+        # pi-subagents 0.68 removed the field entirely; for the loop it was always forbidden on workers
+        # (the runner owns escalation). Keep the check so a stray field is caught before launch.
         raise AgentDefError(f"{a.name}: worker definitions must not declare fallbackModels (got {a.fallback_models}); the runner owns escalation")
     extra = sorted(set(a.tools) - WORKER_TOOLS)
     if extra:

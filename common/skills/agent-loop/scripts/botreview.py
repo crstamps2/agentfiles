@@ -105,10 +105,26 @@ def write_comments_file(comments: list[dict], path: pathlib.Path) -> None:
     path.write_text("\n".join(lines))
 
 
+def _lenient_json(text: str):
+    """Model-written JSON: tolerate invalid backslash escapes (a shell `'\\''` quoting sequence inside a
+    string is `\\'`, which JSON forbids) by escaping stray backslashes, and a ```json fence."""
+    import re
+    t = text.strip()
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t)
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        fixed = re.sub(r'\\(?![\\/"bfnrtu])', r"\\\\", t)      # lone backslash not starting a valid escape -> literal backslash
+        return json.loads(fixed)
+
+
 def parse_adjudication(path: pathlib.Path) -> list[dict]:
     if not path.exists():
         raise RuntimeError("adjudication file not written")
-    data = json.loads(path.read_text())
+    try:
+        data = _lenient_json(path.read_text())
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"adjudication is not valid JSON: {e}")
     decs = data.get("decisions") if isinstance(data, dict) else None
     if not isinstance(decs, list):
         raise RuntimeError("adjudication has no decisions list")

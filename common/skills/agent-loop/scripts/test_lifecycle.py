@@ -287,6 +287,41 @@ class LifecycleTests(unittest.TestCase):
             r, steps, t = self.run_once(outcomes=("rejected",))
         self.assertEqual(t.state, "paused"); self.assertIn("needs a human", t.reason); self.assertEqual(r.calls, [])
 
+    def test_paused_ticket_self_heals_by_policy_and_records_it(self):
+        """A transient pause (heavy lane) re-enters its previous stage without a human; heal.jsonl records it."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        tt = state.transition(tt, "paused", reason="heavy lane held by a live owner"); state.save(tdir, tt)
+        r, steps, t = self.run_once(outcomes=("rejected",))
+        self.assertEqual(steps[0].action, "self-heal: retry"); self.assertEqual(r.calls, ["001"])   # implement resumed, worker ran
+        import heal; self.assertEqual(heal.history(tdir)[0]["action"], "retry")
+
+    def test_spent_heal_budget_waits_for_operator(self):
+        import heal
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        for _ in range(2): heal.record(tdir, "prepare-retry", "gates failed: rails test rc=1", "gates")
+        tt = state.transition(tt, "gates"); tt = state.transition(tt, "paused", reason="gates failed: rails test rc=1"); state.save(tdir, tt)
+        r, steps, t = self.run_once()
+        self.assertTrue(steps[0].wait); self.assertIn("needs operator", steps[0].action); self.assertEqual(r.calls, [])
+
+    def test_human_pause_reasons_wait(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        tt = state.transition(tt, "paused", reason="rebase onto origin/main conflicted before task 003; needs a human"); state.save(tdir, tt)
+        r, steps, t = self.run_once()
+        self.assertTrue(steps[0].wait); self.assertEqual(r.calls, [])
+
+    def test_accepted_but_uncommitted_task_is_republished_before_new_work(self):
+        import contracts as c, attempt as attempt_mod
+        tasks = c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "rung": {"agent": "x", "tier": "cheap", "n": 1}}]; state.save(tdir, tt)
+        d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True); (d / "task.toml").write_text(attempt_mod.task_toml(tasks[0]))
+        (self.wt / "app").mkdir(exist_ok=True); (self.wt / "app" / "a.rb").write_text("accepted but never committed\n")
+        published = []
+        with patch("runner.publish_accepted", side_effect=lambda cfg, key, wt, tk, ensure_pr=True: published.append(tk.id)), \
+             patch("runner._uncommitted_allowlisted", side_effect=lambda wt, tk: ["app/a.rb"] if tk.id == "001" else []):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(published, ["001"]); self.assertIn("published previously accepted work", step.action)
+
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()
         r, steps, t = self.run_once()

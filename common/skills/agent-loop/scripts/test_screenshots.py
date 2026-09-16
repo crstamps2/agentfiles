@@ -31,3 +31,18 @@ class PreviewPathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnsureDevServerTests(unittest.TestCase):
+    def test_non_200_gets_one_repair_pass_then_reprobes(self):
+        calls = []; probes = iter([(500, "boom"), (500, "boom"), (200, "ok")])
+        with patch.object(screenshots, "_get", side_effect=lambda url, timeout=20: next(probes)), \
+             patch.object(screenshots.subprocess, "run", side_effect=lambda cmd, **k: calls.append(cmd[2])), patch("time.sleep", lambda s: None):
+            base = screenshots.ensure_dev_server("/wt/zip-x")
+        self.assertEqual(base, "https://admin.zip-x.test"); self.assertEqual(calls, ["bin/wt prepare --for rails"])
+
+    def test_persistent_failure_raises(self):
+        with patch.object(screenshots, "_get", return_value=(500, "boom")), patch.object(screenshots.subprocess, "run"), patch("time.sleep", lambda s: None):
+            with self.assertRaises(screenshots.VisualGateError):
+                screenshots.ensure_dev_server("/wt/zip-x")
+

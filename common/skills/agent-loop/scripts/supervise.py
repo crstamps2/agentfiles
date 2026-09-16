@@ -84,10 +84,15 @@ def start(key: str, worktree: str, state_root: pathlib.Path) -> str:
     p = write_plist(key, worktree, state_root)
     uid = os.getuid()
     _launchctl("bootout", f"gui/{uid}/{label(key)}")            # idempotent: ignore "not found"
-    r = _launchctl("bootstrap", f"gui/{uid}", str(p))
-    if r.returncode:
-        raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip()}")
-    return label(key)
+    # launchd unloads asynchronously; a bootstrap that races the bootout fails with EIO (5). Retry briefly.
+    import time
+    last = None
+    for _ in range(10):
+        r = _launchctl("bootstrap", f"gui/{uid}", str(p))
+        if r.returncode == 0:
+            return label(key)
+        last = r.stderr.strip(); time.sleep(0.5)
+    raise RuntimeError(f"launchctl bootstrap failed: {last}")
 
 
 def stop(key: str) -> None:

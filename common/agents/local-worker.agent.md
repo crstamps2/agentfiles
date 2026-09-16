@@ -39,6 +39,14 @@ boundaries and report honestly.
 9. Stop when the stop conditions are met or when you have nothing verifiable left
    to do. Do not pad.
 
+## Editing rules
+
+- Locale files (`config/locales/*.yml`) are edited by INSERTING lines with the `edit` tool, never
+  by loading and dumping YAML: a dump re-quotes the whole file and the repo's i18n normalization
+  hook rejects the push. After editing, run `bundle exec i18n-tasks normalize en` and confirm
+  `git diff --stat` shows only your additions.
+
+
 ## The result file
 
 Write `result.md` in the task directory (the path is given in the task file) even

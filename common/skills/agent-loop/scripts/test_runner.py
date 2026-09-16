@@ -614,6 +614,15 @@ after = ["001"]
         self.assertEqual([r["outcome"] for r in rows[:2]], ["rejected", "rejected"])   # cheap rungs are consumed as usual
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 3)         # first PREMIUM disagreement pauses
 
+    def test_premium_contract_complaint_is_environment_and_flagged_for_repair(self):
+        """ZIP-7872/005 x3: Terra reported STATUS: blocked / REASON: stale-todo -- the AC was unsatisfiable. That is
+        evidence about the plan: no rung consumed, complaint recorded for the task-writer, ticket pauses."""
+        outcome, rows = self.run_task("fail", "fail", "contract", "contract")
+        self.assertEqual([r["outcome"] for r in rows[2:4]], ["environment", "environment"])
+        self.assertIn("contract complaint", rows[2]["reason"])
+        bad = self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md"; self.assertTrue(bad.exists()); self.assertIn("stale-todo", bad.read_text())
+        self.assertEqual(outcome, "paused")
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

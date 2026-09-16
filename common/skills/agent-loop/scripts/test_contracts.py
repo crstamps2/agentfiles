@@ -40,9 +40,11 @@ class ParseResultTests(unittest.TestCase):
     def test_missing_optional_fields_default_empty(self):
         r = contracts.parse_result("STATUS: blocked\nREASON: owner\n")
         self.assertEqual(r.files, []); self.assertEqual(r.base, "")
-    def test_unknown_reason_normalizes_to_empty(self):
-        r = contracts.parse_result("STATUS: fail\nREASON: bogus\n")
-        self.assertEqual(r.reason, "")
+    def test_unknown_reason_is_kept_as_a_bounded_label(self):
+        """Changed 2026-09-15: an unknown REASON is evidence (a contract complaint label), not noise."""
+        r = contracts.parse_result("STATUS: blocked\nREASON: stale-todo\n"); self.assertEqual(r.reason, "stale-todo")
+        r = contracts.parse_result("STATUS: fail\nREASON: Some Long Prose; with punctuation!!\n"); self.assertEqual(r.reason, "some-long-prose-with-punctuation")
+        self.assertLessEqual(len(contracts.parse_result("STATUS: fail\nREASON: " + "x" * 200 + "\n").reason), 40)
 
 TASKS = """
 [[tasks]]

@@ -43,6 +43,9 @@ if scenario == "noop":
 if scenario == "pass_but_guard_fails":
     # Honest pass; the task's verification command will reject it (a wrong planner guard).
     target.write_text("edited by fake worker (pass_but_guard_fails)\n"); result("pass", files=[str(target)]); sys.exit(0)
+if scenario == "contract":
+    # Premium-style contract complaint: the task as written cannot be satisfied.
+    result("blocked", reason="stale-todo", nxt="Rewrite AC-5"); sys.exit(0)
 if scenario == "timeout":
     target.write_text(f"edited by fake worker ({scenario})\n")
     time.sleep(30)

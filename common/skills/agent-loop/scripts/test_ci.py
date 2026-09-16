@@ -14,7 +14,7 @@ class ClassifyTests(unittest.TestCase):
         v = ci.classify([C("zipline", "pending"), C("rubocop", "pass")], behind=3, attempts=0)
         self.assertEqual(v.action, "wait"); self.assertEqual(v.pending, ["zipline"])
 
-    def test_fail_and_behind_rebases_first(self):
+    def test_fail_and_behind_rebases_first_when_failure_is_not_a_flake(self):
         v = ci.classify([C("zipline", "fail")], behind=2, attempts=1, failure_text="NoMethodError")
         self.assertEqual(v.action, "rebase")
 
@@ -58,3 +58,20 @@ class LinkParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CircleCITests(unittest.TestCase):
+    def test_es_shard_503_is_flaky_and_reruns_once(self):
+        txt = "## job unit_tests #1 failed\n- Communication::Search::AnalysisTest::x\n  Elastic::Transport::Transport::Errors::ServiceUnavailable: [503] missing shards"
+        self.assertTrue(ci.looks_flaky(txt))
+        v = ci.classify([ci.Check("zipline", "fail", link="https://app.circleci.com/workflow/8e147625-2636-481a-9cad-2484a176ba46")], behind=11, attempts=1, failure_text=txt)
+        self.assertEqual(v.action, "rerun")                  # a visible flake outranks "behind base": a rebase cannot fix an ES 503
+
+    def test_failure_excerpt_reads_failed_jobs_and_tests(self):
+        from unittest.mock import patch
+        jobs = {"items": [{"name": "unit_tests", "status": "failed", "job_number": 7}, {"name": "jest", "status": "success", "job_number": 8}]}
+        tests = {"items": [{"result": "failure", "classname": "A", "name": "b", "message": "boom"}, {"result": "success"}]}
+        with patch.object(ci, "_circle", side_effect=lambda p: jobs if p.endswith("/job") else tests):
+            txt = ci.circleci_failure_excerpt("https://app.circleci.com/workflow/8e147625-2636-481a-9cad-2484a176ba46")
+        self.assertIn("unit_tests #7 failed", txt); self.assertIn("A::b", txt); self.assertIn("boom", txt); self.assertNotIn("jest", txt)
+

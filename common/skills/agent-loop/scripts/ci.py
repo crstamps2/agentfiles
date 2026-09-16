@@ -33,7 +33,9 @@ INFRA_PATTERNS = (
     r"The operation was canceled", r"lost connection to the ssh agent", r"ResourceExhausted",
 )
 FLAKY_HINTS = (r"Capybara::ElementNotFound", r"Net::ReadTimeout", r"Selenium::WebDriver::Error", r"deadlock detected",
-               r"PG::ConnectionBad", r"Redis::CannotConnectError", r"Elasticsearch::Transport::Transport::Errors")
+               r"PG::ConnectionBad", r"Redis::CannotConnectError", r"Elasticsearch::Transport::Transport::Errors",
+               r"Elastic::Transport::Transport::Errors::ServiceUnavailable", r"missing shards", r"search_phase_execution_exception",
+               r"Errno::ECONNREFUSED", r"Faraday::ConnectionFailed")
 
 
 @dataclass
@@ -89,13 +91,15 @@ def classify(checks: list[Check], *, behind: int, attempts: int, failure_text: s
         return Verdict("wait", f"{len(pending)} check(s) still running", [], pending)
     if attempts >= MAX_CI_ATTEMPTS:
         return Verdict("escalate", f"CI still failing after {attempts} loop attempts: {', '.join(failing)}", failing, pending)
-    if behind > 0 and "rebase" not in prior_actions[-1:]:
-        return Verdict("rebase", f"{behind} commit(s) behind base; rebase before diagnosing {', '.join(failing)}", failing, pending)
     if failure_text and (looks_infra(failure_text) or looks_flaky(failure_text)):
-        # never rerun twice in a row on the same head: the second identical failure is real
+        # A visible infra/flake signature outranks "behind base": a rebase cannot fix an ES 503 and
+        # costs a full CI run (ZIP-4294 sat on a rebase verdict for a flaky unit_tests job).
+        # Never rerun twice in a row on the same head: the second identical failure is real.
         if prior_actions[-1:] == ("rerun",):
             return Verdict("fix", f"infra-looking failure repeated after rerun; treating as real: {', '.join(failing)}", failing, pending)
         return Verdict("rerun", f"infra/flake signature in failure output: {', '.join(failing)}", failing, pending)
+    if behind > 0 and "rebase" not in prior_actions[-1:]:
+        return Verdict("rebase", f"{behind} commit(s) behind base; rebase before diagnosing {', '.join(failing)}", failing, pending)
     if not failure_text:
         return Verdict("rerun" if prior_actions[-1:] != ("rerun",) else "fix",
                        f"no failure output obtainable for {', '.join(failing)}", failing, pending)
@@ -125,3 +129,69 @@ def rerun_gha(link: str, repo: str, cwd) -> bool:
 def circleci_workflow_id(link: str) -> str | None:
     m = re.search(r"circleci\.com/workflow/([0-9a-f-]{36})", link or "")
     return m.group(1) if m else None
+
+
+# ----------------------------------------------------------------------------- CircleCI
+
+CIRCLE_API = "https://circleci.com/api/v2"
+CIRCLE_PROJECT = "gh/retailzipline/zipline-app"
+
+
+def _circle(path: str):
+    import os, urllib.request
+    tok = os.environ.get("CIRCLECI_TOKEN") or _keychain("CIRCLECI_TOKEN")
+    if not tok:
+        return None
+    req = urllib.request.Request(f"{CIRCLE_API}{path}", headers={"Circle-Token": tok})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _keychain(service: str) -> str | None:
+    r = subprocess.run(["security", "find-generic-password", "-s", service, "-w"], capture_output=True, text=True)
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def circleci_failure_excerpt(link: str, max_chars: int = 6000) -> str:
+    """Failed test names + messages for every failed job of the workflow behind a CircleCI check link.
+    This is what lets the classifier see an Elasticsearch 503 for what it is (ZIP-4294 PR #47942 sat on
+    'rebase' for hours because the failure text was invisible, 2026-09-16)."""
+    wid = circleci_workflow_id(link)
+    if not wid:
+        return ""
+    jobs = _circle(f"/workflow/{wid}/job") or {}
+    out = []
+    for j in jobs.get("items", []):
+        if j.get("status") != "failed" or not j.get("job_number"):
+            continue
+        out.append(f"## job {j['name']} #{j['job_number']} failed")
+        tests = _circle(f"/project/{CIRCLE_PROJECT}/{j['job_number']}/tests") or {}
+        for t in tests.get("items", []):
+            if t.get("result") == "failure":
+                out.append(f"- {t.get('classname')}::{t.get('name')}\n  {(t.get('message') or '')[:500]}")
+    return "\n".join(out)[-max_chars:]
+
+
+def circleci_failed_jobs(link: str) -> list[int]:
+    wid = circleci_workflow_id(link)
+    jobs = _circle(f"/workflow/{wid}/job") if wid else None
+    return [j["job_number"] for j in (jobs or {}).get("items", []) if j.get("status") == "failed" and j.get("job_number")]
+
+
+def rerun_circleci(link: str) -> bool:
+    """Rerun only the failed jobs of the workflow (never an empty commit, never a full rerun)."""
+    import os, urllib.request
+    wid = circleci_workflow_id(link)
+    tok = os.environ.get("CIRCLECI_TOKEN") or _keychain("CIRCLECI_TOKEN")
+    if not wid or not tok:
+        return False
+    req = urllib.request.Request(f"{CIRCLE_API}/workflow/{wid}/rerun", data=json.dumps({"from_failed": True}).encode(),
+                                 headers={"Circle-Token": tok, "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return 200 <= r.status < 300
+    except Exception:  # noqa: BLE001
+        return False

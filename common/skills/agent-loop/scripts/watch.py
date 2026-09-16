@@ -28,6 +28,8 @@ def snapshot(cfg, key: str) -> dict:
     cij = tdir / "ci.json"
     if cij.exists():
         ci = json.loads(cij.read_text()); snap["pr"] = ci.get("pr"); snap["ci_actions"] = ci.get("actions", [])[-1:] ; snap["bot_rounds"] = ci.get("bot_rounds")
+        if snap["pr"]:
+            snap["pr_state"] = pr_state(snap["pr"])       # "draft" | "ready" | "merged" | "closed" -- the PR's REAL state, not the stage name
     root = cfg.state_root / "attempts" / key
     newest = None
     if root.exists():
@@ -60,7 +62,7 @@ def spend(cfg, key: str) -> float:
 def fmt(key: str, s: dict, cost: float) -> str:
     parts = [f"{key} [{s['state']}]"]
     if s.get("attempt"): parts.append(s["attempt"])
-    if s.get("pr"): parts.append(f"PR #{s['pr']}")
+    if s.get("pr"): parts.append(f"PR #{s['pr']}" + (f" ({s['pr_state']})" if s.get("pr_state") else ""))
     if s.get("ci_actions"): parts.append(f"ci:{s['ci_actions'][0]}")
     if s.get("bot_rounds"): parts.append(f"bot-round {s['bot_rounds']}")
     parts.append(f"sup:{s.get('sup','?').replace('state=','')}")
@@ -86,3 +88,21 @@ def run(cfg, key: str, once: bool = False, interval: int = 20) -> int:
             if s["state"] in ("human-gate-1", "done"): print(f"{_now()}  READY FOR CODY" + (f": https://github.com/retailzipline/zipline-app/pull/{s['pr']}" if s.get('pr') else ""), flush=True)
             return 0
         time.sleep(interval)
+
+
+_PR_CACHE: dict = {}
+
+
+def pr_state(pr: int) -> str:
+    """Cached (60 s) GitHub truth for the PR: draft / ready / merged / closed. The ticket stage `ready`
+    means the runner is WORKING ON getting it ready; Cody reads this field to know whether it is."""
+    import subprocess, time as _t
+    now = _t.time(); hit = _PR_CACHE.get(pr)
+    if hit and now - hit[0] < 60:
+        return hit[1]
+    r = subprocess.run(["gh", "pr", "view", str(pr), "--repo", "retailzipline/zipline-app", "--json", "isDraft,state", "--jq", '"\(.state) \(.isDraft)"'],
+                       capture_output=True, text=True, timeout=30)
+    out = r.stdout.strip().split()
+    st = "?" if len(out) != 2 else ("merged" if out[0] == "MERGED" else "closed" if out[0] == "CLOSED" else "draft" if out[1] == "true" else "ready")
+    _PR_CACHE[pr] = (now, st); return st
+

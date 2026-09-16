@@ -115,8 +115,11 @@ def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
     changed = sorted(changed)
     ignored = worktree.ignored_paths(wt, changed)
     globs = getattr(cfg, "harness_artifact_globs", ())
+    # A DELETED tracked file is a change to commit (a style migration removes the old partial --
+    # ZIP-7875/002); only drop paths that neither exist nor are tracked.
+    tracked = set(subprocess.run(["git", "-C", str(wt), "ls-files", "--", *changed], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()) if changed else set()
     return [p for p in changed if p not in ignored and not any(worktree._match(p, g) for g in globs)
-            and (pathlib.Path(wt) / p).exists()]
+            and ((pathlib.Path(wt) / p).exists() or p in tracked)]
 
 
 def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> None:

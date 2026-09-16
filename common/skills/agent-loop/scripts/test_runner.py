@@ -663,6 +663,25 @@ after = ["001"]
         outcome, rows = self.run_task("pass")
         self.assertEqual(rows[-1]["arm"], "cloud")                      # pinned by the blocked (real) outcome, not by alternate[]
 
+    def test_publish_includes_deleted_tracked_files_in_the_task_allowlist(self):
+        """ZIP-7875/002: a style migration deleted _stepper.scss; publish skipped the deletion (path no longer
+        exists) and then its own completeness guard refused the incoherent tree."""
+        import contracts as c
+        (self.wt / "app" / "components").mkdir(parents=True, exist_ok=True); (self.wt / "app" / "components" / "old.rb").write_text("x\n")
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "old")
+        (self.wt / "app" / "components" / "old.rb").unlink()
+        task = c.load_tasks(self.cfg.state_root.parent / "tasks.toml")[0]
+        tdir = self.cfg.ticket_dir("ZIP-7873"); t = state.load(tdir)
+        t.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted"}]; state.save(tdir, t)
+        adir = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; adir.mkdir(parents=True)
+        (adir / "attempt.json").write_text(json.dumps({"attempt_id": "x", "lineage": "ZIP-7873/001", "n": 1, "status": "PROJECTED", "outcome": "accepted",
+                                                       "changed_paths": [], "worktree": str(self.wt), "repo_id": "", "base_tree": "", "stages": [], "rung": {}, "agent": "a", "arm": "cloud", "run_id": "r", "rev": 1, "history": True, "published": True, "lifecycle": True}))
+        (self.wt / "planning" / "zip-7873").mkdir(parents=True, exist_ok=True)
+        (self.wt / "planning" / "zip-7873" / "tasks.toml").write_text((self.cfg.state_root.parent / "tasks.toml").read_text())
+        with patch.object(runner.attempt, "load", return_value=type("R", (), {"outcome": "accepted", "changed_paths": []})()):
+            paths = runner._accepted_source_paths(self.cfg, "ZIP-7873", "001", self.wt)
+        self.assertIn("app/components/old.rb", paths)
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

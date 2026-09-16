@@ -65,21 +65,36 @@ def ensure_dev_server(wt) -> str:
     return base
 
 
+def preview_path(base: str, component: str) -> str:
+    """Discover the Lookbook preview path for a component from the Lookbook nav itself. Previews may be
+    namespaced (`ZUI::Nav::NavLinkPreview` -> `/lookbook/inspect/zui/nav/nav_link/...`) so the path is not
+    simply `zui/<component_dir>` (ZIP-7872 gate false-failed on that assumption, 2026-09-16)."""
+    code, body = _get(f"{base}/lookbook/")
+    paths = set(re.findall(r'href="/lookbook/inspect/(zui/[a-z0-9_/]+)/[a-z0-9_]+"', body))
+    exact = [p for p in paths if p.endswith("/" + component)]
+    if exact:
+        return sorted(exact, key=len)[0]
+    loose = [p for p in paths if p.split("/")[-1].replace("_", "") == component.replace("_", "")]
+    if loose:
+        return sorted(loose, key=len)[0]
+    raise VisualGateError(f"no Lookbook preview found for component {component!r}; nav has {sorted(paths)[:12]}")
+
+
 def scenarios(base: str, component: str) -> list[str]:
-    """Scenario names from the inspect page's nav (Lookbook renders links to each)."""
-    code, body = _get(f"{base}/lookbook/inspect/zui/{component}/default")
-    if code == 404:
-        code, body = _get(f"{base}/lookbook/")
-    names = sorted(set(re.findall(rf'href="/lookbook/inspect/zui/{re.escape(component)}/([a-z0-9_]+)"', body)))
+    """Scenario names for the component's preview, from the Lookbook nav."""
+    path = preview_path(base, component)
+    code, body = _get(f"{base}/lookbook/")
+    names = sorted(set(re.findall(rf'href="/lookbook/inspect/{re.escape(path)}/([a-z0-9_]+)"', body)))
     if not names:
-        raise VisualGateError(f"no Lookbook scenarios found for zui/{component}")
+        raise VisualGateError(f"no Lookbook scenarios found for {path}")
     return names
 
 
 def capture(base: str, component: str, out_dir: pathlib.Path, width=1280, height=720) -> dict[str, pathlib.Path]:
     out_dir.mkdir(parents=True, exist_ok=True); chrome = chrome_binary(); shots = {}
+    path = preview_path(base, component)
     for name in scenarios(base, component):
-        url = f"{base}/lookbook/preview/zui/{component}/{name}"
+        url = f"{base}/lookbook/preview/{path}/{name}"
         code, body = _get(url)
         if code != 200 or "Action Controller: Exception caught" in body:
             raise VisualGateError(f"{url} -> {code}" + (" (exception page)" if "Exception caught" in body else ""))

@@ -263,6 +263,30 @@ class LifecycleTests(unittest.TestCase):
         build_i = next(i for i, c in enumerate(cmds) if "yarn build" in c); test_i = next(i for i, c in enumerate(cmds) if "rails test" in c)
         self.assertLess(build_i, test_i)
 
+    def test_rebase_conflict_in_generated_file_is_regenerated_not_escalated(self):
+        seq = {"n": 0}
+        def sh(cmd, cwd, timeout):
+            import subprocess
+            key = " ".join(cmd)
+            if cmd[:2] == ["git", "rebase"] and "--continue" not in cmd: return subprocess.CompletedProcess(cmd, 1, "", "CONFLICT")
+            if "--diff-filter=U" in key:
+                seq["n"] += 1; return subprocess.CompletedProcess(cmd, 0, ".rubocop/zui_todo.yml\n" if seq["n"] == 1 else "", "")
+            if cmd[:2] == ["git", "status"]: return subprocess.CompletedProcess(cmd, 0, "", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(lifecycle.ci, "behind_base", return_value=2), patch.object(lifecycle, "_sh", side_effect=sh):
+            r, steps, t = self.run_once(outcomes=("rejected",))
+        self.assertEqual(r.calls, ["001"]); self.assertNotEqual(t.state, "paused")      # resolved, task dispatched
+
+    def test_rebase_conflict_in_hand_written_file_pauses(self):
+        def sh(cmd, cwd, timeout):
+            import subprocess
+            if cmd[:2] == ["git", "rebase"] and "--continue" not in cmd: return subprocess.CompletedProcess(cmd, 1, "", "CONFLICT")
+            if "--diff-filter=U" in " ".join(cmd): return subprocess.CompletedProcess(cmd, 0, "app/views/components/zui/x.rb\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(lifecycle.ci, "behind_base", return_value=2), patch.object(lifecycle, "_sh", side_effect=sh):
+            r, steps, t = self.run_once(outcomes=("rejected",))
+        self.assertEqual(t.state, "paused"); self.assertIn("needs a human", t.reason); self.assertEqual(r.calls, [])
+
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()
         r, steps, t = self.run_once()

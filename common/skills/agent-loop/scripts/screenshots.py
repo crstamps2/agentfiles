@@ -55,11 +55,19 @@ def ensure_dev_server(wt) -> str:
     """Make sure the worktree's dev server answers and migrations are current."""
     base = worktree_url(wt)
     code, body = _get(f"{base}/lookbook/")
-    if code == 500 and "Migrations are pending" in body or code == 0:
+    if code != 200:
+        # Any non-200 (pending migrations, stale deps after a rebase, dead server) gets ONE repair pass:
+        # prepare (deps + migrations), start the server if it is down, re-probe with patience. (ZIP-4294's
+        # gate false-failed on a 500 that `bin/wt prepare` cleared in seconds, 2026-09-16.)
         subprocess.run(["bash", "-lc", "bin/wt prepare --for rails"], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
         if code == 0:
             subprocess.run(["bash", "-lc", "bin/wt dev --start"], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
-        code, body = _get(f"{base}/lookbook/")
+        import time
+        for _ in range(6):
+            code, body = _get(f"{base}/lookbook/")
+            if code == 200:
+                break
+            time.sleep(10)
     if code != 200:
         raise VisualGateError(f"{base}/lookbook/ answered {code}")
     return base

@@ -465,8 +465,12 @@ HOUSE_STYLE_EXAMPLE_PR = 47860     # a PR of Cody's whose structure/voice is the
 def _pr_house_style(cfg, key, wt, t) -> tuple[str, str]:
     import prbody
     summary = _ticket_summary(cfg, key)
-    component = _component_name(wt) or "component"
-    title = publish.pr_title(key, f"Add ZUI {component.replace('_', ' ').title()} component")
+    # Title from the TICKET summary ("ZUI Component Library - ViewComponent - Card - Header Start"
+    # -> "Add ZUI Card Header Start"), not from the component directory: a slot added to Card is not
+    # "Add ZUI Card component" (PR #47940).
+    parts = [p.strip() for p in summary.split(" - ")]
+    tail = " ".join(parts[2:]) if len(parts) >= 3 and parts[0].lower().startswith("zui") else (_component_name(wt) or "component").replace("_", " ").title()
+    title = publish.pr_title(key, f"Add ZUI {tail}")
     shots_p = cfg.ticket_dir(key) / "screenshots.json"; shots_md = None
     if shots_p.exists():
         shots = {k: pathlib.Path(v) for k, v in json.loads(shots_p.read_text()).items()}

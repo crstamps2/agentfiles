@@ -30,7 +30,9 @@ Paths: scripts `~/workspace/agentfiles/common/skills/agent-loop/scripts` (`R`), 
 
 Because `watch` blocks, use the idle loop (LoopCreate triggerType "idle", trigger "idle", recurring)
 ONLY as a fallback wake: on each idle wake run `watch --once`; if the state is paused/blocked run
-Triage, otherwise re-enter the foreground `watch` and say nothing else.
+Triage, otherwise re-enter the foreground `watch` and say nothing else. **Never pause or complete
+the loop yourself** except at `READY FOR CODY`; there is no state in which this pane should be
+silent while the ticket is not at the gate.
 
 ## Triage (the only time you spend tokens)
 
@@ -54,7 +56,10 @@ When `watch` shows **paused** or **blocked**, read the reason line and classify:
   `resume --from implement`; environmental → `resume --from gates`.
 - `publish failed` / `reply failed` / traceback / `adjudication unusable` / `verification ... passes
   on re-run` → **runner defect**. Print `RUNNER DEFECT: <reason>`, append to transcript, do NOT patch
-  `$R`, re-enter `watch`. The operator session fixes the runner.
+  `$R`, and **re-enter the foreground `watch`** -- never stop the loop. The operator fixes the runner
+  and runs `runner.py resume`; `watch` will print the state change and you continue from there.
+  A pane that stops "pending operator repair" goes stale the moment the operator resumes the ticket
+  from elsewhere (ZIP-7872 showed a 7-hour-old pause while the runner shipped three tasks).
 
 Every decision = one transcript entry `## <UTC ISO> decision — <one line>` with reason/evidence/action.
 Then re-enter the foreground `watch`.
@@ -71,3 +76,5 @@ is done until Cody reviews.
   or anything under `$R`. Never delete attempt records or `planning/`. Never `git reset`/`checkout`.
 - `touch $S/PAUSE` is Cody's kill switch; if present, say so and re-enter `watch`.
 - Keep model output to the decision lines above. The watch loop is the pane's voice.
+- Your own pi session writes `.pi/` state into the worktree; it is git-excluded. Never format,
+  lint, or otherwise touch `.pi/**` or `planning/**` files -- they are not source.

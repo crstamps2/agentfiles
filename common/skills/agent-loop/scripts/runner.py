@@ -692,6 +692,10 @@ def main(argv=None) -> int:
         else:
             print(f"{a.ticket}: already {t.state}; restarting supervisor only")
         wt = a.worktree or t.worktree or str(pathlib.Path("~/workspace/zipline-worktrees").expanduser() / a.ticket.lower())
+        st = supervise.status(a.ticket)
+        if "state=running" in st and t.state not in ("paused", "blocked"):
+            # A live runner will pick up the state change on its own loop; bouncing it kills the attempt in flight.
+            print(f"supervisor already running ({st}); not restarting"); return 0
         print("supervisor", supervise.start(a.ticket, wt, cfg.state_root)); return 0
     if a.cmd == "watch":
         import watch

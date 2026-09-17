@@ -19,6 +19,7 @@ class TicketSpec:
     key: str
     deps: list = dataclasses.field(default_factory=list)
     pin_arm: str | None = None
+    exclude: str | None = None      # reason string => never drip this ticket
 
 
 @dataclasses.dataclass(frozen=True)
@@ -59,6 +60,7 @@ class Config:
     local_model: str | None = None
     local_unload_after_attempt: bool = True
     workers_parallel: int = 1        # concurrent worker (light) stages; verification stays serialised on the heavy lane
+    drip: dict = dataclasses.field(default_factory=dict)
 
     def ticket_dir(self, key: str) -> pathlib.Path:
         return self.state_root / "tickets" / key
@@ -84,7 +86,7 @@ def load(path: pathlib.Path | None = None) -> Config:
     h, p, t, a, b, pr, arms, oc = (raw[k] for k in REQUIRED_TABLES)
     tickets = {}
     for row in h.get("tickets", []):
-        spec = TicketSpec(key=row["key"], deps=list(row.get("deps", [])), pin_arm=row.get("pin_arm"))
+        spec = TicketSpec(key=row["key"], deps=list(row.get("deps", [])), pin_arm=row.get("pin_arm"), exclude=row.get("exclude"))
         tickets[spec.key] = spec
     local_model = None
     local_unload_after_attempt = True
@@ -110,7 +112,7 @@ def load(path: pathlib.Path | None = None) -> Config:
         protected_paths=list(pr["protected_paths"]),
         test_path_globs=list(pr["test_path_globs"]),
         harness_artifact_globs=list(pr.get("harness_artifact_globs", [])),
-        arms_alternate=list(arms["alternate"]), workers_parallel=int(arms.get("workers_parallel", 1)),
+        arms_alternate=list(arms["alternate"]), workers_parallel=int(arms.get("workers_parallel", 1)), drip=dict(raw.get("drip", {})),
         outcomes=dict(oc),
         local_model=local_model,
         local_unload_after_attempt=local_unload_after_attempt,

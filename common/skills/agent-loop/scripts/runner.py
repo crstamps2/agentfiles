@@ -70,7 +70,7 @@ def _harden_lint_cmd(cmd: str) -> str:
         return m.group(0) + " --force-exclusion"
     if "--force-exclusion" in cmd:
         return cmd
-    return _re.sub(r"\b(rubocop|reek)\b(?=\s)", fix, cmd)
+    return _re.sub(r"(?:(?<=^)|(?<=[\s;&|]))(rubocop|reek)(?=\s)", fix, cmd)
 
 
 def vs_out_tail(attempt_dir, idx: int, n: int = 1200) -> str:

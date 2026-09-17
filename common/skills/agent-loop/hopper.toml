@@ -6,21 +6,10 @@ epic = "ZIP-6774"
 owned_epics = ["ZIP-6774"]          # cmux listener skips children of these
 
 # Dependency graph. Order here is also the tie-break order.
-# Order per Martin Hofmann's audit on the epic (ZIP-6774 comment 87183, 2026-09-14):
-#   👍 Nav Link/Tabs/Pills, Card Header Start, Stepper (Item deprecated), Modal (+AI Modal as variant), Dropzone
-#   ❌ Well ("deprecated from Bootstrap; replace with Card secondary"), Card Spotlight (deprecated)
-#   ❓ Section (purpose unclear) -- not run autonomously
-# ZIP-7873 (Well) stays listed only because it already reached Human Gate 1; Cody decides its fate.
-[[hopper.tickets]]
-key = "ZIP-7872"   # Nav Link
-[[hopper.tickets]]
-key = "ZIP-7877"   # Card Header Start
-[[hopper.tickets]]
-key = "ZIP-7875"   # Stepper
-[[hopper.tickets]]
-key = "ZIP-4294"   # Modal
-[[hopper.tickets]]
-key = "ZIP-7874"   # Dropzone
+# The hopper is now a DRIP fed from Jira (runner.py drip): children of the epic, board Rank order
+# (top first), any assignee, skipping tickets excluded below or whose `deps` are not Done in Jira.
+# Tickets listed here are only for overrides: `deps` (dependency edges the board cannot express),
+# `pin_arm`, or `exclude = true` with a reason. Anything not listed inherits defaults.
 [[hopper.tickets]]
 key = "ZIP-4281"   # Nav Tabs
 deps = ["ZIP-7872"]
@@ -28,7 +17,21 @@ deps = ["ZIP-7872"]
 key = "ZIP-4282"   # Nav Pills
 deps = ["ZIP-7872"]
 [[hopper.tickets]]
-key = "ZIP-7873"   # Well -- at Human Gate 1; Martin's audit says replace with Card secondary
+key = "ZIP-4293"   # Section
+exclude = "Martin's epic audit (comment 87183): purpose unclear (❓)"
+[[hopper.tickets]]
+key = "ZIP-7876"   # Card Spotlight
+exclude = "Martin's epic audit (comment 87183): deprecated (❌)"
+[[hopper.tickets]]
+key = "ZIP-7873"   # Well
+exclude = "Martin's epic audit: replace with Card secondary; PR #47894 at Human Gate 1 pending Cody's decision"
+
+[drip]
+epic = "ZIP-6774"
+max_in_flight = 3            # tickets between spinup and human-gate-1 at once (memory: dev servers + verification)
+issue_types = ["Story", "Task", "Bug"]
+skip_assigned_to_others = false   # Cody: "assigned to me or not" -- but ONLY tickets in the ready column (Selected for Work); In Progress = a person owns it
+jql_extra = ""               # appended to the epic JQL if needed
 
 [paths]
 state_root = "~/.local/state/agent-loop"

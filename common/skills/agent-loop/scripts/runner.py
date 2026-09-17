@@ -612,14 +612,13 @@ def main(argv=None) -> int:
     ro.add_argument("--max-steps", type=int, default=12); ro.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES")
     ro.add_argument("--supervised", action="store_true", help="launchd mode: exit 0 only at human-gate-1/done; exit 1 on any wait so KeepAlive restarts us")
     sv = sub.add_parser("supervise", help="start/stop/status launchd agents that keep run-once alive per ticket")
-    sv.add_argument("action", choices=["start", "stop", "status"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
-    rh = sub.add_parser("run-hopper", help="drive eligible hopper tickets to Human Gate 1 unattended (spinup + lifecycle, round-robin)")
-    rh.add_argument("--max-new-tickets", type=int, default=3); rh.add_argument("--max-hours", type=float, default=13.0)
-    rh.add_argument("--report", default=None, help="write the morning report JSON here")
+    sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
     rs = sub.add_parser("resume", help="operator: put a paused/blocked ticket back in motion (default: re-plan) and (re)start its supervisor")
     rs.add_argument("--ticket", required=True); rs.add_argument("--from", dest="from_state", default="plan", choices=["plan", "implement", "gates", "draft-pr", "ready", "bot-loop"])
     rs.add_argument("--worktree", default=None)
     ov = sub.add_parser("overview", help="one line per hopper ticket: state, reason, PR, supervisor, spend")
+    dp = sub.add_parser("drip", help="fill free in-flight slots from the top of the epic board (Jira Rank order); spinup + supervisor + pane per ticket")
+    dp.add_argument("--dry-run", action="store_true"); dp.add_argument("--max-in-flight", type=int, default=None)
     wa = sub.add_parser("watch", help="pane-friendly live view of ONE ticket: stage, task/attempt, worker, elapsed, PR, spend; prints a line on every change")
     wa.add_argument("--ticket", required=True); wa.add_argument("--once", action="store_true"); wa.add_argument("--interval", type=int, default=20)
     lg = sub.add_parser("ledger", help="tokens and cost by model / role / ticket / day from the pi session logs")
@@ -652,6 +651,11 @@ def main(argv=None) -> int:
     if a.cmd == "watch":
         import watch
         return watch.run(cfg, a.ticket, once=a.once, interval=a.interval)
+    if a.cmd == "drip":
+        import drip
+        if a.max_in_flight is not None: cfg.drip["max_in_flight"] = a.max_in_flight
+        started = drip.tick(cfg, log=lambda m: print(m, flush=True), dry_run=a.dry_run)
+        print("started:", started); return 0
     if a.cmd == "overview":
         import supervise, ledger
         rows = ledger.collect(cfg.state_root); spend = {}
@@ -672,6 +676,10 @@ def main(argv=None) -> int:
         if a.action == "status":
             for k in (supervise.active() if not a.ticket else [a.ticket]): print(k, supervise.status(k))
             return 0
+        if a.action == "drip-start":
+            print("started", supervise.start_drip(cfg.state_root)); return 0
+        if a.action == "drip-stop":
+            supervise.stop_drip(); print("drip stopped"); return 0
         if a.action == "stop":
             supervise.stop(a.ticket); print("stopped", a.ticket); return 0
         wt = a.worktree or str(pathlib.Path("~/workspace/zipline-worktrees").expanduser() / a.ticket.lower())
@@ -709,12 +717,6 @@ def main(argv=None) -> int:
     except reconcile.FenceExit as e:
         print(f"fenced: {e.reason}", file=sys.stderr); return 3
     try:
-        if a.cmd == "run-hopper":
-            import hopper
-            rep = hopper.run_hopper(cfg, r, ctx, max_new_tickets=a.max_new_tickets, max_hours=a.max_hours,
-                                    log=lambda m: print(m, file=sys.stderr, flush=True))
-            out = pathlib.Path(a.report) if a.report else cfg.state_root / "hopper-report.json"
-            out.write_text(json.dumps(rep, indent=2)); print(json.dumps(rep, indent=2)); return 0
         if a.cmd == "run-once":
             import lifecycle
             import time as _time

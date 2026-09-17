@@ -229,3 +229,33 @@ def _spent(stage_root: pathlib.Path) -> float:
     except Exception:  # noqa: BLE001
         return 0.0
 
+
+def repair_plan(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) -> dict:
+    """Resume a FAILED plan from its last `revise` review: task-writer applies the blockers, schema check,
+    one more critic round. Costs a Sonnet pass + one critic pass (~$3) instead of a full re-plan (~$10-20),
+    and keeps the critic's work. Returns the same log shape as plan_ticket()."""
+    wt = pathlib.Path(wt); stage_root = pathlib.Path(stage_root); stage_root.mkdir(parents=True, exist_ok=True)
+    asg = assignment(cfg, hopper_index)
+    plan_dir = wt / "planning" / key.lower(); manifest = plan_dir / "tasks.toml"; review = plan_dir / "plan-review.md"
+    log = {"key": key, "author_model": asg["author_model"], "critic_model": asg["critic_model"], "rounds": [], "repair": True}
+    if not (manifest.exists() and (plan_dir / "plan.md").exists() and review_verdict(review) == "revise"):
+        log["result"] = "failed"; log["reason"] = "nothing to repair: no plan + revise review on disk"; return log
+    ticket_json = export_ticket(key, stage_root / "ticket.json")
+    t2 = time.monotonic()
+    _run_agent(cfg, WRITER_DEF, _writer_prompt(key, wt), stage_root / "writer-1", wt, 900)
+    wm = _last_marker(stage_root / "writer-1", "REVISION")
+    if wm.lower().startswith("blocked"):
+        log["result"] = "blocked"; log["reason"] = f"task-writer: {wm}"; return log
+    violations = validate_manifest(manifest)
+    if violations:
+        log["result"] = "failed"; log["reason"] = f"task-writer left the manifest invalid: {violations[:3]}"; return log
+    t1 = time.monotonic()
+    _run_agent(cfg, CRITIC_DEF, _critic_prompt(key, ticket_json, wt, PLAN_ROUNDS), stage_root / "critic-1", wt, PLAN_TIMEOUT_S, model=asg["critic_model"])
+    verdict = review_verdict(review)
+    log["rounds"].append({"round": 1, "writer_s": round(t1 - t2), "writer_marker": wm, "critic_s": round(time.monotonic() - t1), "verdict": verdict})
+    if verdict == "approve":
+        log["result"] = "approved"; log["manifest"] = str(manifest); return log
+    if verdict == "block":
+        log["result"] = "blocked"; log["reason"] = "critic: tier-4 question for the owner (see plan-review.md)"; return log
+    log["result"] = "failed"; log["reason"] = f"critic verdict {verdict!r} after repair"; return log
+

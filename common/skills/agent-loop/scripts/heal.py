@@ -34,7 +34,8 @@ POLICIES = [
     (r"^gates failed: rails test", "prepare-retry", 2),
     (r"^visual gate failed", "prepare-retry", 3),
     (r"^guard failed on the BASE tree|contract complaint|guard disagreement", "repair", 4),
-    (r"^guard repair left the manifest invalid|^plan failed|budget exceeded", "repair", 2),
+    (r"^guard repair left the manifest invalid", "repair", 2),
+    (r"^plan failed|budget exceeded|task-writer left the manifest invalid", "replan", 3),   # -> plan stage; it repairs from the revise review when one exists
     (r"^publish failed|^finalize failed|^mark ready failed|^reply failed|^adjudication unusable|^adjudication is not valid", "republish", 3),
     (r"^rebase (onto origin/main )?conflict", "human", 0),
     (r"need Cody|NEEDS CODY|^HUMAN file|owner question|tier-3", "human", 0),

@@ -64,6 +64,21 @@ says so (hand-written merge conflict, design question) or the budget is spent. R
 to `tickets/<K>/heal.jsonl`. Notifications (cmux + macOS) fire once per ticket at Human Gate 1, on an
 operator-needed pause, or on block.
 
+| pause reason | action | budget |
+|---|---|---|
+| `resource:` / heavy lane / slot | retry | 200 |
+| verification timeout / heavy lane busy | retry | 6 |
+| `gates failed` / `visual gate failed` | prepare + retry | 2–3 |
+| `guard failed on the BASE tree` / contract complaint / guard disagreement | task-writer repairs the manifest (bad-guards.md) | 4 |
+| `plan failed` / budget exceeded / writer left manifest invalid | back to `plan`: repair from the revise review (≤2), then full re-plan | 3 |
+| `publish failed` / `finalize failed` / mark-ready / reply / adjudication | republish (after the runner fix that caused it) | 3 |
+| rebase conflict in hand-written files / design question / `HUMAN` file | **human** | — |
+
+Other invariants the runner enforces so these do not recur: clean base before each attempt (stray
+tracked edits reverted + logged), pre-task rebase (generated-file conflicts regenerate), lint guards
+honour repo exclusions, rejecting guards are re-run on the base tree and charged to the plan when
+they fail there too, accepted work is committed completely (deletions included) or publish refuses.
+
 ## Daily operation
 
 ```

@@ -125,6 +125,21 @@ class LoopTests(unittest.TestCase):
             log = plan.plan_ticket(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
         self.assertEqual(log["result"], "failed"); self.assertIn("budget exceeded", log["reason"])
 
+    def test_repair_plan_applies_review_then_one_critic_round(self):
+        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
+        (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(self.GOOD); (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
+        self.script = [self.writer_applies(), self.critic_says("approve")]
+        with patch.object(plan, "_run_agent", self.fake_run_agent), patch.object(plan, "export_ticket", lambda k, d: d), \
+             patch.object(plan, "assignment", lambda cfg, i: {"author_model": "A", "critic_model": "C"}):
+            log = plan.repair_plan(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
+        self.assertEqual(log["result"], "approved"); self.assertEqual(self.calls, ["task-writer", "flagship-critic"])   # no author round
+        self.assertIn("FINAL ROUND", (self.stage / "critic-1" / "prompt.md").read_text())
+
+    def test_repair_plan_refuses_without_a_revise_review(self):
+        with patch.object(plan, "assignment", lambda cfg, i: {"author_model": "A", "critic_model": "C"}):
+            log = plan.repair_plan(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
+        self.assertEqual(log["result"], "failed"); self.assertIn("nothing to repair", log["reason"])
+
     def test_stale_review_is_moved_aside_before_round_one(self):
         pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True); (pd / "plan-review.md").write_text("VERDICT: revise\nstale")
         self.script = [self.author_writes(self.GOOD), self.critic_says("approve")]

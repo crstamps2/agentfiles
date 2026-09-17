@@ -378,6 +378,24 @@ class LifecycleTests(unittest.TestCase):
             step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
         self.assertEqual(published, ["001"]); self.assertIn("published previously accepted work", step.action)
 
+    def test_failed_plan_with_revise_review_is_repaired_not_replanned(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.Ticket(key="ZIP-7873", state="plan", previous="spinup"); state.save(tdir, tt)
+        (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")
+        (self.wt / "planning" / "zip-7873" / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
+        calls = []
+        with patch.object(lifecycle.plan_mod, "repair_plan", side_effect=lambda *a, **k: calls.append("repair") or {"result": "approved", "rounds": [], "author_model": "A", "critic_model": "C"}), \
+             patch.object(lifecycle.plan_mod, "plan_ticket", side_effect=lambda *a, **k: calls.append("replan") or {"result": "approved", "rounds": []}):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(calls, ["repair"]); self.assertEqual(state.load(tdir).state, "implement")
+        self.assertEqual((tdir / "plan-repairs.n").read_text(), "1")
+
+    def test_plan_failed_pause_heals_back_to_plan_stage(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir); tt.state = "plan"; tt.previous = "spinup"; state.save(tdir, tt)
+        tt = state.transition(tt, "paused", reason="plan failed: critic verdict 'revise' after 2 rounds"); state.save(tdir, tt)
+        with patch.object(lifecycle.plan_mod, "repair_plan", return_value={"result": "approved", "rounds": [], "author_model": "A", "critic_model": "C"}):
+            steps = lifecycle.run_once(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2, max_steps=2)
+        self.assertEqual(steps[0].action, "self-heal: replan"); self.assertIn("approved", steps[1].action)
+
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()
         r, steps, t = self.run_once()

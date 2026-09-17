@@ -36,14 +36,20 @@ Paths: scripts `~/workspace/agentfiles/common/skills/agent-loop/scripts` (`R`), 
 
 ## Triage (the only time you spend tokens)
 
-When `watch` shows **paused** or **blocked**, read the reason line and classify:
+First: most pauses heal themselves (`heal.py`: retry / prepare-retry / repair / replan / republish,
+each with a budget; see `tickets/<T>/heal.jsonl`). `watch` prints `self-heal: <action>` when that
+happens -- do nothing. You act only when `watch` shows `needs operator: …` (policy says human, or a
+budget is spent) or `blocked`. Then read the reason line and classify:
 
 - `resource:` / `heavy lane` / `slot` → transient. `python3 runner.py resume --ticket X --from implement`.
-- `plan failed` / `budget exceeded` → read `planning/<t>/plan-review.md` BLOCKERS + `tasks.toml`.
-  Mechanical blockers → fix `tasks.toml` yourself (smallest edit), validate:
-  `python3 -c 'import plan,pathlib; print(plan.validate_manifest(pathlib.Path("planning/<t>/tasks.toml")))'`
-  must print `[]`, then `resume --from implement`. Otherwise `resume` (re-plan) with your notes
-  appended to plan.md under `## Coordinator notes`.
+- `plan failed` / `budget exceeded` / `task-writer left the manifest invalid` → **the runner heals this
+  itself**: heal policy `replan` (budget 3) sends the ticket back to `plan`, which REPAIRS from the
+  critic's `revise` review (task-writer applies the blockers, one more critic round) up to twice, then
+  re-plans from scratch. Do NOT edit `tasks.toml` yourself -- you would race the repair. Only if
+  `watch` shows `needs operator: replan already tried 3x` do you act: read the latest
+  `plan-review.md`, decide whether the critic is right (quote evidence), and either append your
+  ruling under `## Coordinator decisions` in plan.md and `resume` (full re-plan), or print
+  `NEEDS CODY:` with the disagreement.
 - planner/premium `blocked` with an owner question → answer FROM EVIDENCE (ticket text, the repo
   skill, a shipped sibling; quote the line), write it under `## Coordinator decisions` in plan.md,
   `resume`. If evidence genuinely conflicts: print `NEEDS CODY: <question>` + both pieces of

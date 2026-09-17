@@ -337,6 +337,31 @@ class Runner:
             # may have already blocked/paused it) and recompute the ladder from persisted
             # history. A "blocked"/"paused" ticket state is caught at the top of the loop.
 
+    def _revert_stray_tracked_edits(self, t, task, wt) -> list[str]:
+        """Tracked files modified/deleted in the worktree that no task of this ticket may edit -- i.e. not in
+        ANY task's allowed_files -- are reverted to HEAD. Files some task owns are left (they may be
+        accepted work awaiting publish). Returns the reverted paths."""
+        st = subprocess.run(["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        globs = []
+        try:
+            globs = [g for tk in contracts.load_tasks(pathlib.Path(wt) / "planning" / t.key.lower() / "tasks.toml") for g in tk.allowed_files]
+        except Exception:  # noqa: BLE001
+            globs = list(task.allowed_files)
+        reverted = []
+        for line in st.stdout.splitlines():
+            code, p = line[:2], line[3:].strip()
+            if code.startswith("?"):
+                continue                                             # untracked: not ours to delete
+            if any(worktree._match(p, g) for g in globs):
+                continue                                             # some task owns it: leave it
+            subprocess.run(["git", "-C", str(wt), "checkout", "--", p], capture_output=True)
+            reverted.append(p)
+        if reverted:
+            log = self.cfg.ticket_dir(t.key) / "stray-edits.jsonl"; log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a") as f:
+                f.write(json.dumps({"ts": _now(), "task": task.id, "reverted": reverted}) + "\n")
+        return reverted
+
     def _flag_bad_guard(self, t, task, cmd: str, output: str) -> None:
         """Append the bad guard to planning/<key>/bad-guards.md; the lifecycle hands that file to the
         task-writer, which rewrites the guard (or drops it) before the task is retried."""
@@ -362,6 +387,14 @@ class Runner:
         if rung.agent == "local-worker" and self.cfg.local_model and agent.model != self.cfg.local_model:
             raise RuntimeError(
                 f"local-worker renders {agent.model} but [local].model is {self.cfg.local_model}")
+        # CLEAN-BASE INVARIANT. Every attempt starts from a tree whose tracked files equal HEAD. A stray
+        # modification left by an earlier attempt (e.g. `i18n-tasks normalize` re-wrapping am.yml) is not
+        # this worker's work, yet the allowlist would charge every later attempt for it (ZIP-7875/005 x3
+        # -> block). Tracked stray edits are reverted here and recorded; untracked strays are left alone
+        # (they may be another task's accepted-but-unpublished output) but reported.
+        strays = self._revert_stray_tracked_edits(t, task, wt)
+        if strays:
+            print(f"{t.key}/{task.id}: reverted stray tracked edits before attempt {n}: {strays[:6]}", file=sys.stderr, flush=True)
         try:
             rec = attempt.create(self.cfg, t.key, task, wt, n, agent, arm, rung, self.run_id)
             reconcile._maybe_crash("after-created")

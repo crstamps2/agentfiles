@@ -12,13 +12,21 @@ branch `agent-loop-1` (unmerged, never pushed). Spinup changes live on the dotfi
 | what | where |
 |---|---|
 | runner + all modules + tests | `common/skills/agent-loop/scripts/` (`python3 runner.py …`, tests: `python3 -m unittest discover -p 'test_*.py'`) |
-| ticket order, arms, budgets, admission thresholds | `common/skills/agent-loop/hopper.toml` |
+| drip rules (epic, max in flight), per-ticket overrides (deps/exclude/pin_arm), arms, budgets, admission | `common/skills/agent-loop/hopper.toml` |
 | model tiers (author/critic/task-writer/workers) | `common/model-tiers.toml` → rendered agent defs in `~/.pi/agent/agents/*.md` (source: `common/agents/*.agent.md`) |
 | operator skill (fleet) | `/agent-loop` → `common/skills/agent-loop/SKILL.md` |
 | coordinator pane skill (one ticket) | `/loop-watch <TICKET>` → `common/skills/loop-watch/SKILL.md` |
 | runtime state | `~/.local/state/agent-loop/` — `tickets/<K>/{state.json,ci.json,heal.jsonl,bad-guards.md,gates.out,screenshots/}`, `attempts/<K>/<task>/<n>/`, `plans/`, `botreview/`, `usage.jsonl`, `locks/`, `launchd/*.log` |
 | per-ticket planning artifacts (never committed) | `<worktree>/planning/<key>/{plan.md,tasks.toml,plan-review.md,transcript.md}` (git-excluded via the repo's shared `info/exclude`) |
 | supervisors | `~/Library/LaunchAgents/com.cody.agent-loop.<ticket>.plist`, run via the codesigned `~/.local/bin/agent-loop-python` |
+
+## Intake (the drip)
+
+`drip.py`: children of the epic, board Rank order, only the ready column (`Selected for Work`), any
+assignee, minus `exclude`d tickets and tickets whose `deps` are not Done in Jira (no autonomous PR
+stacks). Keeps `max_in_flight` (3) tickets between spinup and Human Gate 1; gated tickets do not
+occupy a slot. Each pick: full cmux spinup (agent tab runs `/loop-watch`), assign to Cody, In
+Progress, launchd supervisor. Runs every 15 min as `com.cody.agent-loop.drip`.
 
 ## Lifecycle (one ticket)
 
@@ -61,7 +69,8 @@ operator-needed pause, or on block.
 ```
 /agent-loop                       # fleet: state, PR, spend, supervisor per ticket
 /agent-loop resume all            # after a reboot or a stop: everything back in motion + panes
-/agent-loop start [N]             # next eligible hopper ticket(s): spinup + supervisor + pane
+/agent-loop start                 # drip: next ready ticket(s) from the top of the epic board (Jira Rank)
+#   runner.py supervise drip-start   # install the 15-min LaunchAgent so the drip runs itself
 /agent-loop pause | unpause       # touch/rm ~/.local/state/agent-loop/PAUSE
 /agent-loop stop ZIP-X            # unload one supervisor (state kept)
 /agent-loop ledger [since DATE]   # billed $ by model / role / ticket / day
@@ -90,7 +99,7 @@ under the current shape planning is ~$6–20/ticket. Terra ~$15–25/ticket; Son
 
 - Intra-ticket task parallelism is built (`parallel.py`) but gated off (`tasks_parallel`) until
   `implement_task` is thread-safe per ticket.
-- `spinup --loop` (agent tab launches `/loop-watch`, supervisor starts after setup) not yet in the
+- Drip spinups launch the agent tab with `/loop-watch` directly; the manual `spinup` skill does not yet have a `--loop` flag (the
   spinup skill; `/agent-loop start` does it in three steps.
 - Figma Code Connect: workers produce a static mapping that parses; the handoff/publish step is an
   owner action and is listed among the tier-3 items in each Gate 1 report.

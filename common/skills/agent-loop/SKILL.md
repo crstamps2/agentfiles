@@ -34,14 +34,19 @@ terminal titled `pi '/loop-watch X'`, open one (new terminal surface → `cd <wo
 `NODE_OPTIONS= pi '/loop-watch X'`) and a Jira tab in the browser pane if missing.
 Finish with `/agent-loop status`.
 
-## `/agent-loop start [N]`  -- "start new work from the hopper"
+## `/agent-loop start` / `drip`  -- "start new work from the board"
 
-Eligible = in `hopper.toml` order, no worktree yet, every `deps` ticket is `done`. For the first N
-(default 1; never more than 3 in flight at once):
-1. `spinup <TICKET>` (the normal cmux spinup; until `spinup --loop` lands, start the agent tab idle).
-2. When setup finishes: `python3 runner.py supervise start --ticket <TICKET>`.
-3. In the workspace's agent tab: `/loop-watch <TICKET>`.
-Report each ticket's workspace and that its supervisor is loaded.
+The hopper is a **drip fed from Jira**: children of the epic in board Rank order (top first), any
+assignee, only tickets in the ready column (`Selected for Work`), skipping tickets excluded in
+`hopper.toml` (Martin's audit) and tickets whose `deps` are not Done in Jira (no autonomous PR
+stacks). It keeps `[drip].max_in_flight` (3) tickets between spinup and Human Gate 1.
+
+- `python3 runner.py drip --dry-run` -- show what it would start and why others were skipped.
+- `python3 runner.py drip` -- start now (spinup with all panes incl. `/loop-watch`, assign to Cody,
+  In Progress, supervisor).
+- `python3 runner.py supervise drip-start` -- install the 15-minute LaunchAgent so the drip runs
+  itself forever; `drip-stop` removes it.
+Tickets at Human Gate 1 do not occupy a slot (they wait on Cody, not the machine).
 
 ## `/agent-loop pause` / `unpause`
 `touch ~/.local/state/agent-loop/PAUSE` -- every runner and coordinator halts at its next boundary

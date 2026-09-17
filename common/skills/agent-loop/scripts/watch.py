@@ -77,13 +77,17 @@ def run(cfg, key: str, once: bool = False, interval: int = 20) -> int:
     last = None; last_beat = 0.0; last_cost = None
     while True:
         s = snapshot(cfg, key)
-        cost = spend(cfg, key) if (last_cost is None or time.time() - last_beat > 120) else last_cost
+        sig_now = json.dumps(s, sort_keys=True)
+        if last_cost is None or sig_now != last or time.time() - last_beat > 120:
+            cost = spend(cfg, key)
+        else:
+            cost = last_cost
         last_cost = cost
         sig = json.dumps(s, sort_keys=True)
         if sig != last:
             print(f"{_now()}  {fmt(key, s, cost)}", flush=True); last = sig; last_beat = time.time()
-        elif time.time() - last_beat > 300:
-            print(f"{_now()}  · still {s['state']}" + (f", {s['attempt'].split('[')[0].strip()}" if s.get('attempt') else "") + f"  ${cost:.2f}", flush=True); last_beat = time.time()
+        elif time.time() - last_beat > 120:
+            print(f"{_now()}  · watching — still {s['state']}" + (f", {s['attempt'].split('[')[0].strip()}" if s.get('attempt') else "") + f"  ${cost:.2f}", flush=True); last_beat = time.time()
         if once or s["state"] in ("human-gate-1", "done"):
             if s["state"] in ("human-gate-1", "done"): print(f"{_now()}  READY FOR CODY" + (f": https://github.com/retailzipline/zipline-app/pull/{s['pr']}" if s.get('pr') else ""), flush=True)
             return 0

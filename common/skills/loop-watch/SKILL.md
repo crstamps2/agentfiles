@@ -23,16 +23,16 @@ Paths: scripts `~/workspace/agentfiles/common/skills/agent-loop/scripts` (`R`), 
    `python3 runner.py supervise start --ticket <TICKET> --worktree <cwd>`.
 2. `python3 runner.py watch --ticket <TICKET> --once` and print its line verbatim.
 3. Append `## <UTC ISO> coordinator started` to the transcript.
-4. **Hand the pane to the live view**: run `python3 runner.py watch --ticket <TICKET>` in the
-   FOREGROUND with a long timeout (it exits by itself at Human Gate 1). Cody reads its output.
-   Wrap it: `python3 runner.py watch --ticket <TICKET> 2>&1 | tee -a <worktree>/planning/<t>/watch.log`
-   is fine. When the command returns, go to **Triage** (if paused/blocked) or **Gate** (if READY).
-
-Because `watch` blocks, use the idle loop (LoopCreate triggerType "idle", trigger "idle", recurring)
-ONLY as a fallback wake: on each idle wake run `watch --once`; if the state is paused/blocked run
-Triage, otherwise re-enter the foreground `watch` and say nothing else. **Never pause or complete
-the loop yourself** except at `READY FOR CODY`; there is no state in which this pane should be
-silent while the ticket is not at the gate.
+4. **Open the live view in its OWN cmux tab**, never as a blocking tool call in this pane
+   (a 3.7-hour "Working…" spinner reads as a hang -- ZIP-7875, 2026-09-17):
+   `cmux_open_terminal` with placement `tab`, title `<TICKET> loop watch`, command
+   `cd <worktree> && python3 <R>/runner.py watch --ticket <TICKET> 2>&1 | tee -a planning/<t>/watch.log`.
+   Then print ONE line in this pane: `Live view: tab "<TICKET> loop watch". I wake on paused/blocked.`
+   and go idle.
+5. Register the idle loop (LoopCreate triggerType "idle", trigger "idle", recurring). On each wake run
+   `python3 runner.py watch --ticket <TICKET> --once`: if paused/blocked → **Triage**; if
+   `READY FOR CODY` → **Gate**; otherwise say nothing (the tab is the voice) and go idle again.
+   **Never pause or complete the loop yourself** except at `READY FOR CODY`.
 
 ## Triage (the only time you spend tokens)
 

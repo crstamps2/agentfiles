@@ -76,6 +76,29 @@ def base_checkout(wt, base_tree: str) -> tempfile.TemporaryDirectory:
     return tmp
 
 
+def needs_repo_env(cmd: str) -> bool:
+    return bool(re.search(r"\b(rubocop|reek|i18n-tasks|slim-lint|stylelint|prettier|eslint|figma connect parse|agent_run)\b", cmd))
+
+
+def _attribute_in_place(cmd: str, wt) -> str:
+    """Stash the worker's changes (incl. untracked), run the guard on the resulting base content in the
+    real worktree, restore. Any failure to stash/restore -> 'unknown' (never leave the tree altered)."""
+    wt = pathlib.Path(wt)
+    st = subprocess.run(["git", "-C", str(wt), "stash", "push", "--include-untracked", "-q", "-m", "al-guard-attribution"], capture_output=True, text=True)
+    if st.returncode:
+        return "unknown"
+    try:
+        r = _sh(cmd, wt)
+    finally:
+        subprocess.run(["git", "-C", str(wt), "stash", "pop", "-q"], capture_output=True, text=True)
+    if r.returncode == 0:
+        return "worker"
+    paths = _referenced_paths(cmd)
+    if paths and not all((wt / p).exists() for p in paths):
+        return "worker"                          # guard inspects the task's own new files; base failure expected
+    return "guard"
+
+
 def _referenced_paths(cmd: str) -> list[str]:
     return re.findall(r"\b((?:app|test|config|lib|linters|spec|db)/[\w./-]+)", cmd)
 
@@ -89,6 +112,12 @@ def attribute_rejection(task, cmd: str, wt, base_tree: str) -> str:
       'unknown' -- side-effecting / environment-bound command; not attributable this way."""
     if is_side_effecting(cmd):
         return "unknown"
+    if needs_repo_env(cmd):
+        # Tools that need the repo's bundle/config (rubocop, reek, i18n-tasks, figma parse) cannot run in a
+        # bare archive. Run them IN the worktree with the worker's changes stashed away: same env, base
+        # content. (ZIP-7875/005: a rubocop guard on an excluded path failed on base too, but attribution
+        # returned "unknown" and the worker was charged, four times.)
+        return _attribute_in_place(cmd, wt)
     try:
         tmp = base_checkout(wt, base_tree)
     except Exception:  # noqa: BLE001

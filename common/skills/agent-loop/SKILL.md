@@ -20,11 +20,15 @@ workspace runs `/loop-watch <TICKET>` as the coordinator. This skill is the *fle
 
 ## `/agent-loop resume [TICKET | all]`  -- "pick up where they left off"
 
+Normally unnecessary: supervisors are `RunAtLoad` and pauses self-heal by policy (`heal.py`). Use this
+after `supervise stop`, after removing a `HUMAN` file, or when `overview` shows `needs operator`.
+
 For each in-flight ticket (has a worktree; state not human-gate-1/done):
 - state `paused` or `blocked`: read the reason.
   - `resource:` / `heavy lane` → `python3 runner.py resume --ticket X --from implement` (transient).
-  - `plan failed` / `budget exceeded` / planner `blocked` → `python3 runner.py resume --ticket X`
-    (re-plans under the current rules).
+  - `plan failed` / `budget exceeded` → `python3 runner.py resume --ticket X` (back to `plan`, which
+    REPAIRS from the existing revise review before it ever re-plans). Planner `blocked` (tier-4 owner
+    question) → read plan-review.md / plan.md and report the question; do not resume blindly.
   - `gates failed` → `--from gates`; `publish failed`/`reply failed`/`mark ready failed` → `--from ready`
     (or `--from bot-loop` if a PR is already ready).
   - a traceback / "Runner defect" → do NOT resume; report it (the operator session fixes the runner).

@@ -290,6 +290,58 @@ class LifecycleTests(unittest.TestCase):
             r, steps, t = self.run_once(outcomes=("rejected",))
         self.assertEqual(t.state, "paused"); self.assertIn("needs a human", t.reason); self.assertEqual(r.calls, [])
 
+    def test_rebase_conflict_in_en_yml_resolved_by_taking_head_and_normalizing(self):
+        """config/locales/en.yml conflicts during rebase are resolved by keeping HEAD for each
+        conflicting hunk (preserving non-conflicting additions) and running i18n-tasks normalize.
+        The ticket must NOT be paused. (ZIP-7875)"""
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            en_yml = os.path.join(tmp, "config", "locales", "en.yml")
+            os.makedirs(os.path.dirname(en_yml))
+            # Simulate en.yml with a conflict marker; HEAD keeps its content, theirs adds stale keys.
+            # Non-conflicting stepper keys added earlier in the rebase must be preserved.
+            open(en_yml, "w").write(
+                "en:\n"
+                "  components:\n"
+                "    zui:\n"
+                "      stepper:\n"
+                "        aria_label: Progress\n"  # non-conflicting addition -- must survive
+                "<<<<<<< HEAD\n"
+                "  zipassist:\n"
+                "=======\n"
+                "  zipassist:\n"
+                "    stale_key: old value\n"
+                ">>>>>>> abc123 (some commit)\n"
+                "  other: value\n"
+            )
+            # normalize_cmd is "true" -- a no-op that exits 0, simulating a clean normalize
+            with patch.object(lifecycle, "_sh", return_value=__import__("subprocess").CompletedProcess([], 0, "", "")):
+                result = lifecycle._resolve_normalized_conflict("config/locales/en.yml", tmp, "true")
+            self.assertTrue(result)
+            resolved = open(en_yml).read()
+            self.assertIn("stepper:", resolved)        # non-conflicting addition preserved
+            self.assertIn("aria_label: Progress", resolved)
+            self.assertNotIn("stale_key", resolved)    # theirs (stale) side dropped
+            self.assertNotIn("<<<<<<<", resolved)      # no conflict markers remain
+
+    def test_rebase_conflict_in_en_yml_is_not_escalated_to_human(self):
+        """A rebase with only en.yml conflicting must not pause the ticket."""
+        seq = {"n": 0}
+        def sh(cmd, cwd, timeout):
+            import subprocess
+            if cmd[:2] == ["git", "rebase"] and "--continue" not in cmd:
+                return subprocess.CompletedProcess(cmd, 1, "", "CONFLICT")
+            if "--diff-filter=U" in " ".join(cmd):
+                seq["n"] += 1
+                return subprocess.CompletedProcess(cmd, 0, "config/locales/en.yml\n" if seq["n"] == 1 else "", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(lifecycle.ci, "behind_base", return_value=2), \
+             patch.object(lifecycle, "_sh", side_effect=sh), \
+             patch.object(lifecycle, "_resolve_normalized_conflict", return_value=True):
+            r, steps, t = self.run_once(outcomes=("rejected",))
+        self.assertNotEqual(t.state, "paused")  # resolved without human intervention
+        self.assertEqual(r.calls, ["001"])       # implement resumed, worker ran
+
     def test_paused_ticket_self_heals_by_policy_and_records_it(self):
         """A transient pause (heavy lane) re-enters its previous stage without a human; heal.jsonl records it."""
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)

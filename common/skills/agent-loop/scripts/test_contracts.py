@@ -172,4 +172,7 @@ class LintExclusionTests(unittest.TestCase):
         self.assertTrue(any("--force-exclusion" in e for e in contracts.validate_tasks(mk("bin/agent_run rubocop --cache false linters/x.rb"))))
         self.assertEqual(contracts.validate_tasks(mk("bin/agent_run rubocop --cache false --force-exclusion linters/x.rb")), [])
         self.assertTrue(any("--force-exclusion" in e for e in contracts.validate_tasks(mk("bundle exec reek app/x.rb"))))
+        # paths that merely CONTAIN the word are not invocations
+        self.assertEqual(contracts.validate_tasks(mk("grep -q 'linters/rubocop/zui/x.rb' .rubocop.yml")), [])
+        self.assertEqual(contracts.validate_tasks(mk("bin/rails test test/linters/rubocop/zui/x_test.rb")), [])
 

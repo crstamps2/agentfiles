@@ -114,6 +114,9 @@ def validate_tasks(data: dict) -> list:
             for c in cmds:
                 if isinstance(c, str) and re.search(r"(^|[\s'\"=/])planning/", c):
                     errs.append(f"{p}.verification_commands: references planning/ ({c[:60]!r}); use repo tools or a task-owned test")
+            for c in cmds:
+                if isinstance(c, str) and re.search(r"\b(rubocop|reek)\b", c) and "--force-exclusion" not in c:
+                    errs.append(f"{p}.verification_commands: rubocop/reek must pass --force-exclusion (explicit paths bypass AllCops Exclude, e.g. linters/**): {c[:70]!r}")
             extra = [c for c in cmds if isinstance(c, str) and not re.search(r"bin/wt prepare|rails test|rubocop|git diff --check|reek|yarn (build|prettier|eslint)|slim-lint|stylelint", c)]
             if len(extra) > MAX_EXTRA_VERIFICATION:
                 errs.append(f"{p}.verification_commands: {len(extra)} bespoke commands (max {MAX_EXTRA_VERIFICATION} beyond prepare/test/lint); fold checks into a task-owned test")

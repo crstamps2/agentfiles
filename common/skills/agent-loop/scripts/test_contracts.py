@@ -148,7 +148,7 @@ class VerificationShapeTests(unittest.TestCase):
         self.assertTrue(any("references planning/" in e for e in errs))
 
     def test_bespoke_command_budget(self):
-        std = ["bin/agent_run bin/wt prepare --for rails", "bin/agent_run rails test test/a_test.rb", "bin/agent_run rubocop --cache false a.rb", "git diff --check"]
+        std = ["bin/agent_run bin/wt prepare --for rails", "bin/agent_run rails test test/a_test.rb", "bin/agent_run rubocop --cache false --force-exclusion a.rb", "git diff --check"]
         ok = std + ["bin/rails runner 'abort unless X'", "ruby -e 'exit 1 unless File.read(\"a\").include?(\"b\")'", "grep -q foo a.rb"]
         self.assertEqual(contracts.validate_tasks(self.mk(ok)), [])
         errs = contracts.validate_tasks(self.mk(ok + ["bin/rails runner 'one more'"]))
@@ -164,4 +164,12 @@ class SizeTests(unittest.TestCase):
         self.assertTrue(contracts.validate_tasks(self.mk(size="small", allowed_files=["app/**"])))
         self.assertTrue(contracts.validate_tasks(self.mk(size="small", visual=True)))
         self.assertTrue(contracts.validate_tasks(self.mk(size="huge")))
+
+
+class LintExclusionTests(unittest.TestCase):
+    def test_rubocop_without_force_exclusion_is_rejected(self):
+        mk = lambda c: {"tasks": [{"id": "001", "slug": "s", "summary": "x", "allowed_files": ["a"], "verification_commands": [c], "acceptance": ["y"]}]}
+        self.assertTrue(any("--force-exclusion" in e for e in contracts.validate_tasks(mk("bin/agent_run rubocop --cache false linters/x.rb"))))
+        self.assertEqual(contracts.validate_tasks(mk("bin/agent_run rubocop --cache false --force-exclusion linters/x.rb")), [])
+        self.assertTrue(any("--force-exclusion" in e for e in contracts.validate_tasks(mk("bundle exec reek app/x.rb"))))
 

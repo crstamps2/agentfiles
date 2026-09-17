@@ -64,3 +64,23 @@ class AttributionTests(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InPlaceAttributionTests(Fixture):
+    def test_repo_env_guard_that_fails_on_base_content_is_charged_to_the_guard(self):
+        # simulate "rubocop" with a script that fails whenever base.rb lacks a marker the WORKER never adds
+        (self.wt / "bin").mkdir(); (self.wt / "bin" / "agent_run").write_text("#!/bin/sh\ngrep -q MARKER app/base.rb\n"); (self.wt / "bin" / "agent_run").chmod(0o755)
+        self.g("add", "-A"); self.g("commit", "-qm", "tool")
+        (self.wt / "app" / "new.rb").write_text("worker output\n")                 # the worker's untracked change
+        cmd = "bin/agent_run rubocop app/base.rb"
+        self.assertEqual(guards.attribute_rejection(T([cmd]), cmd, self.wt, "unused"), "guard")
+        self.assertTrue((self.wt / "app" / "new.rb").exists())                       # tree restored after the probe
+
+    def test_repo_env_guard_broken_by_the_worker_is_charged_to_the_worker(self):
+        (self.wt / "bin").mkdir(); (self.wt / "bin" / "agent_run").write_text("#!/bin/sh\n! grep -q BAD app/base.rb\n"); (self.wt / "bin" / "agent_run").chmod(0o755)
+        self.g("add", "-A"); self.g("commit", "-qm", "tool")
+        (self.wt / "app" / "base.rb").write_text("BAD\n")                            # the worker broke it
+        cmd = "bin/agent_run rubocop app/base.rb"
+        self.assertEqual(guards.attribute_rejection(T([cmd]), cmd, self.wt, "unused"), "worker")
+        self.assertEqual((self.wt / "app" / "base.rb").read_text(), "BAD\n")         # worker's change restored
+

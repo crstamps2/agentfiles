@@ -696,6 +696,11 @@ after = ["001"]
         self.assertEqual((self.wt / "config" / "am.yml").read_text(), "a: 1\n")
         log = self.cfg.ticket_dir("ZIP-7873") / "stray-edits.jsonl"; self.assertTrue(log.exists()); self.assertIn("config/am.yml", log.read_text())
 
+    def test_lint_commands_are_hardened_with_force_exclusion(self):
+        self.assertEqual(runner._harden_lint_cmd("bin/agent_run rubocop --cache false a.rb b.rb"), "bin/agent_run rubocop --force-exclusion --cache false a.rb b.rb")
+        self.assertEqual(runner._harden_lint_cmd("bundle exec reek --force-exclusion a.rb"), "bundle exec reek --force-exclusion a.rb")
+        self.assertEqual(runner._harden_lint_cmd("bin/rails test x"), "bin/rails test x")
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

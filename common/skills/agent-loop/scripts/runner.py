@@ -61,6 +61,18 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
     return "rejected", f"{res.status}/{res.reason}: {res.next}"
 
 
+def _harden_lint_cmd(cmd: str) -> str:
+    """rubocop/reek given explicit paths lint files the repo EXCLUDES (linters/** carries 13 pre-existing
+    offenses on main); CI never sees them because it runs with exclusions. Add --force-exclusion so a
+    guard matches CI. (ZIP-7875/005: 3 attempts rejected + 1 block on this, after the gates had the same fix.)"""
+    import re as _re
+    def fix(m):
+        return m.group(0) + " --force-exclusion"
+    if "--force-exclusion" in cmd:
+        return cmd
+    return _re.sub(r"\b(rubocop|reek)\b(?=\s)", fix, cmd)
+
+
 def vs_out_tail(attempt_dir, idx: int, n: int = 1200) -> str:
     out = ""
     for suf in (".out", ".err"):
@@ -523,7 +535,7 @@ class Runner:
             # The repository's pre-commit hooks (rubocop + reek on staged Ruby) are part of every
             # acceptance, whether or not the planner listed them: a task that passes its own
             # verification but fails the hook cannot be published (ZIP-4294 modal.rb, 2 reek warnings).
-            cmds = list(task.verification_commands) if heavy.held else []
+            cmds = [_harden_lint_cmd(c) for c in task.verification_commands] if heavy.held else []
             if heavy.held:
                 rb = [p for p in changed if p.endswith(".rb") and not p.startswith(("tmp/", ".pi/"))]
                 if rb and (pathlib.Path(wt) / "bin" / "agent_run").exists() and (pathlib.Path(wt) / ".reek.yml").exists():

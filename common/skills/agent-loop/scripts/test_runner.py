@@ -682,6 +682,20 @@ after = ["001"]
             paths = runner._accepted_source_paths(self.cfg, "ZIP-7873", "001", self.wt)
         self.assertIn("app/components/old.rb", paths)
 
+    def test_stray_tracked_edit_from_an_earlier_attempt_is_reverted_before_the_next(self):
+        """ZIP-7875/005 x3: a repo-wide normalize left config/locales/am.yml modified; every later attempt was
+        rejected for a file it never touched, until the ticket blocked. Tracked strays outside every task's
+        allowlist are reverted at attempt start; untracked files are left alone."""
+        (self.wt / "config").mkdir(exist_ok=True); (self.wt / "config" / "am.yml").write_text("a: 1\n")
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "locale")
+        (self.wt / "config" / "am.yml").write_text("a: 1\nb: 2\n")                      # stray tracked edit
+        (self.wt / "planning" / "zip-7873").mkdir(parents=True, exist_ok=True)
+        (self.wt / "planning" / "zip-7873" / "tasks.toml").write_text((self.cfg.state_root.parent / "tasks.toml").read_text())
+        outcome, rows = self.run_task("pass")
+        self.assertEqual(outcome, "accepted")                                                 # not rejected for am.yml
+        self.assertEqual((self.wt / "config" / "am.yml").read_text(), "a: 1\n")
+        log = self.cfg.ticket_dir("ZIP-7873") / "stray-edits.jsonl"; self.assertTrue(log.exists()); self.assertIn("config/am.yml", log.read_text())
+
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 
     def test_dry_run_cli_subprocess_never_calls_pi(self):

@@ -555,24 +555,69 @@ def _tree_clean(wt) -> bool:
 
 GENERATED = {".rubocop/zui_todo.yml": "bin/agent_run bundle exec ruby linters/generate_zui_todo.rb"}
 
+# Files whose rebase conflicts can be resolved by taking HEAD for each conflicting hunk
+# and then normalizing.  Unlike GENERATED files, we do NOT replace the whole file with
+# --ours because the commit being replayed may have already applied non-conflicting
+# additions (e.g. new locale keys) that must be preserved.  The normalize command
+# re-sorts the result so the file stays canonical.
+NORMALIZED = {"config/locales/en.yml": "bundle exec i18n-tasks normalize"}
+
+
+def _resolve_normalized_conflict(path: str, wt: str, normalize_cmd: str) -> bool:
+    """Resolve conflict markers in a normalizable file by taking HEAD for each
+    conflicting hunk while keeping non-conflicting content, then re-normalizing.
+    Returns True when the file is cleanly resolved and staged."""
+    import os
+    full = os.path.join(wt, path)
+    try:
+        content = open(full).read()
+    except OSError:
+        return False
+    if "<<<<<<< HEAD" not in content:
+        return True  # nothing to do
+    resolved, in_conflict, take = [], False, True
+    for line in content.splitlines(keepends=True):
+        if line.startswith("<<<<<<<"):
+            in_conflict, take = True, True   # "ours" during rebase = origin/main = HEAD side
+        elif line.startswith("======="):
+            take = False
+        elif line.startswith(">>>>>>>"):
+            in_conflict = False
+        elif not in_conflict or take:
+            resolved.append(line)
+    open(full, "w").writelines(resolved)
+    r = _sh(["bash", "-lc", normalize_cmd], wt, 300)
+    if r.returncode:
+        return False
+    _sh(["git", "add", path], wt, 60)
+    return True
+
 
 def _resolve_generated_conflicts(wt) -> bool:
-    """During a rebase, a conflict confined to GENERATED files is resolved by taking the upstream
-    version and re-running the generator, then continuing -- for every remaining commit. Any
-    conflict in a hand-written file returns False (the caller aborts and pauses for a human).
-    (ZIP-7872: .rubocop/zui_todo.yml conflicted after main gained new grandfather entries.)"""
+    """During a rebase, a conflict confined to GENERATED or NORMALIZED files is resolved
+    automatically, then the rebase continues -- for every remaining commit. Any conflict in
+    a hand-written file returns False (the caller aborts and pauses for a human).
+    GENERATED files are replaced wholesale (--ours) and regenerated.
+    NORMALIZED files have their conflict markers resolved hunk-by-hunk (HEAD wins) and are
+    renormalized, preserving non-conflicting additions the commit already applied.
+    (ZIP-7872: .rubocop/zui_todo.yml; ZIP-7875: config/locales/en.yml)"""
+    resolvable = set(GENERATED) | set(NORMALIZED)
     for _ in range(50):                                  # bounded: one iteration per rebased commit at most
         conflicted = _sh(["git", "diff", "--name-only", "--diff-filter=U"], wt, 60).stdout.split()
         if not conflicted:
             return True
-        if any(p not in GENERATED for p in conflicted):
+        if any(p not in resolvable for p in conflicted):
             return False
         for p in conflicted:
-            _sh(["git", "checkout", "--ours", p], wt, 60)      # during rebase, --ours = the upstream side
-            g = _sh(["bash", "-lc", GENERATED[p]], wt, 900)
-            if g.returncode:
-                return False
-            _sh(["git", "add", p], wt, 60)
+            if p in NORMALIZED:
+                if not _resolve_normalized_conflict(p, wt, NORMALIZED[p]):
+                    return False
+            else:
+                _sh(["git", "checkout", "--ours", p], wt, 60)  # during rebase, --ours = the upstream side
+                g = _sh(["bash", "-lc", GENERATED[p]], wt, 900)
+                if g.returncode:
+                    return False
+                _sh(["git", "add", p], wt, 60)
         r = _sh(["git", "-c", "core.editor=true", "rebase", "--continue"], wt, 600)
         if r.returncode == 0 and not _sh(["git", "diff", "--name-only", "--diff-filter=U"], wt, 60).stdout.strip():
             return True

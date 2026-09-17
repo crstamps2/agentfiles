@@ -700,6 +700,7 @@ after = ["001"]
         self.assertEqual(runner._harden_lint_cmd("bin/agent_run rubocop --cache false a.rb b.rb"), "bin/agent_run rubocop --force-exclusion --cache false a.rb b.rb")
         self.assertEqual(runner._harden_lint_cmd("bundle exec reek --force-exclusion a.rb"), "bundle exec reek --force-exclusion a.rb")
         self.assertEqual(runner._harden_lint_cmd("bin/rails test x"), "bin/rails test x")
+        self.assertEqual(runner._harden_lint_cmd("grep -q x linters/rubocop/zui/a.rb && cat .rubocop.yml"), "grep -q x linters/rubocop/zui/a.rb && cat .rubocop.yml")
 
     # ----- Re-review regression tests: C1, C3, I6 -------------------------------
 

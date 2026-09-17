@@ -138,6 +138,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             return step(cfg, runner, ctx, key, wt, hopper_index=hopper_index, pr_number=pr_number)
         if action == "repair":
             back = "plan"                                  # no recorded guard evidence: re-plan under current rules
+        if action == "replan":
+            back = "plan"                                  # plan stage repairs from the existing revise review, else re-plans
         if action == "republish":
             back = "implement"                             # implement re-runs publish for the accepted task before moving on
         t = state.transition(t, back, reason=f"self-heal: {action} — {why}"); _save(cfg, t)
@@ -161,7 +163,18 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             t = state.transition(t, "implement"); _save(cfg, t)
             return Step(key, "plan-review", "approved manifest present", detail=str(manifest))
         stage_root = cfg.state_root / "plans" / key / time.strftime("%Y%m%dT%H%M%S")
-        log = plan_mod.plan_ticket(cfg, key, wt, hopper_index, stage_root)
+        repairs_file = tdir / "plan-repairs.n"
+        repairs = int(repairs_file.read_text() or 0) if repairs_file.exists() else 0
+        if manifest.exists() and plan_mod.review_verdict(review) == "revise" and repairs < 2:
+            # A failed plan with a concrete `revise` review is REPAIRED (task-writer + one critic round), not
+            # re-planned from scratch: ~$3 instead of $10-20, and the critic's findings are kept. Two repairs
+            # max per ticket; then a full re-plan.
+            repairs_file.write_text(str(repairs + 1))
+            log = plan_mod.repair_plan(cfg, key, wt, hopper_index, stage_root)
+        else:
+            if repairs_file.exists(): repairs_file.unlink()
+            log = plan_mod.plan_ticket(cfg, key, wt, hopper_index, stage_root)
+        stage_root.mkdir(parents=True, exist_ok=True)
         (stage_root / "plan-log.json").write_text(json.dumps(log, indent=2))
         t = state.load(tdir); t.author_vendor = log.get("author_model", ""); t.critic_vendor = log.get("critic_model", "")
         if log.get("result") == "approved":

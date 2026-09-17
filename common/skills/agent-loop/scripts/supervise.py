@@ -116,9 +116,44 @@ def status(key: str) -> str:
 
 
 def active() -> list[str]:
-    return sorted(p.stem[len(LABEL_PREFIX) + 1:].upper() for p in AGENTS_DIR.glob(f"{LABEL_PREFIX}.*.plist"))
+    return sorted(p.stem[len(LABEL_PREFIX) + 1:].upper() for p in AGENTS_DIR.glob(f"{LABEL_PREFIX}.*.plist") if not p.stem.endswith(".drip"))
 
 
 if __name__ == "__main__":
     for k in active():
         print(k, status(k))
+
+
+DRIP_LABEL = f"{LABEL_PREFIX}.drip"
+
+
+def start_drip(state_root: pathlib.Path, interval_s: int = 900) -> str:
+    """A periodic LaunchAgent that runs `runner.py drip` every `interval_s` (default 15 min): fills free
+    in-flight slots from the top of the epic board. Idempotent; no-ops when slots are full."""
+    logs = state_root / "launchd"; logs.mkdir(parents=True, exist_ok=True)
+    plist = {"Label": DRIP_LABEL,
+             "ProgramArguments": [ensure_launcher(), str(SCRIPTS / "runner.py"), "drip"],
+             "WorkingDirectory": str(SCRIPTS),
+             "EnvironmentVariables": {"PATH": os.path.expanduser("~/.local/share/mise/shims") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                                      "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8", "MISE_YES": "1"},
+             "RunAtLoad": True, "StartInterval": interval_s, "ProcessType": "Background", "Nice": 5,
+             "StandardOutPath": str(logs / "drip.out.log"), "StandardErrorPath": str(logs / "drip.err.log")}
+    AGENTS_DIR.mkdir(parents=True, exist_ok=True); p = AGENTS_DIR / f"{DRIP_LABEL}.plist"
+    with open(p, "wb") as f:
+        plistlib.dump(plist, f)
+    uid = os.getuid(); _launchctl("bootout", f"gui/{uid}/{DRIP_LABEL}")
+    import time
+    for _ in range(10):
+        r = _launchctl("bootstrap", f"gui/{uid}", str(p))
+        if r.returncode == 0:
+            return DRIP_LABEL
+        time.sleep(0.5)
+    raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip()}")
+
+
+def stop_drip() -> None:
+    _launchctl("bootout", f"gui/{os.getuid()}/{DRIP_LABEL}")
+    p = AGENTS_DIR / f"{DRIP_LABEL}.plist"
+    if p.exists():
+        p.unlink()
+

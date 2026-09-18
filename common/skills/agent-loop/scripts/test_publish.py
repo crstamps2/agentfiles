@@ -170,3 +170,17 @@ class HookRejectionTests(unittest.TestCase):
         self.assertIn("gates failed", str(e.exception))
         self.assertEqual(heal.policy(str(e.exception))[0], "fix-task")   # a worker fixes the offenses
 
+    def test_stale_index_from_a_killed_attempt_is_discarded_before_staging(self):
+        """A killed attempt left the OLD copy of a file staged; `git add -- <allowlist>` did not refresh it,
+        so the hook linted content no gate had seen (ZIP-7875)."""
+        seen = []
+        with tempfile.TemporaryDirectory() as d:
+            def fake_run(argv, **kw):
+                seen.append(" ".join(argv))
+                return subprocess.CompletedProcess(argv, 0 if "--cached" in " ".join(argv) else 0, "", "")
+            with patch.object(publish.subprocess, "run", side_effect=fake_run):
+                publish.commit_paths(pathlib.Path(d), ["a.rb"], "msg")
+        reset_i = next(i for i, c in enumerate(seen) if "git reset -q" in c)
+        add_i = next(i for i, c in enumerate(seen) if "git add -A" in c)
+        self.assertLess(reset_i, add_i)                      # reset BEFORE staging the allowlist
+

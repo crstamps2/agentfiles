@@ -95,6 +95,12 @@ def _next_task(cfg, key, tasks):
 
 def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | None = None) -> Step:
     tdir = cfg.ticket_dir(key); t = state.load(tdir); t.worktree = str(wt)
+    if wt and pathlib.Path(wt).exists():
+        recovered = recover_interrupted_git_state(wt)
+        if recovered:
+            print(f"{key}: {recovered}", flush=True)
+            (tdir / "git-recovery.jsonl").open("a").write(json.dumps(
+                {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ"), "state": t.state, "action": recovered}) + "\n")
     wt = pathlib.Path(wt)
 
     if state.paused(cfg.state_root):
@@ -716,3 +722,38 @@ def _validate_or_revert(manifest: pathlib.Path, before: str) -> None:
     if viol:
         manifest.write_text(before)
         raise ValueError(f"generated task rejected by the schema (manifest unchanged): {viol[:3]}")
+
+
+def recover_interrupted_git_state(wt, sh=None) -> str:
+    """A rebase/merge interrupted by a restart leaves a DETACHED HEAD, and every later stage misreads the
+    worktree (ZIP-7875: a ManifestError crash loop killed the runner mid-rebase; publish then refused to
+    publish "from branch ''"). Finish what can be finished, otherwise abort so the branch ref -- and every
+    commit on it -- comes back. Returns a description, or "" when nothing was wrong.
+
+    Safe by construction: `rebase --abort` restores the pre-rebase branch tip; no commit is lost."""
+    sh = sh or (lambda argv, timeout=120: _sh(argv, wt, timeout))
+    gd = (sh(["git", "rev-parse", "--git-dir"], 30).stdout or "").strip() or ".git"
+    root = pathlib.Path(gd) if pathlib.Path(gd).is_absolute() else pathlib.Path(wt) / gd
+    in_rebase = any((root / d).exists() for d in ("rebase-merge", "rebase-apply"))
+    in_merge = (root / "MERGE_HEAD").exists()
+    if not (in_rebase or in_merge):
+        return ""
+    unmerged = [f for f in (sh(["git", "diff", "--name-only", "--diff-filter=U"], 60).stdout or "").split() if f]
+    if all(f in GENERATED or _is_locale(f) for f in unmerged):
+        for f in unmerged:
+            if f in GENERATED:
+                sh(["bash", "-lc", GENERATED[f]], 900)
+            else:
+                sh(["git", "checkout", "--theirs", "--", f], 60)
+                sh(["bash", "-lc", "bundle exec i18n-tasks normalize"], 900)
+            sh(["git", "add", "--", f], 60)
+        cont = ["git", "-c", "core.editor=true", "rebase", "--continue"] if in_rebase else ["git", "-c", "core.editor=true", "commit", "--no-edit"]
+        if sh(cont, 900).returncode == 0:
+            return f"finished an interrupted {'rebase' if in_rebase else 'merge'} ({len(unmerged)} generated/locale conflict(s) regenerated)"
+    sh(["git", "rebase", "--abort"] if in_rebase else ["git", "merge", "--abort"], 120)
+    return f"aborted an interrupted {'rebase' if in_rebase else 'merge'} left by a restart (branch restored; no commit lost)"
+
+
+def _is_locale(path: str) -> bool:
+    return path.startswith("config/locales/") and path.endswith((".yml", ".yaml"))
+

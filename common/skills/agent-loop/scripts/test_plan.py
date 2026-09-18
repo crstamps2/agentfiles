@@ -155,3 +155,41 @@ class LoopTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FailoverTests(unittest.TestCase):
+    def test_sibling_model_is_the_other_vendor_same_tier(self):
+        self.assertEqual(plan.sibling_model("openai-codex/gpt-6-astra"), "anthropic/claude-fable-5-1")
+        self.assertEqual(plan.sibling_model("anthropic/claude-opus-5"), "openai-codex/gpt-5.6-sol")
+        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5"), "openai-codex/gpt-5.4-mini")
+        self.assertIsNone(plan.sibling_model("something/unknown"))
+
+    def test_provider_exhaustion_retries_on_the_other_vendor_and_records_it(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d); calls = []
+            def fake(cfg, agent, prompt, stage, wt, timeout, model=None):
+                calls.append(model); stage.mkdir(parents=True, exist_ok=True)
+                if model == "openai-codex/gpt-6-astra":
+                    (stage / "stderr.log").write_text("Codex error: The usage limit has been reached\n")
+                else:
+                    (stage / "stdout.log").write_text("ADJUDICATION: written\n")
+            with patch.object(plan, "_run_agent", side_effect=fake):
+                res, used, out = plan.run_agent_with_failover(None, "review-adjudicator", "p", root / "s", root, 60,
+                                                              model="openai-codex/gpt-6-astra", log=lambda m: None)
+            self.assertEqual(calls, ["openai-codex/gpt-6-astra", "anthropic/claude-fable-5-1"])
+            self.assertEqual(used, "anthropic/claude-fable-5-1"); self.assertEqual(out, "")
+            self.assertIn("gpt-6-astra", (root / "s" / "failover.json").read_text())
+            self.assertIn("ADJUDICATION: written", (root / "s" / "stdout.log").read_text())   # artifacts copied back
+
+    def test_both_vendors_exhausted_reports_it(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            def dead(cfg, agent, prompt, stage, wt, timeout, model=None):
+                stage.mkdir(parents=True, exist_ok=True); (stage / "stderr.log").write_text("429 rate limit\n")
+            with patch.object(plan, "_run_agent", side_effect=dead):
+                res, used, out = plan.run_agent_with_failover(None, "r", "p", root / "s", root, 60,
+                                                              model="anthropic/claude-fable-5-1", log=lambda m: None)
+            self.assertTrue(out)
+

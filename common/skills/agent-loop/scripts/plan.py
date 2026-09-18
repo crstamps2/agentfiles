@@ -67,6 +67,46 @@ AUTHOR_MODELS = {"anthropic": "anthropic/claude-opus-5", "openai-codex": "openai
 CRITIC_MODELS = {"anthropic": "anthropic/claude-fable-5-1", "openai-codex": "openai-codex/gpt-6-astra"}
 
 
+def vendor_of(model: str) -> str:
+    return (model or "").split("/", 1)[0]
+
+
+def sibling_model(model: str) -> str | None:
+    """The other vendor's model of the same TIER. Used only when the assigned vendor is exhausted."""
+    for table in (AUTHOR_MODELS, CRITIC_MODELS):
+        if model in table.values():
+            other = [m for v, m in table.items() if v != vendor_of(model)]
+            return other[0] if other else None
+    return {"anthropic/claude-sonnet-5": "openai-codex/gpt-5.4-mini",
+            "openai-codex/gpt-5.4-mini": "anthropic/claude-sonnet-5"}.get(model)
+
+
+def run_agent_with_failover(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt, timeout_s: int,
+                            model: str | None = None, log=print):
+    """Run a flagship/mid-tier stage; if the PROVIDER refuses (usage limit, 429, overload), run the same
+    role once on the other vendor's model of the same tier and record the swap. Vendor independence that
+    matters is author-vs-critic within a plan; a provider outage must not stop the loop (2026-09-18,
+    Codex usage limit stalled ZIP-7875's bot review with a green PR waiting)."""
+    res = _run_agent(cfg, agent_name, prompt, stage_dir, wt, timeout_s, model=model)
+    out = provider_exhausted(stage_dir)
+    if not out:
+        return res, model, ""
+    alt = sibling_model(model) if model else None
+    if not alt:
+        return res, model, out
+    log(f"{agent_name}: {vendor_of(model)} unavailable ({out[:60]}); retrying on {alt}")
+    alt_dir = pathlib.Path(str(stage_dir) + "-failover")
+    res2 = _run_agent(cfg, agent_name, prompt, alt_dir, wt, timeout_s, model=alt)
+    out2 = provider_exhausted(alt_dir)
+    # the caller reads markers/files from stage_dir: copy the failover run's artifacts over
+    if not out2:
+        for f in alt_dir.iterdir():
+            if f.is_file():
+                (stage_dir / f.name).write_bytes(f.read_bytes())
+        (stage_dir / "failover.json").write_text(json.dumps({"from": model, "to": alt, "reason": out[:200]}))
+    return res2, alt, out2
+
+
 def assignment(cfg, hopper_index: int) -> dict:
     """Vendor assignment for this ticket. Roles are fixed definitions; the MODEL alternates per ticket
     so the critic is always the vendor that did not write the plan. Author tier is one step below
@@ -201,10 +241,13 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
     # Each critic `revise` is applied by the mid-tier task-writer, never by another author round.
     t0 = time.monotonic()
     for pass_ in range(1, 4):
-        st = _run_agent(cfg, AUTHOR_DEF, _author_prompt(key, ticket_json, wt, shipped_summary(wt), prior_review, violations),
-                        stage_root / f"author-{pass_}", wt, PLAN_TIMEOUT_S, model=asg["author_model"])
-        if provider_exhausted(stage_root / f"author-{pass_}"):
-            log["result"] = "failed"; log["reason"] = f"provider unavailable: {provider_exhausted(stage_root / f'author-{pass_}')}"; return log
+        st, used, out = run_agent_with_failover(cfg, AUTHOR_DEF, _author_prompt(key, ticket_json, wt, shipped_summary(wt), prior_review, violations),
+                                                stage_root / f"author-{pass_}", wt, PLAN_TIMEOUT_S, model=asg["author_model"])
+        if out:
+            log["result"] = "failed"; log["reason"] = f"provider unavailable (both vendors): {out}"; return log
+        if used != asg["author_model"]:
+            log["author_model"] = used; log.setdefault("failovers", []).append({"role": "author", "to": used})
+            asg["critic_model"] = CRITIC_MODELS[[v for v in CRITIC_MODELS if v != vendor_of(used)][0]]   # keep the critic on the OTHER vendor
         marker = _last_marker(stage_root / f"author-{pass_}", "PLAN")
         if marker.lower().startswith("blocked"):
             log["rounds"].append({"round": 0, "author_marker": marker, "result": "blocked"}); log["result"] = "blocked"; log["reason"] = marker; return log
@@ -220,9 +263,11 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
         if spent > PLAN_BUDGET_USD:
             log["result"] = "failed"; log["reason"] = f"planning budget exceeded: ${spent:.2f} > ${PLAN_BUDGET_USD:.0f} before critic round {rnd}"; return log
         t1 = time.monotonic()
-        _run_agent(cfg, CRITIC_DEF, _critic_prompt(key, ticket_json, wt, rnd), stage_root / f"critic-{rnd}", wt, PLAN_TIMEOUT_S, model=asg["critic_model"])
-        if provider_exhausted(stage_root / f"critic-{rnd}"):
-            log["result"] = "failed"; log["reason"] = f"provider unavailable: {provider_exhausted(stage_root / f'critic-{rnd}')}"; return log
+        _res, used_c, out_c = run_agent_with_failover(cfg, CRITIC_DEF, _critic_prompt(key, ticket_json, wt, rnd), stage_root / f"critic-{rnd}", wt, PLAN_TIMEOUT_S, model=asg["critic_model"])
+        if out_c:
+            log["result"] = "failed"; log["reason"] = f"provider unavailable (both vendors): {out_c}"; return log
+        if used_c != asg["critic_model"]:
+            log.setdefault("failovers", []).append({"role": "critic", "to": used_c})
         verdict = review_verdict(review)
         entry = {"round": rnd, "critic_s": round(time.monotonic() - t1), "verdict": verdict}; log["rounds"].append(entry)
         if verdict == "approve":
@@ -273,7 +318,9 @@ def repair_plan(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
     if violations:
         log["result"] = "failed"; log["reason"] = f"task-writer left the manifest invalid: {violations[:3]}"; return log
     t1 = time.monotonic()
-    _run_agent(cfg, CRITIC_DEF, _critic_prompt(key, ticket_json, wt, PLAN_ROUNDS), stage_root / "critic-1", wt, PLAN_TIMEOUT_S, model=asg["critic_model"])
+    _res, _used, out_c = run_agent_with_failover(cfg, CRITIC_DEF, _critic_prompt(key, ticket_json, wt, PLAN_ROUNDS), stage_root / "critic-1", wt, PLAN_TIMEOUT_S, model=asg["critic_model"])
+    if out_c:
+        log["result"] = "failed"; log["reason"] = f"provider unavailable (both vendors): {out_c}"; return log
     verdict = review_verdict(review)
     log["rounds"].append({"round": 1, "writer_s": round(t1 - t2), "writer_marker": wm, "critic_s": round(time.monotonic() - t1), "verdict": verdict})
     if verdict == "approve":

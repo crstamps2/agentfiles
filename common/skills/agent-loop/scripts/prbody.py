@@ -122,8 +122,12 @@ def write_body(cfg, key: str, wt, t, ticket_summary: str, example_body: str, scr
     out = stage_dir / "pr-body.md"
     for rnd in (1, 2):
         (stage_dir / f"prompt-{rnd}.md").write_text(prompt if rnd == 1 else prompt + "\n\n## Your previous draft was rejected\n" + "\n".join(f"- {p}" for p in problems) + f"\n\nRewrite it. Write the body to `{out}`.")
-        plan_mod._run_agent(cfg, plan_mod.CRITIC_DEF, (prompt if rnd == 1 else (stage_dir / f"prompt-{rnd}.md").read_text()) + f"\n\nWrite the finished body to `{out}` (ABSOLUTE path) and end your reply with `PRBODY: written`.",
-                            stage_dir / f"run-{rnd}", pathlib.Path(wt), 900, model=model)
+        _res, _used, exhausted = plan_mod.run_agent_with_failover(
+            cfg, plan_mod.CRITIC_DEF,
+            (prompt if rnd == 1 else (stage_dir / f"prompt-{rnd}.md").read_text()) + f"\n\nWrite the finished body to `{out}` (ABSOLUTE path) and end your reply with `PRBODY: written`.",
+            stage_dir / f"run-{rnd}", pathlib.Path(wt), 900, model=model)
+        if exhausted:
+            raise BodyRejected(f"provider unavailable (both vendors): {exhausted}")
         if not out.exists():
             problems = ["body file not written"]; continue
         body = out.read_text().strip()

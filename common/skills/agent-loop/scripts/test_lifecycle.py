@@ -396,6 +396,30 @@ class LifecycleTests(unittest.TestCase):
             steps = lifecycle.run_once(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2, max_steps=2)
         self.assertEqual(steps[0].action, "self-heal: replan"); self.assertIn("approved", steps[1].action)
 
+    def test_planning_ceiling_stops_a_ticket_that_never_produced_code(self):
+        """ZIP-7874: $55 across 7 plan runs and 3 heal replans, no accepted task, nobody notified."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
+        (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")
+        (self.wt / "planning" / "zip-7873" / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
+        with patch.object(lifecycle, "_task_accepted", return_value=False), \
+             patch.object(lifecycle.ledger, "collect", return_value=[{"ticket": "ZIP-7873", "billed_usd": 31.0}]), \
+             patch.object(lifecycle.plan_mod, "repair_plan") as rep, patch.object(lifecycle.plan_mod, "plan_ticket") as pl:
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        rep.assert_not_called(); pl.assert_not_called()
+        self.assertTrue(step.wait); self.assertIn("planning ceiling", state.load(tdir).reason)
+        self.assertIn("ZIP-7873 planning ceiling", self.notified)
+        import heal; self.assertEqual(heal.policy(state.load(tdir).reason)[0], "human")   # never auto-retried
+
+    def test_planning_ceiling_does_not_apply_once_work_is_accepted(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
+        (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")
+        (self.wt / "planning" / "zip-7873" / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
+        with patch.object(lifecycle, "_task_accepted", return_value=True), \
+             patch.object(lifecycle.ledger, "collect", return_value=[{"ticket": "ZIP-7873", "billed_usd": 99.0}]), \
+             patch.object(lifecycle.plan_mod, "repair_plan", return_value={"result": "approved", "rounds": [], "author_model": "A", "critic_model": "C"}):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertNotIn("ceiling", step.action); self.assertNotIn("ceiling", state.load(tdir).reason)
+
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()
         r, steps, t = self.run_once()

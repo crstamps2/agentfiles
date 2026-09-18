@@ -26,6 +26,7 @@ import re
 
 POLICIES = [
     # (regex on the pause reason, action, max automatic recoveries for this reason per ticket)
+    (r"^provider unavailable|usage limit|rate.?limit", "retry", 100),   # clears on its own; never a plan/worker fault
     (r"^resource: on battery", "retry", 200),           # waits for AC; effectively unbounded but visible
     (r"^resource: ", "retry", 200),
     (r"^heavy lane held|worker slot|slot busy", "retry", 200),
@@ -77,11 +78,34 @@ def record(tdir: pathlib.Path, action: str, reason: str, stage: str, note: str =
                             "reason_key": reason_key(reason), "reason": (reason or "")[:300], "stage": stage, "note": note}) + "\n")
 
 
+BACKOFF_S = {"provider": 1800}      # a provider usage limit clears on a provider clock, not ours
+
+
+def cooling_off(tdir: pathlib.Path, reason: str) -> int:
+    """Seconds still to wait before retrying THIS reason, 0 if ready. Keeps a launchd 3-minute restart
+    loop from burning a retry budget against a provider limit that resets hourly."""
+    import time as _t
+    if not re.search(r"provider unavailable|usage limit|rate.?limit", reason or "", re.I):
+        return 0
+    hist = [h for h in history(tdir) if h.get("reason_key") == reason_key(reason)]
+    if not hist:
+        return 0
+    last = hist[-1].get("ts", "")
+    try:
+        t0 = dt.datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+    except ValueError:
+        return 0
+    return max(0, int(BACKOFF_S["provider"] - (_t.time() - t0)))
+
+
 def decide(tdir: pathlib.Path, reason: str) -> tuple[str, str]:
     """(action, explanation). 'human' when the policy says so OR the budget for this reason is spent."""
     action, budget = policy(reason)
     if action == "human":
         return "human", "policy: needs an owner"
+    wait = cooling_off(tdir, reason)
+    if wait:
+        return "wait", f"provider cooling off; {wait // 60} min left"
     n = count_for(tdir, action, reason_key(reason))
     if n >= budget:
         return "human", f"{action} already tried {n}x for this reason; budget {budget} spent"

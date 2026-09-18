@@ -131,6 +131,25 @@ def _run_agent(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt: p
     return procs.run_stage(argv, wt, timeout_s, None, stage_dir / "stdout.log", stage_dir / "stderr.log")
 
 
+PROVIDER_OUT = (r"usage limit has been reached", r"\b429\b", r"quota", r"rate.?limit", r"insufficient_quota",
+                r"overloaded", r"\b50[234]\b", r"account .* (suspended|disabled)")
+
+
+def provider_exhausted(stage_dir: pathlib.Path) -> str:
+    """Non-empty reason iff the agent could not run because the PROVIDER refused (usage limit, 429,
+    overload). Distinct from a model that ran and produced nothing useful."""
+    import re
+    for name in ("stderr.log", "stdout.log"):
+        p = stage_dir / name
+        if p.exists():
+            txt = p.read_text(errors="replace")[-4000:]
+            for pat in PROVIDER_OUT:
+                m = re.search(pat, txt, re.I)
+                if m:
+                    return txt.strip().splitlines()[-1][:160] if txt.strip() else m.group(0)
+    return ""
+
+
 def _last_marker(stage_dir: pathlib.Path, prefix: str) -> str:
     out = (stage_dir / "stdout.log").read_text(errors="replace") if (stage_dir / "stdout.log").exists() else ""
     m = re.findall(rf"^{prefix}:\s*(.+)$", out, re.M)
@@ -184,6 +203,8 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
     for pass_ in range(1, 4):
         st = _run_agent(cfg, AUTHOR_DEF, _author_prompt(key, ticket_json, wt, shipped_summary(wt), prior_review, violations),
                         stage_root / f"author-{pass_}", wt, PLAN_TIMEOUT_S, model=asg["author_model"])
+        if provider_exhausted(stage_root / f"author-{pass_}"):
+            log["result"] = "failed"; log["reason"] = f"provider unavailable: {provider_exhausted(stage_root / f'author-{pass_}')}"; return log
         marker = _last_marker(stage_root / f"author-{pass_}", "PLAN")
         if marker.lower().startswith("blocked"):
             log["rounds"].append({"round": 0, "author_marker": marker, "result": "blocked"}); log["result"] = "blocked"; log["reason"] = marker; return log
@@ -200,6 +221,8 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
             log["result"] = "failed"; log["reason"] = f"planning budget exceeded: ${spent:.2f} > ${PLAN_BUDGET_USD:.0f} before critic round {rnd}"; return log
         t1 = time.monotonic()
         _run_agent(cfg, CRITIC_DEF, _critic_prompt(key, ticket_json, wt, rnd), stage_root / f"critic-{rnd}", wt, PLAN_TIMEOUT_S, model=asg["critic_model"])
+        if provider_exhausted(stage_root / f"critic-{rnd}"):
+            log["result"] = "failed"; log["reason"] = f"provider unavailable: {provider_exhausted(stage_root / f'critic-{rnd}')}"; return log
         verdict = review_verdict(review)
         entry = {"round": rnd, "critic_s": round(time.monotonic() - t1), "verdict": verdict}; log["rounds"].append(entry)
         if verdict == "approve":

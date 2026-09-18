@@ -128,6 +128,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if action == "human":
             _notify_once(tdir, key, f"{key} needs an operator", f"{why}: {t.reason[:120]}")
             return Step(key, "paused", f"needs operator: {why}", detail=t.reason, wait=True)
+        if action == "wait":
+            return Step(key, "paused", why, detail=t.reason, wait=True)          # no state change, no notification
         heal.record(tdir, action, t.reason, t.previous or "?", why)
         back = t.previous if t.previous in ("plan", "implement", "gates", "draft-pr", "ready", "bot-loop") else "implement"
         if action == "prepare-retry":
@@ -395,6 +397,12 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             # A dedicated role: reusing the critic definition made Astra review the plan and refuse the
             # adjudication as out of role (ZIP-7872 round 1, 2026-09-16). Model = the ticket's critic vendor.
             plan_mod._run_agent(cfg, "review-adjudicator", prompt, stage, wt, 1800, model=t.critic_vendor or None)
+            out = plan_mod.provider_exhausted(stage / "run-1") or plan_mod.provider_exhausted(stage)
+            if out:
+                # The provider refused to run the model (usage limit / 429 / overload). Nothing is wrong
+                # with the plan, the PR or the comments: wait and try again (heal: retry).
+                cis["bot_rounds"] = max(0, rnd - 1); _ci_state_path(cfg, key).write_text(json.dumps(cis))
+                return _pause_step(cfg, t, "bot-loop", f"provider unavailable: {out}")
             try:
                 decisions = botreview.parse_adjudication(stage / "adjudication.json")
             except RuntimeError as e:

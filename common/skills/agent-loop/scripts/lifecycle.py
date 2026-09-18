@@ -134,6 +134,14 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if action == "human":
             _notify_once(tdir, key, f"{key} needs an operator", f"{why}: {t.reason[:120]}")
             return Step(key, "paused", f"needs operator: {why}", detail=t.reason, wait=True)
+        if action == "fix-task":
+            try:
+                ft = _lint_fix_task(tdir, t.reason, _manifest_path(wt, key))
+            except ValueError as e:
+                return Step(key, "paused", f"needs operator: lint fix task rejected: {e}", detail=t.reason, wait=True)
+            heal.record(tdir, action, t.reason, t.state)
+            t.state = "implement"; t.reason = f"queued lint fix task {ft}"; state.save(tdir, t)
+            return Step(key, "implement", f"queued lint fix task {ft} for the pre-commit offenses")
         if action == "wait":
             return Step(key, "paused", why, detail=t.reason, wait=True)          # no state change, no notification
         heal.record(tdir, action, t.reason, t.previous or "?", why)
@@ -284,7 +292,13 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             (tdir / "gates.out").write_text((rb.stdout + rb.stderr)[-6000:])
             return _pause_step(cfg, t, "gates", f"gates failed: yarn build rc={rb.returncode}")
         r1 = _sh(["bin/rails", "test", "test/views/components/zui/"], wt, 1800)
-        changed = _sh(["git", "diff", "--name-only", "origin/main...HEAD", "--", "*.rb"], wt, 60).stdout.split()
+        # Committed work AND anything still in the tree: linting only `origin/main...HEAD` let an
+        # uncommitted file reach the pre-commit hook unlinted, and publish died on the hook instead
+        # (ZIP-7875: Rails/FindEach + Metrics/AbcSize in a system test, found only at commit time).
+        changed = sorted(set(
+            _sh(["git", "diff", "--name-only", "origin/main...HEAD", "--", "*.rb"], wt, 60).stdout.split()
+            + _sh(["git", "diff", "--name-only", "HEAD", "--", "*.rb"], wt, 60).stdout.split()
+            + _sh(["git", "ls-files", "--others", "--exclude-standard", "--", "*.rb"], wt, 60).stdout.split()))
         # --force-exclusion: honour AllCops Exclude (e.g. linters/**) exactly as CI and lefthook do;
         # naming files explicitly would lint excluded paths (gate false-failed on 13 pre-existing offenses).
         r2 = _sh(["bin/agent_run", "rubocop", "--cache", "false", "--force-exclusion", *changed], wt, 600) if changed else None
@@ -756,4 +770,39 @@ def recover_interrupted_git_state(wt, sh=None) -> str:
 
 def _is_locale(path: str) -> bool:
     return path.startswith("config/locales/") and path.endswith((".yml", ".yaml"))
+
+
+def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path) -> str:
+    """Turn named pre-commit offenses into one bounded fix task: allowlist is exactly the offending
+    files, and the gate is the same lint the hook runs. Runner-assigned id (9nn), like review fixes."""
+    import re as _re
+    files = sorted({m.group(1) for m in _re.finditer(r"([\w./-]+\.(?:rb|rake)):\d+:\d+:", reason)})
+    if not files:
+        raise ValueError("no offending file could be parsed from the hook output")
+    offenses = "\n".join(f"  {ln.strip()}" for ln in reason.splitlines() if _re.search(r":\d+:\d+:", ln))[:1500]
+    tid = _next_runner_task_id(manifest)
+    cmd = "bin/agent_run rubocop --cache false --force-exclusion " + " ".join(files)
+    _append_task(manifest, {
+        "id": tid, "slug": f"lint-fix-{tid}", "size": "small",
+        "summary": "Fix the lint offenses the pre-commit hook rejected",
+        "allowed_files": files, "verification_commands": [cmd],
+        "acceptance": [f"AC-1: `{cmd}` reports no offenses"],
+        "invariants": [
+            "The pre-commit hook rejected the commit with these offenses:\n" + offenses,
+            "Fix the code so the lint passes. Prefer the repo's existing idiom for the cop; an inline "
+            "disable is acceptable ONLY where the cop is genuinely inapplicable (e.g. Rails/FindEach on "
+            "a Capybara collection, which has no find_each) and must carry a `--` reason.",
+            "Do not change behaviour or assertions: this task only satisfies the linter.",
+        ],
+    })
+    return tid
+
+
+def _next_runner_task_id(manifest: pathlib.Path) -> str:
+    import re as _re
+    used = {int(m) for m in _re.findall(r'^id = "(9\d\d)"', manifest.read_text(), _re.M)} if manifest.exists() else set()
+    n = 901
+    while n in used:
+        n += 1
+    return str(n)
 

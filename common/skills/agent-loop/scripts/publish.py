@@ -104,7 +104,12 @@ def commit_paths(wt, paths: list[str], message: str) -> str | None:
         return None
     r = _sh(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message], wt, timeout=900)
     if r.returncode:
-        raise PublishError(f"git commit failed (hooks?) rc={r.returncode}: {(r.stderr or r.stdout).strip()[-1200:]}")
+        tail = (r.stderr or r.stdout).strip()[-1200:]
+        # A hook rejection is lint the work must satisfy: name it as a gate so healing sends a worker to
+        # fix the offenses, instead of republishing the identical rejected commit (ZIP-7875, 2026-09-18).
+        if re.search(r"\b[A-Z]\w+/\w+:|offenses? detected|\[Correctable\]", tail):
+            raise PublishError(f"gates failed: pre-commit lint rejected the commit: {tail}")
+        raise PublishError(f"git commit failed (hooks?) rc={r.returncode}: {tail}")
     return _sh(["git", "rev-parse", "HEAD"], wt).stdout.strip()
 
 

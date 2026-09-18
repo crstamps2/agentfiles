@@ -239,6 +239,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(any("i18n-tasks normalize" in " ".join(c) for c in calls))
         self.assertNotIn(["git", "rebase", "--abort"], calls)
 
+    def test_pre_commit_lint_rejection_becomes_a_bounded_fix_task(self):
+        """ZIP-7875: the hook rejected the commit on Rails/FindEach + Metrics/AbcSize. Healing must send a
+        worker to fix the offenses (allowlist = the offending files), not republish the same commit."""
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        reason = ("gates failed: pre-commit lint rejected the commit: "
+                  "test/system/x_test.rb:161:48: C: [Correctable] Rails/FindEach: Use find_each.\n"
+                  "test/system/x_test.rb:160:3: C: Metrics/AbcSize: too high.")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="paused", previous="implement", reason=reason))
+        r, steps, t = self.run_once(max_steps=2)                    # heal step, then the fix task is queued
+        self.assertIn(t.state, ("implement", "paused"))
+        self.assertTrue(any("queued lint fix task" in x.action for x in steps))
+        import contracts
+        tasks = contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")
+        fix = [x for x in tasks if x.id.startswith("9")][-1]
+        self.assertEqual(fix.allowed_files, ["test/system/x_test.rb"])
+        self.assertTrue(any("--force-exclusion" in c for c in fix.verification_commands))
+        self.assertTrue(any("Rails/FindEach" in i for i in fix.invariants))
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

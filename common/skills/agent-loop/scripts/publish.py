@@ -96,6 +96,10 @@ def commit_paths(wt, paths: list[str], message: str) -> str | None:
     """Stage exactly `paths` and commit. Returns the new sha, or None if nothing to commit."""
     if not paths:
         return None
+    # The index is scratch: an attempt killed mid-flight can leave entries staged that are NOT in this
+    # task's allowlist and were never linted, and `git add -- <paths>` would not refresh them -- the hook
+    # then rejects content nobody checked (ZIP-7875, 2026-09-18). HEAD + worktree are the only truth.
+    _sh(["git", "reset", "-q"], wt)
     r = _sh(["git", "add", "-A", "--", *paths], wt)          # -A: stage deletions of tracked paths too
     if r.returncode:
         raise PublishError(f"git add failed: {r.stderr.strip()[:400]}")

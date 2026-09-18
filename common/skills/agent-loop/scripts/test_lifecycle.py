@@ -410,6 +410,20 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("ZIP-7873 planning ceiling", self.notified)
         import heal; self.assertEqual(heal.policy(state.load(tdir).reason)[0], "human")   # never auto-retried
 
+    def test_owner_ruling_resets_the_planning_ceiling_baseline(self):
+        """A ruling is new evidence: the budget that stops repeated arguments must not block the round the
+        ruling authorises. Spend BEFORE the ruling no longer counts."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
+        pd = self.wt / "planning" / "zip-7873"
+        pd.joinpath("plan.md").write_text("# plan\n\n## Owner rulings\n\n- do the thing\n")
+        pd.joinpath("plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
+        old = [{"ticket": "ZIP-7873", "billed_usd": 55.0, "first_ts": "2026-09-17T10:00:00Z"}]
+        with patch.object(lifecycle, "_task_accepted", return_value=False), patch.object(lifecycle.ledger, "collect", return_value=old), \
+             patch.object(lifecycle.plan_mod, "repair_plan", return_value={"result": "approved", "rounds": [], "author_model": "A", "critic_model": "C"}) as rep:
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        rep.assert_called_once(); self.assertNotIn("ceiling", state.load(tdir).reason)
+        self.assertTrue((tdir / "ruling-baseline.json").exists())
+
     def test_planning_ceiling_does_not_apply_once_work_is_accepted(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
         (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")

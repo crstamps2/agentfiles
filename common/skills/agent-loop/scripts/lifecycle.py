@@ -14,6 +14,7 @@ attempt, mark ready, reply, escalate) is taken here from recorded evidence.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import pathlib
 import re
@@ -167,7 +168,12 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         # Hard ceiling on planning for a ticket that has produced NO accepted task yet. Dropzone spent
         # $55 across 7 plan runs and 3 heal replans before anyone noticed (2026-09-17/18). Past the
         # ceiling the ticket stops and asks for a human ruling instead of buying another critic round.
-        spent = sum(r["billed_usd"] for r in ledger.collect(cfg.state_root) if r.get("ticket") == key)
+        # Spend measured SINCE the last owner ruling: a ruling is new evidence, and the budget that
+        # protects against "another round of the same argument" must not block the round the ruling
+        # authorises. `ruling-baseline.json` is written when an `## Owner rulings` section appears.
+        rows = [r for r in ledger.collect(cfg.state_root) if r.get("ticket") == key]
+        baseline = _ruling_baseline(cfg, key, wt)
+        spent = sum(r["billed_usd"] for r in rows if (r.get("first_ts") or "") >= baseline)
         has_work = any(_task_accepted(cfg, key, tk) for tk in (contracts.load_tasks(manifest) if manifest.exists() else []))
         ceiling = float(getattr(cfg.budgets, "preimplementation_usd", 30.0))
         if not has_work and spent >= ceiling:
@@ -662,4 +668,21 @@ def _notify_once(tdir, key: str, title: str, body: str) -> None:
             subprocess.run(cmd, capture_output=True, timeout=10)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _ruling_baseline(cfg, key: str, wt) -> str:
+    """UTC timestamp from which pre-implementation spend counts. Advances when plan.md gains a new
+    `## Owner rulings` section (the operator has ruled; the argument is settled, not repeated)."""
+    import hashlib
+    plan_p = _manifest_path(wt, key).with_name("plan.md")
+    marker = cfg.ticket_dir(key) / "ruling-baseline.json"
+    cur = json.loads(marker.read_text()) if marker.exists() else {"hash": "", "ts": ""}
+    if not plan_p.exists():
+        return cur.get("ts", "")
+    rulings = [b for b in plan_p.read_text().split("\n## ") if b.startswith("Owner rulings")]
+    h = hashlib.sha256("\n".join(rulings).encode()).hexdigest()[:16] if rulings else ""
+    if h and h != cur.get("hash"):
+        cur = {"hash": h, "ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        marker.parent.mkdir(parents=True, exist_ok=True); marker.write_text(json.dumps(cur))
+    return cur.get("ts", "")
 

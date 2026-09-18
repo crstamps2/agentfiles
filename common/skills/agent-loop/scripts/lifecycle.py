@@ -396,8 +396,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             (stage / "schema.toml").write_text(plan_mod.SCHEMA_EXAMPLE)
             # A dedicated role: reusing the critic definition made Astra review the plan and refuse the
             # adjudication as out of role (ZIP-7872 round 1, 2026-09-16). Model = the ticket's critic vendor.
-            plan_mod._run_agent(cfg, "review-adjudicator", prompt, stage, wt, 1800, model=t.critic_vendor or None)
-            out = plan_mod.provider_exhausted(stage / "run-1") or plan_mod.provider_exhausted(stage)
+            _res, used, out = plan_mod.run_agent_with_failover(cfg, "review-adjudicator", prompt, stage, wt, 1800,
+                                                               model=t.critic_vendor or None, log=lambda m: print(m, flush=True))
             if out:
                 # The provider refused to run the model (usage limit / 429 / overload). Nothing is wrong
                 # with the plan, the PR or the comments: wait and try again (heal: retry).

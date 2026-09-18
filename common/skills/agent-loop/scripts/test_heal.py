@@ -20,6 +20,14 @@ class PolicyTests(unittest.TestCase):
         for reason, action in cases.items():
             with self.subTest(reason=reason): self.assertEqual(heal.policy(reason)[0], action)
 
+    def test_provider_exhaustion_retries_behind_a_cooling_off_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            tdir = pathlib.Path(d); r = "provider unavailable: Codex error: The usage limit has been reached"
+            self.assertEqual(heal.policy(r), ("retry", 100))
+            self.assertEqual(heal.decide(tdir, r)[0], "retry"); heal.record(tdir, "retry", r, "bot-loop")
+            action, why = heal.decide(tdir, r)                      # immediately after: cool off, do not burn budget
+            self.assertEqual(action, "wait"); self.assertIn("cooling off", why)
+
     def test_unknown_reason_gets_one_careful_retry(self):
         self.assertEqual(heal.policy("something new"), ("retry", 2))
 

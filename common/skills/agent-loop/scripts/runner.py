@@ -40,6 +40,9 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
     if stage.timed_out:
         return "timeout", "stage timeout"
     if res is None:
+        if any(__import__("re").search(p, stderr, __import__("re").I)
+               for p in (r"usage limit has been reached", r"insufficient_quota", r"overloaded")):
+            return "environment", "provider unavailable: worker model refused (usage limit/overload)"
         if stage.returncode and any(__import__("re").search(p, stderr, __import__("re").I)
                                     for p in (r"429", r"quota", r"rate.?limit", r"ECONNREFUSED",
                                               r"ENOTFOUND", r"unauthorized", r"401", r"5\d\d", r"connection")):
@@ -390,8 +393,18 @@ class Runner:
                     f"contract cannot be satisfied as written. Rewrite the acceptance criterion / stop condition it names so a correct "
                     f"implementation can pass, or drop it. Evidence from the worker:\n\n{(res.evidence or '')[:1200]}\n\nUNVERIFIED: {(res.unverified or '')[:600]}\n\nNEXT: {(res.next or '')[:400]}\n")
 
+    PREMIUM_ALTERNATE = {"openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5"}   # same tier, other vendor
+
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
+        # If the PREVIOUS attempt on this lineage died because this vendor is out of quota, run the same
+        # rung on the other vendor rather than waiting for the limit to reset (2026-09-18).
+        prior = [e for e in t.attempts.get(f"{t.key}/{task.id}", []) if e.get("outcome") == "environment"]
+        if prior and "provider unavailable" in (prior[-1].get("reason") or "") and agent.model in self.PREMIUM_ALTERNATE:
+            import dataclasses as _dc
+            alt = self.PREMIUM_ALTERNATE[agent.model]
+            print(f"{t.key}/{task.id}: {agent.model} is out of quota; attempt {n} runs on {alt}", file=sys.stderr, flush=True)
+            agent = _dc.replace(agent, model=alt)
         agentdef.assert_worker_safe(agent)
         # Config contract: the runner asserts at launch that the rendered local-worker agent's
         # model equals [local].model, so there is one validated source for what actually runs.

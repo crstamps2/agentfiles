@@ -212,7 +212,10 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if not manifest.exists():
             t = state.transition(t, "paused", reason="implement: no manifest"); _save(cfg, t)
             return Step(key, "implement", "no manifest", wait=True)
-        tasks = contracts.load_tasks(manifest)
+        try:
+            tasks = contracts.load_tasks(manifest)
+        except contracts.ManifestError as e:
+            return _pause_step(cfg, t, "implement", f"plan failed: manifest invalid: {str(e)[:300]}")
         # Accepted work that never got committed (a publish defect, later fixed) is published now,
         # before anything else runs: the branch must be coherent at every step.
         import runner as runner_mod
@@ -430,7 +433,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if questions:
             return _pause_step(cfg, t, "bot-loop", "reviewer questions need Cody: " + " | ".join(questions)[:600])
         if fixes:
-            for ft in fixes: _append_task(_manifest_path(wt, key), ft)
+            try:
+                for ft in fixes: _append_task(_manifest_path(wt, key), ft)
+            except ValueError as e:
+                (tdir / "bad-guards.md").open("a").write(f"\n## review fix tasks rejected by the schema -- {time.strftime('%Y-%m-%dT%H:%M:%SZ')}\n\n{e}\n\nRewrite them to satisfy the schema (repo tools only, --force-exclusion on rubocop/reek, <=3 bespoke commands).\n")
+                return _pause_step(cfg, t, "bot-loop", f"guard failed on the BASE tree too (independent of the work): {e}")
             t = state.transition(t, "implement", reason=f"{len(fixes)} review fix task(s) queued"); _save(cfg, t)
             return Step(key, "bot-loop", f"{len(fixes)} fix task(s) queued from review; back to implement")
         return Step(key, "bot-loop", f"{len(decisions)} comment(s) answered; none required code changes")
@@ -486,11 +493,16 @@ def _manifest_flag(wt, key, flag) -> bool:
 
 
 def _append_task(manifest: pathlib.Path, task: dict) -> None:
+    """Appends and VALIDATES: a generated task that fails the schema would crash every later start
+    (ZIP-7875: adjudicator fix tasks lacked --force-exclusion; the runner raised ManifestError on each
+    launchd restart -- a crash loop no heal policy can see)."""
     botreview.write_fix_manifest([task], manifest.with_name("_append.toml"))
     body = manifest.with_name("_append.toml").read_text().split("\n", 1)[1]
+    before = manifest.read_text()
     with open(manifest, "a") as f:
         f.write("\n" + body)
     manifest.with_name("_append.toml").unlink()
+    _validate_or_revert(manifest, before)
 
 
 def _component_name(wt) -> str | None:
@@ -527,6 +539,7 @@ def insert_task_before(manifest: pathlib.Path, task: dict, before_id: str) -> No
     if i < 0:
         raise ValueError(f"task {before_id} not found in {manifest}")
     manifest.write_text(text[:i] + "\n" + body + "\n" + text[i:])
+    _validate_or_revert(manifest, text)
 
 
 def _manifest_header_comment(wt, key) -> str:
@@ -694,3 +707,12 @@ def _ruling_baseline(cfg, key: str, wt) -> str:
         marker.parent.mkdir(parents=True, exist_ok=True); marker.write_text(json.dumps(cur))
     return cur.get("ts", "")
 
+
+def _validate_or_revert(manifest: pathlib.Path, before: str) -> None:
+    """Keep the manifest always-valid: an invalid append is rolled back and raised, so the caller
+    records a repairable failure instead of leaving a manifest every future start will choke on."""
+    import plan as _plan
+    viol = _plan.validate_manifest(manifest)
+    if viol:
+        manifest.write_text(before)
+        raise ValueError(f"generated task rejected by the schema (manifest unchanged): {viol[:3]}")

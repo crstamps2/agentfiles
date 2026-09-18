@@ -1,5 +1,6 @@
 import json
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -203,6 +204,40 @@ class LifecycleTests(unittest.TestCase):
         import contracts as c; c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")          # still loadable
         self.assertEqual(t.state, "paused"); self.assertTrue((self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md").exists())
         import heal; self.assertEqual(heal.policy(t.reason)[0], "repair")                              # self-heals
+
+    def test_interrupted_rebase_is_recovered_before_any_stage_reads_the_branch(self):
+        """ZIP-7875: a crash loop killed the runner mid-rebase; HEAD was detached, so publish reported
+        'refusing to publish from branch \'\''. Every step first finishes or aborts the interrupted rebase."""
+        gd = self.wt / ".git"; (gd / "rebase-merge").mkdir(parents=True, exist_ok=True)
+        calls = []
+        def fake_sh(argv, timeout=120):
+            calls.append(argv)
+            out = {("git", "rev-parse", "--git-dir"): ".git"}.get(tuple(argv), "")
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        # a hand-written conflict cannot be finished: abort, restoring the branch
+        with patch.object(lifecycle, "_sh", side_effect=lambda argv, w, t=120: fake_sh(argv, t)):
+            def unmerged(argv, timeout=120):
+                calls.append(argv)
+                if argv[:3] == ["git", "diff", "--name-only"]:
+                    return subprocess.CompletedProcess(argv, 0, "app/models/thing.rb\n", "")
+                return subprocess.CompletedProcess(argv, 0, ".git" if "--git-dir" in argv else "", "")
+                
+            msg = lifecycle.recover_interrupted_git_state(self.wt, sh=unmerged)
+        self.assertIn("aborted", msg)
+        self.assertIn(["git", "rebase", "--abort"], calls)
+
+    def test_interrupted_rebase_with_only_locale_conflicts_is_finished(self):
+        gd = self.wt / ".git"; (gd / "rebase-merge").mkdir(parents=True, exist_ok=True)
+        calls = []
+        def sh(argv, timeout=120):
+            calls.append(argv)
+            if argv[:3] == ["git", "diff", "--name-only"]:
+                return subprocess.CompletedProcess(argv, 0, "config/locales/en.yml\n", "")
+            return subprocess.CompletedProcess(argv, 0, ".git" if "--git-dir" in argv else "", "")
+        msg = lifecycle.recover_interrupted_git_state(self.wt, sh=sh)
+        self.assertIn("finished an interrupted rebase", msg)
+        self.assertTrue(any("i18n-tasks normalize" in " ".join(c) for c in calls))
+        self.assertNotIn(["git", "rebase", "--abort"], calls)
 
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]

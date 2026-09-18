@@ -146,3 +146,27 @@ class EncodingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HookRejectionTests(unittest.TestCase):
+    def test_lint_hook_rejection_is_reported_as_a_gate_failure(self):
+        """A pre-commit lint rejection must heal by sending a worker to fix offenses, not by
+        republishing the identical rejected commit (ZIP-7875, Rails/FindEach)."""
+        import heal
+        tail = "test/system/x_test.rb:161:48: C: [Correctable] Rails/FindEach: Use find_each instead of each."
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d)
+            def fake_run(argv, **kw):
+                joined = " ".join(argv)                      # publish shells out via bash -lc "<cmd>"
+                if "git -c commit.gpgsign=false commit" in joined:
+                    return subprocess.CompletedProcess(argv, 1, tail, "")
+                if "--cached" in joined:
+                    return subprocess.CompletedProcess(argv, 1, "", "")      # something IS staged
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            with patch.object(publish.subprocess, "run", side_effect=fake_run), \
+                 patch.object(publish, "current_branch", return_value="b"):
+                with self.assertRaises(publish.PublishError) as e:
+                    publish.commit_paths(wt, ["a.rb"], "msg")
+        self.assertIn("gates failed", str(e.exception))
+        self.assertEqual(heal.policy(str(e.exception))[0], "fix-task")   # a worker fixes the offenses
+

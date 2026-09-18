@@ -11,6 +11,7 @@ budget so a genuinely stuck ticket still surfaces -- with the count and history 
   retry         re-enter the current stage (transients: resources, slot/lane contention, timeouts)
   prepare-retry `bin/wt prepare --for rails` then re-enter (stale deps/migrations after a rebase)
   repair        hand the recorded evidence to the task-writer, then re-enter (bad guards, contract complaints)
+  fix-task      queue a runner-assigned fix task for named lint offenses, then re-enter implement
   republish     re-run the publish step for the accepted task (publish/push defects fixed in code)
   human         genuinely needs an owner (design questions, hand-written merge conflicts, HUMAN file)
 
@@ -31,6 +32,7 @@ POLICIES = [
     (r"^resource: ", "retry", 200),
     (r"^heavy lane held|worker slot|slot busy", "retry", 200),
     (r"verification timeout|heavy lane busy", "retry", 6),
+    (r"^gates failed: pre-commit lint", "fix-task", 3),   # offenses in OUR work: a worker fixes them
     (r"^gates failed: yarn build", "prepare-retry", 3),
     (r"^gates failed: rails test", "prepare-retry", 2),
     (r"^visual gate failed", "prepare-retry", 3),

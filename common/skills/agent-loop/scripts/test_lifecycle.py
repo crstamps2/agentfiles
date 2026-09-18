@@ -191,6 +191,19 @@ class LifecycleTests(unittest.TestCase):
         cis = json.loads((self.cfg.ticket_dir("ZIP-7873") / "ci.json").read_text()); self.assertEqual(cis["bot_rounds"], 0)   # round not consumed
         import heal; self.assertEqual(heal.policy(t.reason)[0], "retry")
 
+    def test_invalid_generated_fix_task_is_rejected_and_repairable_not_a_crash_loop(self):
+        """ZIP-7875: adjudicator fix tasks lacked --force-exclusion; the manifest became unloadable and the
+        runner raised ManifestError on every launchd restart. The append must roll back and pause repairably."""
+        self.comments = [{"kind": "inline", "id": 9, "path": "a.rb", "line": 1, "reply_to": None, "sha": "s", "body": "x", "body_hash": "h9"}]
+        self.adjudication = {"decisions": [{"id": 9, "decision": "fix", "reply": "ok", "task": {
+            "allowed_files": ["app/a.rb"], "verification_commands": ["bin/agent_run rubocop --cache false app/a.rb", "x", "y", "z", "w"], "summary": "fix"}}]}
+        before = (self.wt / "planning" / "zip-7873" / "tasks.toml").read_text()
+        r, steps, t = self.run_once()
+        self.assertEqual((self.wt / "planning" / "zip-7873" / "tasks.toml").read_text(), before)      # manifest untouched
+        import contracts as c; c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")          # still loadable
+        self.assertEqual(t.state, "paused"); self.assertTrue((self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md").exists())
+        import heal; self.assertEqual(heal.policy(t.reason)[0], "repair")                              # self-heals
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

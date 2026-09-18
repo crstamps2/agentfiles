@@ -161,7 +161,9 @@ def fix_task_from(decision: dict, seq: int) -> dict | None:
     t.setdefault("slug", f"review-fix-{seq}")
     t.pop("after", None)                              # review fixes run after everything already landed; no model-supplied ordering
     t.setdefault("summary", f"Address review comment {decision['id']}")
-    t.setdefault("verification_commands", []); t.setdefault("acceptance", [f"AC-1: review comment {decision['id']} is addressed"])
+    import runner as _runner
+    t["verification_commands"] = [_runner._harden_lint_cmd(c) for c in (t.get("verification_commands") or [])]
+    t.setdefault("acceptance", [f"AC-1: review comment {decision['id']} is addressed"])
     t.setdefault("allowed_files", []); t.setdefault("may_edit_tests", False); t.setdefault("visual", False)
     return t
 

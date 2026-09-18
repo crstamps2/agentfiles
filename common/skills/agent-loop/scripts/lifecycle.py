@@ -24,6 +24,7 @@ import time
 import botreview
 import ci
 import contracts
+import ledger
 import plan as plan_mod
 import publish
 import screenshots
@@ -163,6 +164,15 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             t = state.transition(t, "implement"); _save(cfg, t)
             return Step(key, "plan-review", "approved manifest present", detail=str(manifest))
         stage_root = cfg.state_root / "plans" / key / time.strftime("%Y%m%dT%H%M%S")
+        # Hard ceiling on planning for a ticket that has produced NO accepted task yet. Dropzone spent
+        # $55 across 7 plan runs and 3 heal replans before anyone noticed (2026-09-17/18). Past the
+        # ceiling the ticket stops and asks for a human ruling instead of buying another critic round.
+        spent = sum(r["billed_usd"] for r in ledger.collect(cfg.state_root) if r.get("ticket") == key)
+        has_work = any(_task_accepted(cfg, key, tk) for tk in (contracts.load_tasks(manifest) if manifest.exists() else []))
+        ceiling = float(getattr(cfg.budgets, "preimplementation_usd", 30.0))
+        if not has_work and spent >= ceiling:
+            _notify_once(tdir, key, f"{key} planning ceiling", f"${spent:.0f} spent with no accepted task")
+            return _pause_step(cfg, t, "plan", f"planning ceiling: ${spent:.2f} spent before any task was accepted (limit ${ceiling:.0f}); the plan needs an owner ruling, not another round")
         repairs_file = tdir / "plan-repairs.n"
         repairs = int(repairs_file.read_text() or 0) if repairs_file.exists() else 0
         if manifest.exists() and plan_mod.review_verdict(review) == "revise" and repairs < 2:
@@ -347,8 +357,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         checks = ci.fetch_checks(pr, publish.REPO, wt)
         if any(c.bucket == "pending" for c in checks):
             return Step(key, "bot-loop", "checks (incl. claude-review) still running", wait=True)
-        ledger_p = _ledger_path(cfg, key); ledger = botreview.load_ledger(ledger_p)
-        comments = botreview.fetch_bot_comments(pr, wt); todo = botreview.unhandled(comments, ledger)
+        ledger_p = _ledger_path(cfg, key); seen_comments = botreview.load_ledger(ledger_p)   # NOT `ledger`: shadows the ledger module for the whole function
+        comments = botreview.fetch_bot_comments(pr, wt); todo = botreview.unhandled(comments, seen_comments)
         if not todo:
             rounds = cis.get("bot_rounds", 0)
             if rounds == 0 and not comments:
@@ -396,13 +406,13 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             try:
                 botreview.reply(pr, c, botreview.clean_reply(d.get("reply", "") or f"Addressed in a follow-up commit.", model_short), wt)
             except ValueError as e:
-                botreview.save_ledger(ledger_p, ledger)
+                botreview.save_ledger(ledger_p, seen_comments)
                 return _pause_step(cfg, t, "bot-loop", f"reply rejected: {e}")
             except publish.PublishError as e:
-                botreview.save_ledger(ledger_p, ledger)          # keep what was already answered
+                botreview.save_ledger(ledger_p, seen_comments)          # keep what was already answered
                 return _pause_step(cfg, t, "bot-loop", f"reply failed: {e}")
-            ledger[str(c["id"])] = c["body_hash"]
-        botreview.save_ledger(ledger_p, ledger)
+            seen_comments[str(c["id"])] = c["body_hash"]
+        botreview.save_ledger(ledger_p, seen_comments)
         if questions:
             return _pause_step(cfg, t, "bot-loop", "reviewer questions need Cody: " + " | ".join(questions)[:600])
         if fixes:

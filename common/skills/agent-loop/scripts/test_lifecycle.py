@@ -179,6 +179,18 @@ class LifecycleTests(unittest.TestCase):
             r, steps, t = self.run_once()
         self.assertEqual(calls, []); self.assertEqual(self.replies[0][0], 5); self.assertEqual(t.state, "human-gate-1")
 
+    def test_provider_usage_limit_in_adjudication_is_a_transient_not_a_defect(self):
+        """ZIP-7875: Codex returned 'usage limit has been reached'; the loop recorded 'adjudication unusable'
+        and stopped. It must pause as a provider transient, not consume the bot round."""
+        self.comments = [{"kind": "inline", "id": 7, "path": "a.rb", "line": 1, "reply_to": None, "sha": "s", "body": "x", "body_hash": "h7"}]
+        def dead_agent(cfg, agent, prompt, stage, wt, timeout, model=None):
+            stage.mkdir(parents=True, exist_ok=True); (stage / "stderr.log").write_text("Codex error: The usage limit has been reached\n")
+        with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=dead_agent):
+            r, steps, t = self.run_once()
+        self.assertEqual(t.state, "paused"); self.assertIn("provider unavailable", t.reason)
+        cis = json.loads((self.cfg.ticket_dir("ZIP-7873") / "ci.json").read_text()); self.assertEqual(cis["bot_rounds"], 0)   # round not consumed
+        import heal; self.assertEqual(heal.policy(t.reason)[0], "retry")
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

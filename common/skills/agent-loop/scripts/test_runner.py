@@ -1029,3 +1029,32 @@ after = ["001"]
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FenceBlastRadiusTests(unittest.TestCase):
+    """One ticket's unverifiable attempt record must not abort every other ticket's run
+    (ZIP-7875/901 fenced ZIP-7874 for 4 days with exit code 3)."""
+
+    def test_fence_owner_is_read_from_the_attempt_id(self):
+        import reconcile
+        self.assertEqual(reconcile.fence_owner("cannot regenerate diff.patch for ZIP-7875/901@x: observed_tree missing"), "ZIP-7875")
+        self.assertIsNone(reconcile.fence_owner("something else entirely"))
+
+    def test_another_tickets_fence_pauses_that_ticket_and_lets_ours_run(self):
+        import reconcile, state, config, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
+            toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
+            (root / "hopper.toml").write_text(toml)
+            cfg = config.load(root / "hopper.toml"); cfg.ensure_dirs()
+            other = cfg.ticket_dir("ZIP-7875"); other.mkdir(parents=True, exist_ok=True)
+            state.save(other, state.Ticket(key="ZIP-7875", state="implement", previous="plan"))
+            reconcile._fence_ticket(cfg, "ZIP-7875", "observed_tree missing")
+            t = state.load(other)
+            self.assertEqual(t.state, "paused")
+            self.assertIn("needs operator", t.reason)
+            reconcile._fence_ticket(cfg, "ZIP-7875", "observed_tree missing")     # idempotent
+            self.assertEqual(state.load(other).previous, "implement")
+

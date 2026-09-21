@@ -652,8 +652,18 @@ def reconcile(cfg, run_id, ticket: str | None = None) -> RunContext:
                 try:
                     try:
                         _sweep(cfg, None)
-                    except FenceExit:
-                        raise
+                    except FenceExit as fe:
+                        # A fence is a stop-the-world signal only for the ticket it concerns. One
+                        # unverifiable record under ANOTHER ticket used to abort every run in the
+                        # fleet (ZIP-7875/901 froze ZIP-7874 for days, exit code 3 with no ticket of
+                        # its own to blame). Fence that ticket, keep this one moving.
+                        owner = fence_owner(str(fe))
+                        if owner and ticket and owner.upper() != ticket.upper():
+                            _fence_ticket(cfg, owner, str(fe))
+                            print(f"reconcile: fenced {owner} ({str(fe)[:120]}); continuing with {ticket}", file=sys.stderr)
+                            _sweep(cfg, ticket)
+                        else:
+                            raise
                     except Exception as e:  # noqa: BLE001
                         # Another ticket's record could not be recovered (e.g. its worktree was mid
                         # `yarn install`). That ticket's own supervisor will retry it; it must not
@@ -783,3 +793,26 @@ def clear_fence(cfg, force: bool) -> int:
         return 0
     finally:
         lease.release()
+
+
+def fence_owner(reason: str) -> str | None:
+    """The ticket a fence reason belongs to, from the attempt id it names (`ZIP-1234/007@...`)."""
+    import re
+    m = re.search(r"\b([A-Z]+-\d+)/", reason or "")
+    return m.group(1) if m else None
+
+
+def _fence_ticket(cfg, key: str, reason: str) -> None:
+    """Pause the OWNING ticket so its own supervisor surfaces the fence to an operator, instead of
+    every other ticket dying on it. Idempotent; never touches a ticket that is already paused."""
+    import state
+    tdir = cfg.ticket_dir(key)
+    if not (tdir / "state.json").exists():
+        return
+    t = state.load(tdir)
+    if t.state == "paused":
+        return
+    t.previous, t.state = t.state, "paused"
+    t.reason = f"needs operator: unverifiable interrupted attempt: {reason[:200]}"
+    state.save(tdir, t)
+

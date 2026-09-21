@@ -207,6 +207,17 @@ def validate_manifest(path: pathlib.Path) -> list[str]:
     return contracts.validate_tasks(data)
 
 
+def review_is_current(review_path: pathlib.Path, plan_path: pathlib.Path) -> bool:
+    """A verdict is only the CURRENT verdict if the review was written after the plan it judges.
+    ZIP-7874: the critic died on a provider usage limit, nobody wrote a review, and the runner read a
+    three-day-old 'revise' as this round's verdict -- spending the last replan budget on a phantom."""
+    if not review_path.exists():
+        return False
+    if not plan_path.exists():
+        return True
+    return review_path.stat().st_mtime >= plan_path.stat().st_mtime
+
+
 def review_verdict(path: pathlib.Path) -> str:
     if not path.exists():
         return "missing"
@@ -268,7 +279,7 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
             log["result"] = "failed"; log["reason"] = f"provider unavailable (both vendors): {out_c}"; return log
         if used_c != asg["critic_model"]:
             log.setdefault("failovers", []).append({"role": "critic", "to": used_c})
-        verdict = review_verdict(review)
+        verdict = review_verdict(review) if review_is_current(review, plan_dir / "plan.md") else "missing"
         entry = {"round": rnd, "critic_s": round(time.monotonic() - t1), "verdict": verdict}; log["rounds"].append(entry)
         if verdict == "approve":
             log["result"] = "approved"; log["manifest"] = str(manifest); return log
@@ -321,11 +332,16 @@ def repair_plan(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
     _res, _used, out_c = run_agent_with_failover(cfg, CRITIC_DEF, _critic_prompt(key, ticket_json, wt, PLAN_ROUNDS), stage_root / "critic-1", wt, PLAN_TIMEOUT_S, model=asg["critic_model"])
     if out_c:
         log["result"] = "failed"; log["reason"] = f"provider unavailable (both vendors): {out_c}"; return log
-    verdict = review_verdict(review)
+    # A review older than the repaired plan judges work that no longer exists.
+    verdict = review_verdict(review) if review_is_current(review, plan_dir / "plan.md") else "missing"
     log["rounds"].append({"round": 1, "writer_s": round(t1 - t2), "writer_marker": wm, "critic_s": round(time.monotonic() - t1), "verdict": verdict})
     if verdict == "approve":
         log["result"] = "approved"; log["manifest"] = str(manifest); return log
     if verdict == "block":
         log["result"] = "blocked"; log["reason"] = "critic: tier-4 question for the owner (see plan-review.md)"; return log
+    if verdict == "missing":
+        # No review for THIS plan: the critic never ran (provider limit) or wrote nothing. That is
+        # infrastructure, not a rejected plan -- it must not spend a replan budget (ZIP-7874, 3 days lost).
+        log["result"] = "failed"; log["reason"] = "critic produced no review for the repaired plan"; return log
     log["result"] = "failed"; log["reason"] = f"critic verdict {verdict!r} after repair"; return log
 

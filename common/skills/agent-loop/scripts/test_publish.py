@@ -170,6 +170,27 @@ class HookRejectionTests(unittest.TestCase):
         self.assertIn("gates failed", str(e.exception))
         self.assertEqual(heal.policy(str(e.exception))[0], "fix-task")   # a worker fixes the offenses
 
+    def test_hook_failure_keeps_enough_output_to_name_the_offending_file(self):
+        """lefthook prints every passing hook AFTER the failure, so a short tail loses the real error."""
+        noise = "\n".join(f"OK hook-{i} passed" for i in range(200))
+        out = ("\x1b[33m[warn]\x1b[0m app/assets/javascripts/controllers/zui_dropzone_controller.ts\n"
+               "Code style issues found in the above file(s).\n" + noise)
+        with tempfile.TemporaryDirectory() as d:
+            def fake_run(argv, **kw):
+                joined = " ".join(argv)
+                if "git -c commit.gpgsign=false commit" in joined:
+                    return subprocess.CompletedProcess(argv, 1, out, "")
+                if "--cached" in joined:
+                    return subprocess.CompletedProcess(argv, 1, "", "")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            with patch.object(publish.subprocess, "run", side_effect=fake_run):
+                with self.assertRaises(publish.PublishError) as e:
+                    publish.commit_paths(pathlib.Path(d), ["a.ts"], "msg")
+        msg = str(e.exception)
+        self.assertIn("gates failed", msg)
+        self.assertIn("zui_dropzone_controller.ts", msg)          # the real error survived the tail
+        self.assertNotIn("\x1b[", msg)                            # ANSI stripped so paths parse
+
     def test_stale_index_from_a_killed_attempt_is_discarded_before_staging(self):
         """A killed attempt left the OLD copy of a file staged; `git add -- <allowlist>` did not refresh it,
         so the hook linted content no gate had seen (ZIP-7875)."""

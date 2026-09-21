@@ -299,25 +299,18 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
 
     def test_cw_05_leader_exited_live_descendant_unknown_fenced(self):
         """leader exited with a live descendant in the pgid"""
-        # The leader (a short-lived /bin/sh) backgrounds a sleep under its own session/pgid and
-        # exits immediately; the sleep (a "descendant") keeps the pgid populated. procid.capture
-        # must run while the leader is still alive to record its lstart.
-        # Pre-existing race, independent of this fix round's changes (present before them too):
-        # the leader shell can exit and be fully reaped before `procid.capture` reaches
-        # `os.getpgid` on a loaded machine (the exact window this row is about is a handful of
-        # milliseconds wide); retry the whole spawn a few times rather than let the test flake.
-        p = pgid = pid = None
-        for _ in range(8):
-            p = subprocess.Popen(["/bin/sh", "-c", "(sleep 60 &) ; exit 0"], start_new_session=True)
-            try:
-                pgid = os.getpgid(p.pid)
-                pid = procid.capture(p.pid)
-                break
-            except ProcessLookupError:
-                p.wait(timeout=2)
-                continue
-        else:
-            self.fail("leader was reaped before capture on every retry")
+        # The leader backgrounds a sleep under its own session/pgid, then exits -- leaving a live
+        # descendant in a pgid whose leader is gone. `procid.capture` must run while the leader is
+        # still alive, so the leader WAITS for this test to finish capturing instead of exiting
+        # immediately: racing an 8-attempt retry against an instant exit lost under parallel load
+        # (~1 run in 3) and a flaky gate test can pause live tickets.
+        gate = self.wt / "cw05.go"
+        p = subprocess.Popen(
+            ["/bin/sh", "-c", f'(sleep 60 &) ; while [ ! -f "{gate}" ]; do sleep 0.01; done; exit 0'],
+            start_new_session=True)
+        pgid = os.getpgid(p.pid)            # deterministic: the leader cannot have exited yet
+        pid = procid.capture(p.pid)
+        gate.write_text("go")               # release the leader
         p.wait(timeout=2)   # leader exits; the backgrounded sleep survives under the same pgid
         try:
             t = self._ticket()

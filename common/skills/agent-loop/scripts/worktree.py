@@ -27,7 +27,13 @@ def _has_head(wt) -> bool:
     ).returncode == 0
 
 
-SNAPSHOT_EXCLUDE = ("node_modules", "aaa/*/node_modules", "tmp/cache")
+# `planning/` and `.pi/` are COORDINATION state, not work product: the manifest, the plan, the rulings
+# and the review live there. `git add -A --force` sweeps ignored paths in, so restoring an attempt used
+# to roll `planning/tasks.toml` back to the attempt's base -- silently reverting every manifest repair
+# the task-writer (or an operator) made while an attempt was in flight. ZIP-7874 churned for days
+# because its repairs never survived (2026-09-21). They are never a worker deliverable, and the
+# allowlist rejects them anyway.
+SNAPSHOT_EXCLUDE = ("node_modules", "aaa/*/node_modules", "tmp/cache", "planning", ".pi")
 
 
 def snapshot(wt) -> str:

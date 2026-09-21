@@ -1058,3 +1058,28 @@ class FenceBlastRadiusTests(unittest.TestCase):
             reconcile._fence_ticket(cfg, "ZIP-7875", "observed_tree missing")     # idempotent
             self.assertEqual(state.load(other).previous, "implement")
 
+
+class SnapshotExcludesCoordinationStateTests(unittest.TestCase):
+    """ZIP-7874: attempt restore reverted planning/tasks.toml to the attempt's base tree, so no manifest
+    repair could ever persist while an attempt was in flight."""
+
+    def test_planning_survives_a_restore_to_the_base_snapshot(self):
+        import worktree, subprocess as sp, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d)
+            def git(*a):
+                return sp.run(["git", *a], cwd=wt, capture_output=True, text=True)
+            git("init", "-q"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
+            (wt / ".gitignore").write_text("planning/\n")
+            (wt / "app.rb").write_text("original\n")
+            (wt / "planning").mkdir()
+            (wt / "planning" / "tasks.toml").write_text("original manifest\n")
+            git("add", "-A"); git("-c", "commit.gpgsign=false", "commit", "-qm", "base")
+            base = worktree.snapshot(wt)
+            (wt / "app.rb").write_text("worker edit\n")
+            (wt / "planning" / "tasks.toml").write_text("REPAIRED manifest\n")   # task-writer repair
+            worktree.restore(wt, base)
+            self.assertEqual((wt / "app.rb").read_text(), "original\n")          # work IS reverted
+            self.assertEqual((wt / "planning" / "tasks.toml").read_text(),
+                             "REPAIRED manifest\n")                              # the repair SURVIVES
+

@@ -1,7 +1,9 @@
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -256,6 +258,14 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(fix.allowed_files, ["test/system/x_test.rb"])
         self.assertTrue(any("--force-exclusion" in c for c in fix.verification_commands))
         self.assertTrue(any("Rails/FindEach" in i for i in fix.invariants))
+
+    def test_waiting_duration_is_reported_in_the_reminder(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="paused", previous="plan", reason="x"))
+        import os, time as _t
+        old = _t.time() - 3 * 86400
+        os.utime(tdir / "state.json", (old, old))
+        self.assertEqual(lifecycle._waiting_since(tdir, None), " (waiting 3d)")
 
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
@@ -520,3 +530,25 @@ class LifecycleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotificationTests(unittest.TestCase):
+    """Uses the REAL _notify_once: LifecycleTests stubs it, so a test of its own behaviour must not
+    live in that fixture (ZIP-7874 re-notification)."""
+
+    def test_a_standing_human_block_re_notifies_every_six_hours(self):
+        sent = []
+        with tempfile.TemporaryDirectory() as d:
+            tdir = pathlib.Path(d)
+            def fake(*a, **k):
+                sent.append(a[0][0]); return subprocess.CompletedProcess(a[0], 0, "", "")
+            with patch("subprocess.run", side_effect=fake):
+                lifecycle._notify_once(tdir, "ZIP-7874", "needs an operator", "plan blocked")
+                lifecycle._notify_once(tdir, "ZIP-7874", "needs an operator", "plan blocked")
+                self.assertEqual(sent.count("cmux"), 1)          # not a stream
+                marker = next(tdir.glob(".notified-*"))
+                old = time.time() - lifecycle.RENOTIFY_S - 60
+                os.utime(marker, (old, old))
+                lifecycle._notify_once(tdir, "ZIP-7874", "needs an operator", "plan blocked")
+        self.assertEqual(sent.count("cmux"), 2)                  # ...but not silent either
+

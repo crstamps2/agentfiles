@@ -132,7 +132,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         import heal
         action, why = heal.decide(tdir, t.reason)
         if action == "human":
-            _notify_once(tdir, key, f"{key} needs an operator", f"{why}: {t.reason[:120]}")
+            waited = _waiting_since(tdir, t)
+            _notify_once(tdir, key, f"{key} needs an operator{waited}", f"{why}: {t.reason[:120]}")
             return Step(key, "paused", f"needs operator: {why}", detail=t.reason, wait=True)
         if action == "fix-task":
             try:
@@ -694,13 +695,19 @@ def _resolve_generated_conflicts(wt) -> bool:
     return False
 
 
+RENOTIFY_S = 6 * 3600          # a ticket waiting on a human says so again every 6 hours
+
+
 def _notify_once(tdir, key: str, title: str, body: str) -> None:
     """One macOS + cmux notification per (ticket, state, reason) -- the only two moments a human is
     needed: a ticket at Human Gate 1, or a pause/block the heal policy will not retry."""
     import hashlib, subprocess
     sig = hashlib.sha256(f"{title}|{body}".encode()).hexdigest()[:12]
     marker = pathlib.Path(tdir) / f".notified-{sig}"
-    if marker.exists():
+    # Re-raise a standing request every RENOTIFY_S. One notification is a moment; a ticket that is
+    # BLOCKED ON A HUMAN is a standing state, and going silent hides it (ZIP-7874 waited 3 days and
+    # 1627 respawns after a single alert). Same signature, so it never becomes a stream.
+    if marker.exists() and (time.time() - marker.stat().st_mtime) < RENOTIFY_S:
         return
     marker.touch()
     for cmd in (["cmux", "notify", "--title", title, "--body", body],
@@ -805,4 +812,15 @@ def _next_runner_task_id(manifest: pathlib.Path) -> str:
     while n in used:
         n += 1
     return str(n)
+
+
+def _waiting_since(tdir: pathlib.Path, t) -> str:
+    """' (waiting 3d)' -- a standing block should read as older every time it is raised."""
+    p = pathlib.Path(tdir) / "state.json"
+    if not p.exists():
+        return ""
+    hours = (time.time() - p.stat().st_mtime) / 3600
+    if hours < 1:
+        return ""
+    return f" (waiting {int(hours)}h)" if hours < 48 else f" (waiting {int(hours // 24)}d)"
 

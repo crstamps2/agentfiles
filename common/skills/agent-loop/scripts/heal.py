@@ -32,6 +32,7 @@ POLICIES = [
     (r"^resource: ", "retry", 200),
     (r"^heavy lane held|worker slot|slot busy", "retry", 200),
     (r"verification timeout|heavy lane busy", "retry", 6),
+    (r"critic produced no review", "retry", 5),          # the critic never ran; nothing was judged
     (r"^gates failed: pre-commit lint", "fix-task", 3),   # offenses in OUR work: a worker fixes them
     (r"^gates failed: yarn build", "prepare-retry", 3),
     (r"^gates failed: rails test", "prepare-retry", 2),

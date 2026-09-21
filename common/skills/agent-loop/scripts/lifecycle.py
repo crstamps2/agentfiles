@@ -783,6 +783,10 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path) -> s
     """Turn named pre-commit offenses into one bounded fix task: allowlist is exactly the offending
     files, and the gate is the same lint the hook runs. Runner-assigned id (9nn), like review fixes."""
     import re as _re
+    # Prefer the full captured output over the truncated reason string.
+    full = (tdir / "hook-reject.out")
+    if full.exists() and len(full.read_text()) > len(reason):
+        reason = reason + "\n" + full.read_text()
     files = sorted({m.group(1) for m in _re.finditer(r"([\w./-]+\.(?:rb|rake)):\d+:\d+:", reason)})
     if not files:
         # Formatters name the file without line:col (prettier prints bare paths it would rewrite).

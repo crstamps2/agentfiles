@@ -166,6 +166,14 @@ def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> 
     except Exception as e:  # noqa: BLE001 -- publishing must never take the runner down; the code is safe on disk
         t = state.load(tdir)
         if t.state != "paused":
+            # The reason field is short by design; the fix task needs the WHOLE hook output to name the
+            # offending file, so persist it beside the ticket (ZIP-7874: the 400-char cut kept only
+            # lefthook's trailing summary and lost the prettier error).
+            try:
+                tdir.mkdir(parents=True, exist_ok=True)
+                (tdir / "hook-reject.out").write_text(str(e), errors="replace")
+            except OSError:
+                pass                                        # evidence is best-effort; never mask the pause
             state.save(tdir, state.transition(t, "paused", reason=f"publish failed: {type(e).__name__}: {str(e)[:400]}"))
         print(f"{ticket_key} task {task.id}: publish failed; ticket paused: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 

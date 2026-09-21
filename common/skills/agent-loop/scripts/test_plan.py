@@ -193,3 +193,16 @@ class FailoverTests(unittest.TestCase):
                                                               model="anthropic/claude-fable-5-1", log=lambda m: None)
             self.assertTrue(out)
 
+    def test_a_review_older_than_the_plan_is_not_this_round_s_verdict(self):
+        """ZIP-7874: the critic died on a usage limit, wrote nothing, and a 3-day-old 'revise' was read as
+        the verdict for a freshly repaired plan -- spending the last replan budget on a phantom."""
+        import os, time as _t, tempfile as _tf
+        with _tf.TemporaryDirectory() as d:
+            pd = pathlib.Path(d); review = pd / "plan-review.md"; plan_md = pd / "plan.md"
+            review.write_text("VERDICT: revise\n"); plan_md.write_text("# plan")
+            old = _t.time() - 3 * 86400
+            os.utime(review, (old, old))
+            self.assertFalse(plan.review_is_current(review, plan_md))       # stale: ignore it
+            os.utime(review, None)
+            self.assertTrue(plan.review_is_current(review, plan_md))
+

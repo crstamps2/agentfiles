@@ -785,10 +785,17 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path) -> s
     import re as _re
     files = sorted({m.group(1) for m in _re.finditer(r"([\w./-]+\.(?:rb|rake)):\d+:\d+:", reason)})
     if not files:
+        # Formatters name the file without line:col (prettier prints bare paths it would rewrite).
+        files = sorted({m.group(1) for m in _re.finditer(
+            r"\b((?:app|test|lib|config|linters)/[\w./-]+\.(?:ts|js|tsx|jsx|scss|css|rb|rake|slim))\b", reason)})
+    if not files:
         raise ValueError("no offending file could be parsed from the hook output")
     offenses = "\n".join(f"  {ln.strip()}" for ln in reason.splitlines() if _re.search(r":\d+:\d+:", ln))[:1500]
     tid = _next_runner_task_id(manifest)
-    cmd = "bin/agent_run rubocop --cache false --force-exclusion " + " ".join(files)
+    if all(f.endswith((".ts", ".js", ".tsx", ".jsx", ".scss", ".css")) for f in files):
+        cmd = "bin/agent_run yarn prettier --check " + " ".join(files)
+    else:
+        cmd = "bin/agent_run rubocop --cache false --force-exclusion " + " ".join(files)
     _append_task(manifest, {
         "id": tid, "slug": f"lint-fix-{tid}", "size": "small",
         "summary": "Fix the lint offenses the pre-commit hook rejected",

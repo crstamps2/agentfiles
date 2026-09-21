@@ -267,6 +267,21 @@ class LifecycleTests(unittest.TestCase):
         os.utime(tdir / "state.json", (old, old))
         self.assertEqual(lifecycle._waiting_since(tdir, None), " (waiting 3d)")
 
+    def test_a_prettier_hook_rejection_also_becomes_a_fix_task(self):
+        """ZIP-7874: the pre-commit prettier check rejected a .ts controller. The classifier only knew
+        rubocop-style cop names, so it fell through to republish and retried the same rejected commit."""
+        import publish, heal
+        reason = ("gates failed: pre-commit lint rejected the commit: Checking formatting... "
+                  "[warn] app/assets/javascripts/controllers/zui_dropzone_controller.ts\n"
+                  "Code style issues found in the above file(s).")
+        self.assertEqual(heal.policy(reason)[0], "fix-task")
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        tid = lifecycle._lint_fix_task(tdir, reason, self.wt / "planning" / "zip-7873" / "tasks.toml")
+        import contracts
+        fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
+        self.assertEqual(fix.allowed_files, ["app/assets/javascripts/controllers/zui_dropzone_controller.ts"])
+        self.assertTrue(any("prettier" in c for c in fix.verification_commands))   # the tool that rejected it
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

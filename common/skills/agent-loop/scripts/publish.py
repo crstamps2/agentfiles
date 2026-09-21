@@ -111,7 +111,11 @@ def commit_paths(wt, paths: list[str], message: str) -> str | None:
         tail = (r.stderr or r.stdout).strip()[-1200:]
         # A hook rejection is lint the work must satisfy: name it as a gate so healing sends a worker to
         # fix the offenses, instead of republishing the identical rejected commit (ZIP-7875, 2026-09-18).
-        if re.search(r"\b[A-Z]\w+/\w+:|offenses? detected|\[Correctable\]", tail):
+        # rubocop/reek cops, and the JS/CSS formatters the repo runs in lefthook (prettier, eslint,
+        # stylelint) whose output names no cop at all (ZIP-7874: prettier --check, 2026-09-21).
+        if re.search(r"\b[A-Z]\w+/\w+:|offenses? detected|\[Correctable\]|"
+                     r"Code style issues found|prettier --(check|write)|"
+                     r"\b\d+ problems? \(\d+ errors?|✖ \d+ problem", tail, re.I):
             raise PublishError(f"gates failed: pre-commit lint rejected the commit: {tail}")
         raise PublishError(f"git commit failed (hooks?) rc={r.returncode}: {tail}")
     return _sh(["git", "rev-parse", "HEAD"], wt).stdout.strip()

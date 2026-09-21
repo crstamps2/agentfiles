@@ -282,6 +282,18 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(fix.allowed_files, ["app/assets/javascripts/controllers/zui_dropzone_controller.ts"])
         self.assertTrue(any("prettier" in c for c in fix.verification_commands))   # the tool that rejected it
 
+    def test_fix_task_reads_the_full_hook_output_not_the_truncated_reason(self):
+        """The reason field is capped at 400 chars, which kept only lefthook's trailing summary."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / "hook-reject.out").write_text(
+            "[warn] app/assets/javascripts/controllers/zui_dropzone_controller.ts\n"
+            "Code style issues found in the above file(s).\n" + "OK hook passed\n" * 100)
+        reason = "gates failed: pre-commit lint rejected the commit: No new instances of lodash."
+        tid = lifecycle._lint_fix_task(tdir, reason, self.wt / "planning" / "zip-7873" / "tasks.toml")
+        import contracts
+        fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
+        self.assertEqual(fix.allowed_files, ["app/assets/javascripts/controllers/zui_dropzone_controller.ts"])
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

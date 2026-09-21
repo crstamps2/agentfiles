@@ -108,7 +108,11 @@ def commit_paths(wt, paths: list[str], message: str) -> str | None:
         return None
     r = _sh(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message], wt, timeout=900)
     if r.returncode:
-        tail = (r.stderr or r.stdout).strip()[-1200:]
+        # Keep enough output to SEE the failing check: lefthook prints a summary of every passing hook
+        # after the failure, so a 1200-char tail captured "No new instances of lodash" and lost the
+        # prettier error entirely (ZIP-7874). Strip ANSI so the file paths parse.
+        raw = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
+        tail = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw)[-6000:]
         # A hook rejection is lint the work must satisfy: name it as a gate so healing sends a worker to
         # fix the offenses, instead of republishing the identical rejected commit (ZIP-7875, 2026-09-18).
         # rubocop/reek cops, and the JS/CSS formatters the repo runs in lefthook (prettier, eslint,

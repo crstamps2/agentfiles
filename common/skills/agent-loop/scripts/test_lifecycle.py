@@ -294,6 +294,24 @@ class LifecycleTests(unittest.TestCase):
         fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
         self.assertEqual(fix.allowed_files, ["app/assets/javascripts/controllers/zui_dropzone_controller.ts"])
 
+    def test_review_fix_ids_do_not_collide_with_ids_already_in_the_manifest(self):
+        """ZIP-7874: an operator-queued 901 was already in the plan, so the bot's first fix task was also
+        numbered 901 and the whole batch was rejected as a duplicate."""
+        mf = self.wt / "planning" / "zip-7873" / "tasks.toml"
+        lifecycle._append_task(mf, {"id": "901", "slug": "operator-followup", "size": "small", "summary": "s",
+                                    "allowed_files": ["app/a.rb"], "acceptance": ["AC-1: x"],
+                                    "verification_commands": ["bin/agent_run rubocop --cache false --force-exclusion app/a.rb"]})
+        self.comments = [{"kind": "inline", "id": 11, "path": "app/a.rb", "line": 1, "reply_to": None, "sha": "s", "body": "b", "body_hash": "h11"}]
+        self.adjudication = {"decisions": [{"id": 11, "decision": "fix", "reply": "ok", "task": {
+            "allowed_files": ["app/a.rb"], "summary": "fix it",
+            "verification_commands": ["bin/agent_run rubocop --cache false --force-exclusion app/a.rb"]}}]}
+        r, steps, t = self.run_once(outcomes=("accepted",) * 6, max_steps=12)
+        import contracts
+        ids = [x.id for x in contracts.load_tasks(mf)]
+        self.assertEqual(len(ids), len(set(ids)))                     # no duplicate
+        self.assertIn("902", ids)                                     # numbered past the existing 901
+        self.assertNotIn("rejected by the schema", state.load(self.cfg.ticket_dir("ZIP-7873")).reason)
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

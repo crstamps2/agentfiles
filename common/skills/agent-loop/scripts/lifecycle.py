@@ -439,7 +439,10 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             if d["decision"] == "question":
                 questions.append(f"comment {c['id']}: {d.get('reply','')}"); continue
             if d["decision"] == "fix":
-                ft = botreview.fix_task_from(d, i)
+                # Number from the MANIFEST, not a loop counter: a 9nn id already in the plan (an
+                # operator-queued follow-up, or a fix from an earlier round) collided and the whole
+                # batch was rejected as "duplicate id 901" (ZIP-7874, 2026-09-21).
+                ft = botreview.fix_task_from(d, int(_next_runner_task_id(_manifest_path(wt, key))) - 900 + len(fixes))
                 if ft: fixes.append(ft)
             try:
                 botreview.reply(pr, c, botreview.clean_reply(d.get("reply", "") or f"Addressed in a follow-up commit.", model_short), wt)

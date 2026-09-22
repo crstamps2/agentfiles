@@ -65,7 +65,7 @@ pi_thinking = "max"
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "anthropic/claude-opus-5"   # author tier: Opus 5; alternates with openai-codex/gpt-5.6-sol per ticket (Cody 2026-09-15: bring cost down)
+pi_model = "anthropic/claude-opus-5-5"   # author tier: Opus 5.5 (2026-09-22); alternates with openai-codex/gpt-5.6-sol per ticket (Cody 2026-09-15: bring cost down)
 pi_thinking = "medium"
 
 [flagship-critic]

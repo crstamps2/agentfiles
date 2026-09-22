@@ -98,3 +98,24 @@ class AdjudicationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplyHygieneTests(unittest.TestCase):
+    """ZIP-7874 posted "planning/zip-7874/plan.md:713-..." to a reviewer as justification."""
+
+    def test_reply_citing_the_plan_is_rejected(self):
+        with self.assertRaises(ValueError) as e:
+            botreview.clean_reply("Moving these rules contradicts the owner ruling in planning/zip-7874/plan.md:713.", "m")
+        self.assertIn("internal workflow vocabulary", str(e.exception))
+
+    def test_reply_citing_task_numbers_or_acs_is_rejected(self):
+        for bad in ("Handled by task 008.", "This is covered by AC-11.", "It is outside allowed_files."):
+            with self.assertRaises(ValueError):
+                botreview.clean_reply(bad, "m")
+
+    def test_a_reply_citing_code_and_conventions_passes(self):
+        ok = botreview.clean_reply(
+            "Caller-supplied wiring is deliberate: app/views/components/zui/zui-components/SKILL.md:512 "
+            "requires the uploader to stay with the caller, and dropzone.rb:150 only renders the surface.", "m")
+        self.assertIn("SKILL.md:512", ok)
+

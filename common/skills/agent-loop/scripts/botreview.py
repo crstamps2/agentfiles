@@ -134,11 +134,29 @@ def parse_adjudication(path: pathlib.Path) -> list[dict]:
     return decs
 
 
+# A reply is public review correspondence: it must read like an engineer's, never cite the machinery
+# that produced it. The PR body is linted for this by prbody.lint; replies were not, and ZIP-7874
+# posted "planning/zip-7874/plan.md:713" as justification to a reviewer (2026-09-21).
+WORKFLOW_VOCAB = (r"planning/[\w./-]+", r"\btasks?\.toml\b", r"\btask \d{3}\b", r"\bAC-\d+\b",
+                  r"\bowner ruling\b", r"\bthe (runner|planner|critic|task-writer|worker)\b",
+                  r"\ballowed_files\b", r"\bacceptance criteri", r"\bmanifest\b")
+
+
+def workflow_vocabulary(text: str) -> list[str]:
+    """Internal-workflow terms found in reply text (empty when clean)."""
+    import re as _re
+    return sorted({m.group(0) for pat in WORKFLOW_VOCAB for m in _re.finditer(pat, text, _re.I)})
+
+
 def clean_reply(text: str, model: str) -> str:
     low = text.lower()
     for p in PLATITUDES:
         if p in low:
             raise ValueError(f"reply contains a platitude ({p!r}); rewrite")
+    leaks = workflow_vocabulary(text)
+    if leaks:
+        raise ValueError(f"reply cites internal workflow vocabulary {leaks}; cite the CODE or the "
+                         f"repo convention instead (e.g. the skill file), never the plan")
     text = text.rstrip()
     footer = FOOTER_TMPL.format(model=model)
     return text if text.endswith(footer) else f"{text}\n\n{footer}"

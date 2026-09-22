@@ -1083,3 +1083,12 @@ class SnapshotExcludesCoordinationStateTests(unittest.TestCase):
             self.assertEqual((wt / "planning" / "tasks.toml").read_text(),
                              "REPAIRED manifest\n")                              # the repair SURVIVES
 
+
+class PublishReasonRoutingTests(unittest.TestCase):
+    def test_a_hook_lint_rejection_keeps_its_own_reason_so_healing_routes_it(self):
+        """ZIP-7874: "publish failed: PublishError: gates failed: ..." never matched the ^gates failed
+        policy, so a jQuery hook rejection was republished instead of fixed by a worker."""
+        import heal
+        self.assertEqual(heal.policy("gates failed: pre-commit lint rejected the commit: x.ts")[0], "fix-task")
+        self.assertEqual(heal.policy("publish failed: PublishError: gates failed: pre-commit lint rejected")[0], "republish")
+

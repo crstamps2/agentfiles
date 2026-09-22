@@ -137,7 +137,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             return Step(key, "paused", f"needs operator: {why}", detail=t.reason, wait=True)
         if action == "fix-task":
             try:
-                ft = _lint_fix_task(tdir, t.reason, _manifest_path(wt, key))
+                ft = _lint_fix_task(tdir, t.reason, _manifest_path(wt, key), cfg, key)
             except ValueError as e:
                 return Step(key, "paused", f"needs operator: lint fix task rejected: {e}", detail=t.reason, wait=True)
             heal.record(tdir, action, t.reason, t.state)
@@ -234,7 +234,13 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         # Accepted work that never got committed (a publish defect, later fixed) is published now,
         # before anything else runs: the branch must be coherent at every step.
         import runner as runner_mod
+        # A hook rejection produced a lint-fix task for the SAME files as accepted-but-unpublished
+        # work. Republishing first just re-hits the hook and heals into another identical task
+        # (ZIP-7874 span 908/909/910 in nine minutes). Let the fix land, then publish.
+        pending_lint_fix = any(tk.slug.startswith("lint-fix-") and not _task_accepted(cfg, key, tk) for tk in tasks)
         for tk in tasks:
+            if pending_lint_fix:
+                break
             if _task_accepted(cfg, key, tk) and runner_mod._uncommitted_allowlisted(wt, tk):
                 runner_mod.publish_accepted(cfg, key, str(wt), tk, ensure_pr=False)
                 t = state.load(tdir)
@@ -814,7 +820,7 @@ def _is_locale(path: str) -> bool:
     return path.startswith("config/locales/") and path.endswith((".yml", ".yaml"))
 
 
-def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path) -> str:
+def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=None, key: str = "") -> str:
     """Turn named pre-commit offenses into one bounded fix task: allowlist is exactly the offending
     files, and the gate is the same lint the hook runs. Runner-assigned id (9nn), like review fixes."""
     import re as _re
@@ -830,6 +836,11 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path) -> s
     if not files:
         raise ValueError("no offending file could be parsed from the hook output")
     offenses = "\n".join(f"  {ln.strip()}" for ln in reason.splitlines() if _re.search(r":\d+:\d+:", ln))[:1500]
+    import contracts as _contracts
+    existing = _contracts.load_tasks(manifest) if manifest.exists() else []
+    for tk in existing:
+        if tk.slug.startswith("lint-fix-") and tk.allowed_files == files and not (cfg and _task_accepted(cfg, key, tk)):
+            return tk.id                                  # the same fix is already queued
     tid = _next_runner_task_id(manifest)
     if all(f.endswith((".ts", ".js", ".tsx", ".jsx", ".scss", ".css")) for f in files):
         cmd = "bin/agent_run yarn prettier --check " + " ".join(files)

@@ -466,6 +466,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 botreview.save_ledger(ledger_p, seen_comments)          # keep what was already answered
                 return _pause_step(cfg, t, "bot-loop", f"reply failed: {e}")
             seen_comments[str(c["id"])] = c["body_hash"]
+            if d["decision"] == "fix":
+                # The promise exists as soon as the reply is public -- NOT when a task is queued. A
+                # replay of a cached adjudication re-posted four "I'll fix this" replies and queued
+                # nothing, and the gate opened over them (ZIP-7874, 2026-09-22).
+                _record_promise(cfg, key, str(c["id"]))
         botreview.save_ledger(ledger_p, seen_comments)
         if questions:
             return _pause_step(cfg, t, "bot-loop", "reviewer questions need Cody: " + " | ".join(questions)[:600])
@@ -487,8 +492,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 return _pause_step(cfg, t, "bot-loop", f"guard failed on the BASE tree too (independent of the work): {e}")
             # A reply that says "fixed" is a PROMISE: record it so the gate can refuse to open until
             # the code exists (ZIP-7874 reached Human Gate 1 with 6 promised fixes and 0 commits).
-            (tdir / "pending-fixes.json").write_text(json.dumps(
-                {str(d_["id"]): ft_["id"] for d_, ft_ in zip([x for x in decisions if x.get("decision") == "fix"], fixes)}))
+            for d_, ft_ in zip([x for x in decisions if x.get("decision") == "fix"], fixes):
+                _record_promise(cfg, key, str(d_["id"]), ft_["id"])
             t = state.transition(t, "implement", reason=f"{len(fixes)} review fix task(s) queued"); _save(cfg, t)
             return Step(key, "bot-loop", f"{len(fixes)} fix task(s) queued from review; back to implement")
         return Step(key, "bot-loop", f"{len(decisions)} comment(s) answered; none required code changes")
@@ -877,9 +882,21 @@ def _unmet_review_promises(cfg, key: str, wt) -> dict:
         return {}
     manifest = _manifest_path(wt, key)
     tasks = {t.id: t for t in (contracts.load_tasks(manifest) if manifest.exists() else [])}
-    unmet = {cid: tid for cid, tid in promised.items()
-             if tid not in tasks or not _task_accepted(cfg, key, tasks[tid])}
+    unmet = {cid: (tid or "<no task queued>") for cid, tid in promised.items()
+             if not tid or tid not in tasks or not _task_accepted(cfg, key, tasks[tid])}
     if not unmet:
         p.write_text("{}")
     return unmet
+
+
+def _record_promise(cfg, key: str, comment_id: str, task_id: str = "") -> None:
+    """Remember that a public reply promised code for `comment_id`. Written at reply time with no
+    task, then bound to the fix task when one is queued; the gate refuses while any is unbound or
+    unaccepted, and a promise is only cleared by accepted work."""
+    p = cfg.ticket_dir(key) / "pending-fixes.json"
+    cur = json.loads(p.read_text()) if p.exists() else {}
+    if task_id or comment_id not in cur:
+        cur[comment_id] = task_id or cur.get(comment_id, "")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cur, indent=2))
 

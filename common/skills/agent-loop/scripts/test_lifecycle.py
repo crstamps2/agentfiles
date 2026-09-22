@@ -337,6 +337,15 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(unmet, {})
         self.assertEqual(json.loads((tdir / "pending-fixes.json").read_text()), {})   # cleared
 
+    def test_a_cached_adjudication_whose_replies_cannot_be_posted_is_rerun(self):
+        """ZIP-7874: the reuse cache kept serving a reply citing the plan, which the reply lint rejects,
+        so the ticket paused on the same error every cycle instead of re-adjudicating."""
+        import botreview
+        bad = [{"id": 1, "decision": "decline", "reply": "See planning/zip-7874/plan.md:713.", "task": None}]
+        self.assertTrue(botreview.workflow_vocabulary(bad[0]["reply"]))
+        good = [{"id": 1, "decision": "decline", "reply": "dropzone.rb:150 renders only the surface.", "task": None}]
+        self.assertEqual(botreview.workflow_vocabulary(good[0]["reply"]), [])
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

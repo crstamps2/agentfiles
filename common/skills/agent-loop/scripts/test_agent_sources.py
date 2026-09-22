@@ -27,7 +27,7 @@ class WorkerSourceTests(unittest.TestCase):
                 self.assertIn(k, t[name], f"{name}.{k}")
         self.assertTrue(t["worker-cloud"]["pi_model"].startswith("anthropic/"))   # Ollama Cloud disallowed (security)
         self.assertTrue(t["worker-local"]["pi_model"].startswith("ollama-local/"))
-        self.assertEqual(t["flagship-author"]["pi_model"], "anthropic/claude-opus-5")   # author tier one below flagship (2026-09-15)
+        self.assertEqual(t["flagship-author"]["pi_model"], "anthropic/claude-opus-5-5")   # author tier one below flagship (2026-09-15)
         self.assertEqual(t["flagship-critic"]["pi_model"], "openai-codex/gpt-6-astra")
     def test_worker_bodies_carry_the_contract(self):
         for w in WORKERS:

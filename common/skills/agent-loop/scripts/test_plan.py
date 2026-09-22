@@ -10,7 +10,7 @@ import procs
 class PureTests(unittest.TestCase):
     def test_assignment_alternates_vendors_author_below_flagship(self):
         cfg = type("Cfg", (), {"pi_agents_dir": "x"})()
-        self.assertEqual(plan.assignment(cfg, 1), {"author_model": "anthropic/claude-opus-5", "critic_model": "openai-codex/gpt-6-astra"})
+        self.assertEqual(plan.assignment(cfg, 1), {"author_model": "anthropic/claude-opus-5-5", "critic_model": "openai-codex/gpt-6-astra"})
         self.assertEqual(plan.assignment(cfg, 2), {"author_model": "openai-codex/gpt-5.6-sol", "critic_model": "anthropic/claude-fable-5-1"})
 
     def test_review_verdict_parsing(self):
@@ -160,7 +160,7 @@ if __name__ == "__main__":
 class FailoverTests(unittest.TestCase):
     def test_sibling_model_is_the_other_vendor_same_tier(self):
         self.assertEqual(plan.sibling_model("openai-codex/gpt-6-astra"), "anthropic/claude-fable-5-1")
-        self.assertEqual(plan.sibling_model("anthropic/claude-opus-5"), "openai-codex/gpt-5.6-sol")
+        self.assertEqual(plan.sibling_model("anthropic/claude-opus-5-5"), "openai-codex/gpt-5.6-sol")
         self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5"), "openai-codex/gpt-5.4-mini")
         self.assertIsNone(plan.sibling_model("something/unknown"))
 

@@ -385,6 +385,26 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(any("ADDED lines" in i for i in fix.invariants))
         self.assertTrue(any("byte-for-byte" in i for i in fix.invariants))
 
+    def test_an_identical_lint_fix_task_is_not_queued_twice(self):
+        """ZIP-7874 spawned lint-fix 908, 909 and 910 for the same file in nine minutes."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        mf = self.wt / "planning" / "zip-7873" / "tasks.toml"
+        reason = "gates failed: pre-commit lint rejected the commit: app/assets/javascripts/x.js jQuery is depreciated"
+        first = lifecycle._lint_fix_task(tdir, reason, mf, self.cfg, "ZIP-7873")
+        with patch.object(lifecycle, "_task_accepted", return_value=False):
+            second = lifecycle._lint_fix_task(tdir, reason, mf, self.cfg, "ZIP-7873")
+        self.assertEqual(first, second)
+        import contracts
+        ids = [x.id for x in contracts.load_tasks(mf) if x.slug.startswith("lint-fix-")]
+        self.assertEqual(len(ids), 1)
+
+    def test_a_pending_lint_fix_runs_before_republishing_the_work_it_unblocks(self):
+        """Republishing first re-hits the same hook and heals into another identical task."""
+        import inspect
+        src = inspect.getsource(lifecycle.step)
+        self.assertIn("pending_lint_fix", src)
+        self.assertIn("if pending_lint_fix:", src)
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

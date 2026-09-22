@@ -412,7 +412,15 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if prev and prev.exists():
             try:
                 cand = botreview.parse_adjudication(prev)
-                if {c["id"] for c in todo} <= {d.get("id") for d in cand}:
+                # ...but only if its replies can actually be POSTED. A cached adjudication whose
+                # replies fail the reply lint can never succeed, and replaying it pauses the ticket
+                # forever (ZIP-7874 stalled on a cached reply citing the plan, 2026-09-22).
+                unpostable = [d.get("id") for d in cand
+                              if botreview.workflow_vocabulary(d.get("reply") or "")
+                              or any(p in (d.get("reply") or "").lower() for p in botreview.PLATITUDES)]
+                if unpostable:
+                    print(f"{key}: discarding cached adjudication; replies for {unpostable} cannot be posted", flush=True)
+                elif {c["id"] for c in todo} <= {d.get("id") for d in cand}:
                     decisions = cand; stage = prev.parent
             except RuntimeError:
                 decisions = None

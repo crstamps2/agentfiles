@@ -395,6 +395,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             rounds = cis.get("bot_rounds", 0)
             if rounds == 0 and not comments:
                 return Step(key, "bot-loop", "no bot comments yet", wait=True)
+            unmet = _unmet_review_promises(cfg, key, wt)
+            if unmet:
+                return _pause_step(cfg, t, "bot-loop",
+                                   "review fixes were promised in replies but never implemented: "
+                                   + ", ".join(f"comment {cid} -> task {tid}" for cid, tid in unmet.items()))
             t = state.transition(t, "human-gate-1"); _save(cfg, t)
             return Step(key, "bot-loop", "all bot comments adjudicated; CI green", detail="HUMAN GATE 1", wait=True)
         if cis.get("bot_rounds", 0) >= MAX_BOT_ROUNDS:
@@ -460,8 +465,22 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             try:
                 for ft in fixes: _append_task(_manifest_path(wt, key), ft)
             except ValueError as e:
+                # The replies for these comments PROMISED code. If the fix tasks cannot enter the
+                # manifest, un-answer them so the next round re-adjudicates and actually implements
+                # them: leaving them "answered" let ZIP-7874 reach Human Gate 1 with six promised
+                # fixes and zero commits (2026-09-21).
+                for ft_ in fixes:
+                    seen_comments.pop(str(ft_.get("comment_id", "")), None)
+                for d_ in decisions:
+                    if d_.get("decision") == "fix":
+                        seen_comments.pop(str(d_.get("id")), None)
+                botreview.save_ledger(ledger_p, seen_comments)
                 (tdir / "bad-guards.md").open("a").write(f"\n## review fix tasks rejected by the schema -- {time.strftime('%Y-%m-%dT%H:%M:%SZ')}\n\n{e}\n\nRewrite them to satisfy the schema (repo tools only, --force-exclusion on rubocop/reek, <=3 bespoke commands).\n")
                 return _pause_step(cfg, t, "bot-loop", f"guard failed on the BASE tree too (independent of the work): {e}")
+            # A reply that says "fixed" is a PROMISE: record it so the gate can refuse to open until
+            # the code exists (ZIP-7874 reached Human Gate 1 with 6 promised fixes and 0 commits).
+            (tdir / "pending-fixes.json").write_text(json.dumps(
+                {str(d_["id"]): ft_["id"] for d_, ft_ in zip([x for x in decisions if x.get("decision") == "fix"], fixes)}))
             t = state.transition(t, "implement", reason=f"{len(fixes)} review fix task(s) queued"); _save(cfg, t)
             return Step(key, "bot-loop", f"{len(fixes)} fix task(s) queued from review; back to implement")
         return Step(key, "bot-loop", f"{len(decisions)} comment(s) answered; none required code changes")
@@ -837,4 +856,22 @@ def _waiting_since(tdir: pathlib.Path, t) -> str:
     if hours < 1:
         return ""
     return f" (waiting {int(hours)}h)" if hours < 48 else f" (waiting {int(hours // 24)}d)"
+
+
+def _unmet_review_promises(cfg, key: str, wt) -> dict:
+    """Comment -> fix task for every reply that promised code the tree does not contain yet. A reply
+    is a public commitment; the gate must not open on an unkept one (ZIP-7874, 2026-09-21)."""
+    p = cfg.ticket_dir(key) / "pending-fixes.json"
+    if not p.exists():
+        return {}
+    promised = json.loads(p.read_text())
+    if not promised:
+        return {}
+    manifest = _manifest_path(wt, key)
+    tasks = {t.id: t for t in (contracts.load_tasks(manifest) if manifest.exists() else [])}
+    unmet = {cid: tid for cid, tid in promised.items()
+             if tid not in tasks or not _task_accepted(cfg, key, tasks[tid])}
+    if not unmet:
+        p.write_text("{}")
+    return unmet
 

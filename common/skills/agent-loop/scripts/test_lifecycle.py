@@ -312,6 +312,31 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("902", ids)                                     # numbered past the existing 901
         self.assertNotIn("rejected by the schema", state.load(self.cfg.ticket_dir("ZIP-7873")).reason)
 
+    def test_gate_refuses_to_open_while_a_promised_review_fix_is_unimplemented(self):
+        """ZIP-7874 replied "fixed" to 6 comments, the fix batch was rejected, and the loop still reached
+        Human Gate 1 with zero commits. A reply is a public promise; the gate must refuse."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / "pending-fixes.json").write_text(json.dumps({"4066916935": "902"}))
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready"))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 1, "bot_rounds": 1, "actions": []}))
+        self.comments = []                                        # every comment already answered
+        r, steps, t = self.run_once(max_steps=2)
+        self.assertEqual(t.state, "paused")
+        self.assertIn("promised in replies but never implemented", t.reason)
+        self.assertIn("comment 4066916935 -> task 902", t.reason)
+
+    def test_gate_opens_once_the_promised_fix_is_accepted(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        mf = self.wt / "planning" / "zip-7873" / "tasks.toml"
+        lifecycle._append_task(mf, {"id": "902", "slug": "review-fix-1", "size": "small", "summary": "s",
+                                    "allowed_files": ["app/a.rb"], "acceptance": ["AC-1: x"],
+                                    "verification_commands": ["bin/agent_run rubocop --cache false --force-exclusion app/a.rb"]})
+        (tdir / "pending-fixes.json").write_text(json.dumps({"4066916935": "902"}))
+        with patch.object(lifecycle, "_task_accepted", return_value=True):
+            unmet = lifecycle._unmet_review_promises(self.cfg, "ZIP-7873", self.wt)
+        self.assertEqual(unmet, {})
+        self.assertEqual(json.loads((tdir / "pending-fixes.json").read_text()), {})   # cleared
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

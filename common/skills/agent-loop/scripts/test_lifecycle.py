@@ -373,6 +373,18 @@ class LifecycleTests(unittest.TestCase):
         with patch.object(lifecycle, "_task_accepted", return_value=True):
             self.assertEqual(lifecycle._unmet_review_promises(self.cfg, "ZIP-7873", self.wt), {})
 
+    def test_a_jquery_hook_fix_task_explains_that_only_added_lines_are_checked(self):
+        """ZIP-7874: a worker reformatted an EXISTING jQuery line and the hook counted it as new."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        reason = ("gates failed: pre-commit lint rejected the commit: jquery-limit: "
+                  "jQuery is depreciated. Use modern JavaScript. "
+                  "app/assets/javascripts/application/uploaders/dropzone_uploader.js")
+        tid = lifecycle._lint_fix_task(tdir, reason, self.wt / "planning" / "zip-7873" / "tasks.toml")
+        import contracts
+        fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
+        self.assertTrue(any("ADDED lines" in i for i in fix.invariants))
+        self.assertTrue(any("byte-for-byte" in i for i in fix.invariants))
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

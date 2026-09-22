@@ -842,6 +842,10 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path) -> s
         "acceptance": [f"AC-1: `{cmd}` reports no offenses"],
         "invariants": [
             "The pre-commit hook rejected the commit with these offenses:\n" + offenses,
+            *( ["`.lefthook/pre-commit/jquery-limit` greps only ADDED lines (`^+`) for `$(`, so an "
+                "EXISTING jQuery line that you reformatted or moved now counts as new. Preserving that "
+                "line byte-for-byte satisfies the hook; rewriting legacy jQuery in an untouched file is "
+                "not this task's job."] if "jquery" in reason.lower() else [] ),
             "Fix the code so the lint passes. Prefer the repo's existing idiom for the cop; an inline "
             "disable is acceptable ONLY where the cop is genuinely inapplicable (e.g. Rails/FindEach on "
             "a Capybara collection, which has no find_each) and must carry a `--` reason.",

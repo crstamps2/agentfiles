@@ -174,7 +174,12 @@ def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> 
                 (tdir / "hook-reject.out").write_text(str(e), errors="replace")
             except OSError:
                 pass                                        # evidence is best-effort; never mask the pause
-            state.save(tdir, state.transition(t, "paused", reason=f"publish failed: {type(e).__name__}: {str(e)[:400]}"))
+            # Keep a self-describing reason self-describing: wrapping "gates failed: pre-commit lint
+            # rejected..." in "publish failed: PublishError:" defeated the heal policy that routes it
+            # to a worker fix task, and it republished the same rejected commit instead (2026-09-22).
+            msg = str(e)
+            reason = msg[:400] if msg.startswith("gates failed:") else f"publish failed: {type(e).__name__}: {msg[:400]}"
+            state.save(tdir, state.transition(t, "paused", reason=reason))
         print(f"{ticket_key} task {task.id}: publish failed; ticket paused: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
 

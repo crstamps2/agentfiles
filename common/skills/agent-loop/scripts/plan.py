@@ -63,7 +63,7 @@ def export_ticket(key: str, dest: pathlib.Path) -> pathlib.Path:
 AUTHOR_DEF, CRITIC_DEF, WRITER_DEF = "flagship-author", "flagship-critic", "task-writer"
 
 
-AUTHOR_MODELS = {"anthropic": "anthropic/claude-opus-5", "openai-codex": "openai-codex/gpt-5.6-sol"}
+AUTHOR_MODELS = {"anthropic": "anthropic/claude-opus-5-5", "openai-codex": "openai-codex/gpt-5.6-sol"}
 CRITIC_MODELS = {"anthropic": "anthropic/claude-fable-5-1", "openai-codex": "openai-codex/gpt-6-astra"}
 
 

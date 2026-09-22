@@ -87,6 +87,17 @@ For EACH comment decide one of:
 - `defer` — correct but belongs to a follow-up; write a reply saying so and name the follow-up.
 - `question` — genuinely needs the owner (tier 3/4); write the one-line question.
 
+Every `reply` is posted publicly to the pull request under your name. Write as the engineer who
+wrote the code, citing the CODE and the repo's own conventions:
+
+- Cite files and lines (`app/views/components/zui/dropzone/dropzone.rb:150`) or a skill/convention
+  document. NEVER cite the plan, the manifest, a task number, an AC number, an owner ruling, an
+  allowlist, or any other internal machinery -- the reviewer cannot see them and the reply is
+  rejected. "The plan says so" is not a reason a reviewer can check; the code is.
+- When you `decline`, give the substantive reason the finding is wrong, in the repository's terms.
+- Say only what is TRUE NOW. A reply that says something was changed is a public promise, and the
+  code must exist before the pull request is handed to a human.
+
 Write `{out}` as JSON: {{"decisions": [{{"id": <comment id>, "decision": "fix|decline|defer|question",
 "reply": "<reply text, no platitudes, no thanks, evidence-based>", "task": {{...task manifest table or null}}}}]}}
 Task tables follow the schema in `{schema}`; `allowed_files` must be as narrow as the fix permits.

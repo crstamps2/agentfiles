@@ -346,6 +346,33 @@ class LifecycleTests(unittest.TestCase):
         good = [{"id": 1, "decision": "decline", "reply": "dropzone.rb:150 renders only the surface.", "task": None}]
         self.assertEqual(botreview.workflow_vocabulary(good[0]["reply"]), [])
 
+    def test_a_posted_fix_reply_is_a_promise_even_when_no_task_is_queued(self):
+        """ZIP-7874: replaying a cached adjudication re-posted four "I'll fix this" replies and queued
+        no tasks, so the promise ledger stayed empty and the gate opened over four unimplemented fixes."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        lifecycle._record_promise(self.cfg, "ZIP-7873", "4066921564")          # reply posted, no task
+        unmet = lifecycle._unmet_review_promises(self.cfg, "ZIP-7873", self.wt)
+        self.assertEqual(unmet, {"4066921564": "<no task queued>"})
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready"))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 1, "bot_rounds": 1, "actions": []}))
+        self.comments = []
+        r, steps, t = self.run_once(max_steps=2)
+        self.assertEqual(t.state, "paused")                                     # gate refuses
+        self.assertIn("never implemented", t.reason)
+
+    def test_a_promise_is_cleared_only_by_accepted_work(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        mf = self.wt / "planning" / "zip-7873" / "tasks.toml"
+        lifecycle._record_promise(self.cfg, "ZIP-7873", "42")
+        lifecycle._append_task(mf, {"id": "902", "slug": "review-fix-1", "size": "small", "summary": "s",
+                                    "allowed_files": ["app/a.rb"], "acceptance": ["AC-1: x"],
+                                    "verification_commands": ["bin/agent_run rubocop --cache false --force-exclusion app/a.rb"]})
+        lifecycle._record_promise(self.cfg, "ZIP-7873", "42", "902")            # bound to the task
+        with patch.object(lifecycle, "_task_accepted", return_value=False):
+            self.assertEqual(lifecycle._unmet_review_promises(self.cfg, "ZIP-7873", self.wt), {"42": "902"})
+        with patch.object(lifecycle, "_task_accepted", return_value=True):
+            self.assertEqual(lifecycle._unmet_review_promises(self.cfg, "ZIP-7873", self.wt), {})
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

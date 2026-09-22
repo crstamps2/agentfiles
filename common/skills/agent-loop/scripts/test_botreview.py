@@ -119,3 +119,9 @@ class ReplyHygieneTests(unittest.TestCase):
             "requires the uploader to stay with the caller, and dropzone.rb:150 only renders the surface.", "m")
         self.assertIn("SKILL.md:512", ok)
 
+    def test_the_adjudicator_is_told_the_reply_rules_it_is_linted_against(self):
+        """The lint and the prompt must agree, or the round just fails (ZIP-7874)."""
+        p = botreview.ADJUDICATION_PROMPT
+        self.assertIn("NEVER cite the plan", p)
+        self.assertIn("public promise", p)
+

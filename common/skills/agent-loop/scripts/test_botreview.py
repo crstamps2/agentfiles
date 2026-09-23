@@ -100,6 +100,31 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ReplyDeliveryTests(unittest.TestCase):
+    """Branch review 2026-09-23: the POST happened before the ledger write, so a crash in between
+    re-opened the comment and the cached adjudication posted the reply again, publicly."""
+
+    def test_the_claim_is_flushed_before_the_post(self):
+        import inspect, lifecycle
+        src = inspect.getsource(lifecycle.step)
+        claim = src.index('seen_comments[str(c["id"])] = c["body_hash"]')
+        post = src.index("botreview.reply(pr, c,")
+        self.assertLess(claim, post, "the ledger must be written before the reply is posted")
+
+    def test_a_rejected_reply_is_not_left_marked_answered(self):
+        import inspect, lifecycle
+        self.assertIn('seen_comments.pop(str(c["id"]), None)', inspect.getsource(lifecycle.step))
+
+    def test_the_ledger_write_is_atomic(self):
+        import tempfile, pathlib as _p, json as _j
+        with tempfile.TemporaryDirectory() as d:
+            p = _p.Path(d) / "bot-ledger.json"
+            botreview.save_ledger(p, {"1": "h1"})
+            botreview.save_ledger(p, {"1": "h1", "2": "h2"})
+            self.assertEqual(_j.loads(p.read_text()), {"1": "h1", "2": "h2"})
+            self.assertEqual([x for x in _p.Path(d).iterdir() if x.name != "bot-ledger.json"], [])
+
+
 class ReplyHygieneTests(unittest.TestCase):
     """ZIP-7874 posted "planning/zip-7874/plan.md:713-..." to a reviewer as justification."""
 

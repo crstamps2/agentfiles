@@ -824,14 +824,26 @@ def recover_interrupted_git_state(wt, sh=None) -> str:
     if not (in_rebase or in_merge):
         return ""
     unmerged = [f for f in (sh(["git", "diff", "--name-only", "--diff-filter=U"], 60).stdout or "").split() if f]
-    if all(f in GENERATED or _is_locale(f) for f in unmerged):
+    # Resolve exactly what the normal rebase path resolves, the same way. This used to accept ANY
+    # config/locales/*.yml and take `--theirs`, which during a rebase is the replayed side -- the
+    # opposite of the hunk-by-hunk "HEAD wins" rule used everywhere else, and broader than the
+    # declared NORMALIZED set. Two answers to one conflict is how a locale file silently loses
+    # upstream content (branch review 2026-09-23; ZIP-7875 lost 38 lines to a hand resolution).
+    resolvable = set(GENERATED) | set(NORMALIZED)
+    if unmerged and all(f in resolvable for f in unmerged):
+        ok = True
         for f in unmerged:
             if f in GENERATED:
-                sh(["bash", "-lc", GENERATED[f]], 900)
-            else:
-                sh(["git", "checkout", "--theirs", "--", f], 60)
-                sh(["bash", "-lc", "bundle exec i18n-tasks normalize"], 900)
-            sh(["git", "add", "--", f], 60)
+                if sh(["git", "checkout", "--ours", "--", f], 60).returncode: ok = False; break
+                if sh(["bash", "-lc", GENERATED[f]], 900).returncode: ok = False; break
+            elif not _resolve_normalized_conflict(f, wt, NORMALIZED[f]):
+                ok = False; break
+            if sh(["git", "add", "--", f], 60).returncode:
+                ok = False; break
+        if not ok:
+            sh(["git", "rebase", "--abort"] if in_rebase else ["git", "merge", "--abort"], 120)
+            return (f"aborted an interrupted {'rebase' if in_rebase else 'merge'}: its conflicts could "
+                    f"not be resolved the way the normal path resolves them (branch restored)")
         cont = ["git", "-c", "core.editor=true", "rebase", "--continue"] if in_rebase else ["git", "-c", "core.editor=true", "commit", "--no-edit"]
         if sh(cont, 900).returncode == 0:
             return f"finished an interrupted {'rebase' if in_rebase else 'merge'} ({len(unmerged)} generated/locale conflict(s) regenerated)"

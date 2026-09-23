@@ -445,6 +445,31 @@ class LifecycleTests(unittest.TestCase):
             self.run_once(max_steps=1)
         pl.assert_called_once()                                                 # re-reviewed, not waved through
 
+    def test_unrunnable_guards_are_caught_at_plan_approval_not_by_spending_worker_rungs(self):
+        """Branch review 2026-09-23: guards.precheck was documented as a plan-approval step and had
+        no caller, so a guard that cannot run at all was discovered only after paying for attempts."""
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
+        pd = self.wt / "planning" / "zip-7873"
+        pd.joinpath("plan.md").write_text("# plan")
+        pd.joinpath("plan-review.md").write_text("VERDICT: approve\n")
+        with patch.object(lifecycle.guards, "precheck", return_value=["task 001: guard is not runnable on the base tree"]):
+            r, steps, t = self.run_once(max_steps=1)
+        self.assertEqual(t.state, "paused")
+        self.assertIn("unrunnable guard", t.reason)
+        self.assertTrue((tdir / "bad-guards.md").exists())
+        import heal; self.assertEqual(heal.policy(t.reason)[0], "repair")     # task-writer fixes it
+
+    def test_a_clean_precheck_lets_the_approved_plan_through(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
+        pd = self.wt / "planning" / "zip-7873"
+        pd.joinpath("plan.md").write_text("# plan")
+        pd.joinpath("plan-review.md").write_text("VERDICT: approve\n")
+        with patch.object(lifecycle.guards, "precheck", return_value=[]):
+            r, steps, t = self.run_once(max_steps=1)
+        self.assertEqual(t.state, "implement")
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

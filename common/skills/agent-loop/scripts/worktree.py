@@ -142,6 +142,13 @@ def verify_restored(wt, tree: str) -> bool:
     return not (set(differing) - ignored_paths(wt, differing))
 
 
+# Side effects of running the repo's own verification commands. Anything else that happens to be
+# gitignored is still judged against the task's allowlist.
+BUILD_ARTIFACTS = ("tmp/**", "tmp", "node_modules/**", "**/node_modules/**", ".ruby-lsp/**",
+                   "app/assets/builds/**", ".wt.d/**", "planning/**", ".pi/**", "**/.DS_Store",
+                   "log/**", "coverage/**", ".yarn/**", "public/assets/**", "public/packs/**")
+
+
 def _match(path: str, pattern: str) -> bool:
     if pattern.endswith("/"):
         return path.startswith(pattern) or path == pattern.rstrip("/")
@@ -172,7 +179,11 @@ def check_allowlist(paths: list, task, protected_paths: list, test_globs: list, 
     still removes them so 'restored to base' stays true) -> allowed_files -> test/fixture rule.
     `wt` enables the gitignore exemption; without it every path is judged (legacy callers)."""
     violations = []
-    ignored = ignored_paths(wt, paths) if wt is not None else set()
+    # Only BUILD ARTIFACTS are exempt, not everything gitignored: "the repo ignores it" let a worker
+    # write any ignored path -- .env, credentials, editor state, the loop's own planning/ -- without
+    # an allowlist violation (branch review 2026-09-23).
+    ignored = {p for p in (ignored_paths(wt, paths) if wt is not None else set())
+               if any(_match(p, g) for g in BUILD_ARTIFACTS)}
     for p in paths:
         if any(_match(p, pp) for pp in protected_paths):
             violations.append(f"{p}: protected path (never editable by workers)")

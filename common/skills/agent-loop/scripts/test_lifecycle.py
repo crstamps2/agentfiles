@@ -405,6 +405,22 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("pending_lint_fix", src)
         self.assertIn("if pending_lint_fix:", src)
 
+    def test_a_stale_approve_cannot_skip_the_opposite_vendor_review(self):
+        """Branch review 2026-09-23: an `approve` older than the plan/manifest advanced straight to
+        implement, bypassing the review the whole two-vendor design rests on."""
+        import os, time as _t
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
+        pd = self.wt / "planning" / "zip-7873"
+        pd.joinpath("plan-review.md").write_text("VERDICT: approve\n")
+        old = _t.time() - 3 * 86400
+        os.utime(pd / "plan-review.md", (old, old))
+        pd.joinpath("plan.md").write_text("# a newly rewritten plan")          # newer than the verdict
+        with patch.object(lifecycle.plan_mod, "plan_ticket", return_value={"result": "approved", "rounds": [],
+                                                                           "author_model": "A", "critic_model": "C"}) as pl:
+            self.run_once(max_steps=1)
+        pl.assert_called_once()                                                 # re-reviewed, not waved through
+
     def test_reviewer_question_pauses_for_cody(self):
         self.comments = [{"kind": "inline", "id": 6, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "should this be public API?", "body_hash": "h6"}]
         self.adjudication = {"decisions": [{"id": 6, "decision": "question", "reply": "Is Well's slot API public?"}]}

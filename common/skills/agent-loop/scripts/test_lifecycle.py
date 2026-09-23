@@ -228,7 +228,30 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("aborted", msg)
         self.assertIn(["git", "rebase", "--abort"], calls)
 
-    def test_interrupted_rebase_with_only_locale_conflicts_is_finished(self):
+    def test_restart_recovery_resolves_conflicts_the_same_way_the_normal_path_does(self):
+        """Branch review 2026-09-23: recovery took `--theirs` for ANY config/locales/*.yml -- the
+        replayed side, opposite to the hunk-by-hunk HEAD-wins rule, and broader than NORMALIZED."""
+        import inspect
+        src = inspect.getsource(lifecycle.recover_interrupted_git_state)
+        self.assertNotIn('"--theirs"', src)
+        self.assertIn("_resolve_normalized_conflict", src)
+        self.assertIn("set(GENERATED) | set(NORMALIZED)", src)
+
+    def test_an_unresolvable_interrupted_rebase_aborts_instead_of_guessing(self):
+        gd = self.wt / ".git"; (gd / "rebase-merge").mkdir(parents=True, exist_ok=True)
+        calls = []
+        def sh(argv, timeout=120):
+            calls.append(argv)
+            if argv[:3] == ["git", "diff", "--name-only"]:
+                return subprocess.CompletedProcess(argv, 0, "config/locales/am.yml\n", "")  # not NORMALIZED
+            return subprocess.CompletedProcess(argv, 0, ".git" if "--git-dir" in argv else "", "")
+        msg = lifecycle.recover_interrupted_git_state(self.wt, sh=sh)
+        self.assertIn("aborted", msg)
+        self.assertIn(["git", "rebase", "--abort"], calls)
+
+    def test_interrupted_rebase_with_only_normalized_conflicts_is_finished(self):
+        """en.yml is in NORMALIZED, so recovery resolves it with the same hunk-by-hunk resolver the
+        normal rebase path uses, then continues."""
         gd = self.wt / ".git"; (gd / "rebase-merge").mkdir(parents=True, exist_ok=True)
         calls = []
         def sh(argv, timeout=120):
@@ -236,9 +259,10 @@ class LifecycleTests(unittest.TestCase):
             if argv[:3] == ["git", "diff", "--name-only"]:
                 return subprocess.CompletedProcess(argv, 0, "config/locales/en.yml\n", "")
             return subprocess.CompletedProcess(argv, 0, ".git" if "--git-dir" in argv else "", "")
-        msg = lifecycle.recover_interrupted_git_state(self.wt, sh=sh)
+        with patch.object(lifecycle, "_resolve_normalized_conflict", return_value=True) as resolver:
+            msg = lifecycle.recover_interrupted_git_state(self.wt, sh=sh)
+        resolver.assert_called_once()
         self.assertIn("finished an interrupted rebase", msg)
-        self.assertTrue(any("i18n-tasks normalize" in " ".join(c) for c in calls))
         self.assertNotIn(["git", "rebase", "--abort"], calls)
 
     def test_pre_commit_lint_rejection_becomes_a_bounded_fix_task(self):

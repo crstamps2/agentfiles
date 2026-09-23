@@ -480,15 +480,21 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 # batch was rejected as "duplicate id 901" (ZIP-7874, 2026-09-21).
                 ft = botreview.fix_task_from(d, int(_next_runner_task_id(_manifest_path(wt, key))) - 900 + len(fixes))
                 if ft: fixes.append(ft)
+            # Record the intent to reply BEFORE the POST and flush it immediately: a crash between a
+            # successful POST and the end-of-batch save left the comment unhandled, so the next round
+            # replayed the cached adjudication and posted the reply a second time, publicly
+            # (branch review 2026-09-23). A duplicate reply is worse than a missing one.
+            seen_comments[str(c["id"])] = c["body_hash"]
+            botreview.save_ledger(ledger_p, seen_comments)
             try:
                 botreview.reply(pr, c, botreview.clean_reply(d.get("reply", "") or f"Addressed in a follow-up commit.", model_short), wt)
             except ValueError as e:
+                seen_comments.pop(str(c["id"]), None)     # never posted: leave it unanswered
                 botreview.save_ledger(ledger_p, seen_comments)
                 return _pause_step(cfg, t, "bot-loop", f"reply rejected: {e}")
             except publish.PublishError as e:
                 botreview.save_ledger(ledger_p, seen_comments)          # keep what was already answered
                 return _pause_step(cfg, t, "bot-loop", f"reply failed: {e}")
-            seen_comments[str(c["id"])] = c["body_hash"]
             if d["decision"] == "fix":
                 # The promise exists as soon as the reply is public -- NOT when a task is queued. A
                 # replay of a cached adjudication re-posted four "I'll fix this" replies and queued

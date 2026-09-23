@@ -635,7 +635,9 @@ class Runner:
                     # Then the failure is independent of the worker's change (a wrong or environment-
                     # bound guard). The rung is not consumed and the manifest is flagged for repair.
                     import guards
-                    who = guards.attribute_rejection(task, cmd, wt, rec.base_tree) if i < len(task.verification_commands) else "worker"
+                    attempt_out = vs_out_tail(rec.path, i) or ""
+                    who = (guards.attribute_rejection(task, cmd, wt, rec.base_tree, attempt_out)
+                           if i < len(task.verification_commands) else "worker")
                     if who == "guard":
                         verify_outcome = "environment"
                         verify_reason = f"guard failed on the BASE tree too (independent of the work): {cmd}"

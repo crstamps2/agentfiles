@@ -80,7 +80,7 @@ def needs_repo_env(cmd: str) -> bool:
     return bool(re.search(r"\b(rubocop|reek|i18n-tasks|slim-lint|stylelint|prettier|eslint|figma connect parse|agent_run)\b", cmd))
 
 
-def _attribute_in_place(cmd: str, wt) -> str:
+def _attribute_in_place(cmd: str, wt, attempt_output: str = "") -> str:
     """Stash the worker's changes (incl. untracked), run the guard on the resulting base content in the
     real worktree, restore. Any failure to stash/restore -> 'unknown' (never leave the tree altered)."""
     wt = pathlib.Path(wt)
@@ -96,14 +96,32 @@ def _attribute_in_place(cmd: str, wt) -> str:
     paths = _referenced_paths(cmd)
     if paths and not all((wt / p).exists() for p in paths):
         return "worker"                          # guard inspects the task's own new files; base failure expected
-    return "guard"
+    return _same_failure(attempt_output, r.stdout + r.stderr)
 
 
 def _referenced_paths(cmd: str) -> list[str]:
     return re.findall(r"\b((?:app|test|config|lib|linters|spec|db)/[\w./-]+)", cmd)
 
 
-def attribute_rejection(task, cmd: str, wt, base_tree: str) -> str:
+FAILURE_LINE = re.compile(
+    r"(?:^|\s)(?:"
+    r"[A-Z]\w+/\w+(?:/\w+)?"                       # rubocop/reek cop names
+    r"|(?:FAIL|Failure|Error|ERROR|✖|✗)\b[^\n]{0,120}"
+    r"|\w+Error\b[^\n]{0,120}"
+    r")")
+
+
+def failure_signature(text: str) -> frozenset:
+    """What failed, independent of where. Paths, line/column numbers, durations and temp dirs are
+    normalised away so the same failure matches across two trees."""
+    if not text:
+        return frozenset()
+    norm = re.sub(r"\d+", "N", text)
+    norm = re.sub(r"/[\w./-]+/", "/P/", norm)
+    return frozenset(m.group(0).strip()[:90] for m in FAILURE_LINE.finditer(norm))
+
+
+def attribute_rejection(task, cmd: str, wt, base_tree: str, attempt_output: str = "") -> str:
     """Who is wrong when `cmd` rejected an attempt?
       'worker'  -- cmd passes on the base tree (the change broke it), OR cmd fails on base only
                    because it inspects files the task CREATES (absent on base -> expected).
@@ -117,7 +135,7 @@ def attribute_rejection(task, cmd: str, wt, base_tree: str) -> str:
         # bare archive. Run them IN the worktree with the worker's changes stashed away: same env, base
         # content. (ZIP-7875/005: a rubocop guard on an excluded path failed on base too, but attribution
         # returned "unknown" and the worker was charged, four times.)
-        return _attribute_in_place(cmd, wt)
+        return _attribute_in_place(cmd, wt, attempt_output)
     try:
         tmp = base_checkout(wt, base_tree)
     except Exception:  # noqa: BLE001
@@ -136,6 +154,21 @@ def attribute_rejection(task, cmd: str, wt, base_tree: str) -> str:
             return "worker"                      # inspects the task's own (not-yet-existing) output; base failure expected
         if r.returncode in UNRUNNABLE_RC:
             return "guard"                       # missing tool / syntax error, with every referenced path present
-        return "guard"                           # fails on base with everything present: independent of the work
+        return _same_failure(attempt_output, r.stdout + r.stderr)
     finally:
         tmp.cleanup()
+
+
+
+def _same_failure(attempt_output: str, base_output: str) -> str:
+    """'guard' only when the base tree fails the SAME way. "Both runs exited non-zero" does not mean
+    the guard is independent of the work: the attempt may have introduced a different failure, or the
+    guard may be exposing the very defect the task was meant to fix. Attribution decides whether a
+    verification command gets rewritten or deleted, so ambiguity must not resolve to 'delete it'
+    (branch review 2026-09-23)."""
+    if not attempt_output:
+        return "guard"                           # no evidence to compare: historical behaviour
+    a, b = failure_signature(attempt_output), failure_signature(base_output)
+    if not a or not b:
+        return "unknown"
+    return "guard" if (a & b) else "unknown"

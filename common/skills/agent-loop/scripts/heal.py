@@ -79,7 +79,8 @@ def reason_key(reason: str) -> str:
 def record(tdir: pathlib.Path, action: str, reason: str, stage: str, note: str = "") -> None:
     with open(_log_path(tdir), "a") as f:
         f.write(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "action": action,
-                            "reason_key": reason_key(reason), "reason": (reason or "")[:300], "stage": stage, "note": note}) + "\n")
+                            "reason_key": reason_key(reason), "signature": signature(reason),
+                            "reason": (reason or "")[:300], "stage": stage, "note": note}) + "\n")
 
 
 BACKOFF_S = {"provider": 1800}      # a provider usage limit clears on a provider clock, not ours
@@ -102,11 +103,34 @@ def cooling_off(tdir: pathlib.Path, reason: str) -> int:
     return max(0, int(BACKOFF_S["provider"] - (_t.time() - t0)))
 
 
+MAX_HEALS_PER_TICKET = 25          # any reason, any action: a ticket that has healed this often is broken
+MAX_SAME_SIGNATURE = 4             # the same failure evidence recurring is a defect, not a transient
+
+
+def signature(reason: str) -> str:
+    """Failure identity with volatile parts removed, so renaming a reason cannot buy a fresh budget."""
+    import hashlib
+    norm = re.sub(r"\d+", "N", reason or "")
+    norm = re.sub(r"/[\w./-]+/", "/P/", norm)
+    norm = re.sub(r"\s+", " ", norm).strip().lower()[:300]
+    return hashlib.sha256(norm.encode()).hexdigest()[:12]
+
+
 def decide(tdir: pathlib.Path, reason: str) -> tuple[str, str]:
     """(action, explanation). 'human' when the policy says so OR the budget for this reason is spent."""
     action, budget = policy(reason)
     if action == "human":
         return "human", "policy: needs an owner"
+    # Per-reason budgets are not a ticket ceiling: the same root defect can present under several
+    # reasons (and heal actions rewrite reason text), so a ticket could heal indefinitely. Two global
+    # stops, both owner decisions (branch review 2026-09-23).
+    hist = history(tdir)
+    if len(hist) >= MAX_HEALS_PER_TICKET:
+        return "human", f"ticket has self-healed {len(hist)} times; that is a defect, not a transient"
+    sig = signature(reason)
+    same = [h for h in hist if h.get("signature") == sig]
+    if len(same) >= MAX_SAME_SIGNATURE:
+        return "human", f"the same failure has recurred {len(same)} times ({sig}); healing is not fixing it"
     wait = cooling_off(tdir, reason)
     if wait:
         return "wait", f"provider cooling off; {wait // 60} min left"

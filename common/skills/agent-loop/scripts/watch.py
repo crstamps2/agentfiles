@@ -104,7 +104,7 @@ def pr_state(pr: int) -> str:
     now = _t.time(); hit = _PR_CACHE.get(pr)
     if hit and now - hit[0] < 60:
         return hit[1]
-    r = subprocess.run(["gh", "pr", "view", str(pr), "--repo", "retailzipline/zipline-app", "--json", "isDraft,state", "--jq", '"\(.state) \(.isDraft)"'],
+    r = subprocess.run(["gh", "pr", "view", str(pr), "--repo", "retailzipline/zipline-app", "--json", "isDraft,state", "--jq", r'"\(.state) \(.isDraft)"'],
                        capture_output=True, text=True, timeout=30)
     out = r.stdout.strip().split()
     st = "?" if len(out) != 2 else ("merged" if out[0] == "MERGED" else "closed" if out[0] == "CLOSED" else "draft" if out[1] == "true" else "ready")

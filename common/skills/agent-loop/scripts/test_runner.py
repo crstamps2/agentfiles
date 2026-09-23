@@ -1092,3 +1092,19 @@ class PublishReasonRoutingTests(unittest.TestCase):
         self.assertEqual(heal.policy("gates failed: pre-commit lint rejected the commit: x.ts")[0], "fix-task")
         self.assertEqual(heal.policy("publish failed: PublishError: gates failed: pre-commit lint rejected")[0], "republish")
 
+
+class SourceHygieneTests(unittest.TestCase):
+    def test_every_module_compiles_without_a_syntax_warning(self):
+        """`'"\\(.state)"'` (a jq format string) is an invalid escape sequence: it survives today only
+        because Python still tolerates unknown escapes, and is slated to become a SyntaxError. Caught in
+        watch.py during the branch review (2026-09-23)."""
+        import warnings, pathlib as _p
+        here = _p.Path(__file__).resolve().parent
+        for f in sorted(here.glob("*.py")):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", SyntaxWarning)
+                try:
+                    compile(f.read_text(), str(f), "exec")
+                except SyntaxWarning as e:
+                    self.fail(f"{f.name}: {e}")
+

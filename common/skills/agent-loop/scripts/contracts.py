@@ -104,6 +104,11 @@ def validate_tasks(data: dict) -> list:
             parts = path.replace("\\", "/").split("/")
             if path.startswith("/") or ".." in parts:
                 errs.append(f"{p}.allowed_files: must be relative and contain no .. segment ({path!r})")
+            # A glob as the FIRST segment is repository-wide authority, not an allowlist: `["**"]`
+            # passed validation and let a task edit every unprotected file (branch review 2026-09-23).
+            if parts and ("*" in parts[0] or parts[0] in ("", ".")):
+                errs.append(f"{p}.allowed_files: first path segment must be a concrete directory, "
+                            f"not a glob ({path!r})")
         for k in t:
             if k not in allowed_keys:
                 errs.append(f"{p}: unknown key {k!r}")
@@ -111,6 +116,9 @@ def validate_tasks(data: dict) -> list:
         # whose commands reference planning/ is a test harness, not a plan (ZIP-7872, 2026-09-15).
         cmds = t.get("verification_commands") or []
         if isinstance(cmds, list):
+            for c in cmds:
+                for e in validate_command(c) if isinstance(c, str) else []:
+                    errs.append(f"{p}.verification_commands: {e}")
             for c in cmds:
                 if isinstance(c, str) and re.search(r"(^|[\s'\"=/])planning/", c):
                     errs.append(f"{p}.verification_commands: references planning/ ({c[:60]!r}); use repo tools or a task-owned test")
@@ -154,3 +162,109 @@ def load_tasks(path) -> list:
         raise ManifestError(f"{path}:\n  " + "\n  ".join(errs))
     fields = {f.name for f in dataclasses.fields(Task)}
     return [Task(**{k: v for k, v in t.items() if k in fields}) for t in data["tasks"]]
+
+# --- verification command grammar -------------------------------------------------------------
+# A verification command is EXECUTED by the runner. Before this boundary existed, any string was
+# accepted and handed to `/bin/sh -c`, so a planner or review adjudicator (whose inputs include
+# Jira text and PR review-bot comments) could run anything as the unattended account -- `gh api`
+# merges, force-pushes, credential reads. Reproduced during the branch review 2026-09-23 with
+# `allowed_files = ["**"]` and `"true; gh api --method POST .../merges"`.
+#
+# What is allowed, deliberately matching how real manifests are written: optional KEY=VALUE env
+# prefixes, simple commands joined by `&&`, glob characters in arguments, and an allowlist of the
+# repository's own tools. What is refused: every other shell construct (`;`, `|`, `&`, command
+# substitution, redirection, newlines) and every executable that is a general-purpose interpreter.
+SHELL_ESCAPES = (
+    (r";", "command separator ';'"),
+    (r"\|", "pipe '|'"),
+    (r"(?<!&)&(?!&)", "background/duplicate '&'"),
+    (r"\$\(", "command substitution '$('"),
+    (r"`", "command substitution backtick"),
+    (r"\$\{", "parameter expansion '${'"),
+    (r"[<>]", "redirection"),
+    (r"[\n\r]", "newline"),
+)
+# `bin/**` is the repository's own tool directory: version-controlled, reviewed, and the normal way
+# a gate is written. Everything else must be named explicitly.
+# Bounded utilities: no interpreter, no network client, no `find` (-exec re-opens execution), no
+# rm/cp/mv. Writes from touch/mkdir remain subject to the task's allowed_files diff check.
+ALLOWED_EXECUTABLES = {"bundle", "yarn", "npx", "git", "grep", "test", "true", "echo",
+                       "sleep", "touch", "mkdir", "printf", "ls", "cat", "head", "tail", "wc", "diff"}
+
+
+def _executable_allowed(exe: str) -> bool:
+    return (exe in ALLOWED_EXECUTABLES or exe in WRAPPED_TOOLS
+            or (exe.startswith("bin/") and ".." not in exe.split("/")))
+# Read-only git only: a verification gate never needs to move a ref.
+GIT_VERBS = {"diff", "status", "log", "rev-parse", "ls-files", "show", "grep", "describe", "cat-file"}
+WRAPPED_TOOLS = {"rubocop", "reek", "rails", "rspec", "ruby", "i18n-tasks", "slim-lint", "stylelint",
+                 "prettier", "eslint", "jest", "erblint", "brakeman", "yarn", "npx"}
+ENV_PREFIX = re.compile(r"^[A-Z_][A-Z0-9_]*=[\w./:@-]*$")
+# `rails runner` executes Ruby in the app. It is how plans pin public contracts, so it stays --
+# but Ruby that shells out or writes files is not a verification gate.
+RUBY_ESCAPE = re.compile(r"\b(system|exec|spawn|%x|Open3|Kernel\.|FileUtils|File\.(write|open|delete)|"
+                         r"require\s+['\"](net/|open-uri|socket)|`)", re.I)
+
+
+def validate_command(cmd: str) -> list[str]:
+    """Errors for one verification command; empty list means it may be executed."""
+    import shlex
+    errs = []
+    if not isinstance(cmd, str) or not cmd.strip():
+        return ["empty command"]
+    for pat, what in SHELL_ESCAPES:
+        if re.search(pat, cmd):
+            errs.append(f"{what} is not allowed in a verification command ({cmd[:60]!r})")
+    if errs:
+        return errs
+    for segment in cmd.split("&&"):
+        seg = segment.strip()
+        if not seg:
+            errs.append(f"empty segment in {cmd[:60]!r}")
+            continue
+        try:
+            tokens = shlex.split(seg)
+        except ValueError as e:
+            errs.append(f"unparsable command ({e}) in {seg[:60]!r}")
+            continue
+        while tokens and ENV_PREFIX.match(tokens[0]):
+            tokens.pop(0)
+        if not tokens:
+            errs.append(f"only environment assignments in {seg[:60]!r}")
+            continue
+        # `bin/agent_run` is a transparent wrapper (`bin/agent_run bundle exec reek ...`): unwrap it
+        # and judge what it actually runs, rather than special-casing each nesting.
+        while tokens and tokens[0] == "bin/agent_run":
+            tokens = tokens[1:]
+            if not tokens:
+                errs.append(f"bin/agent_run wraps nothing in {seg[:60]!r}")
+        if not tokens:
+            continue
+        exe, args = tokens[0], tokens[1:]
+        if exe.startswith("/") or ".." in exe.split("/"):
+            errs.append(f"absolute or traversing executable path {exe!r}")
+            continue
+        if not _executable_allowed(exe):
+            errs.append(f"executable {exe!r} is not a repository tool (allowed: bin/**, "
+                        f"{', '.join(sorted(ALLOWED_EXECUTABLES))})")
+            continue
+        # An inline-code flag only matters where it feeds an INTERPRETER (`bundle exec ruby -e`,
+        # `npx ts-node -e`). `test ! -e path` and `grep -e pattern` are ordinary predicates.
+        INTERPRETERS = ("ruby", "node", "python", "python3", "ts-node", "sh", "bash")
+        interpreter = exe in INTERPRETERS or (
+            exe in ("bundle", "yarn", "npx") and any(a in INTERPRETERS for a in args[:2]))
+        if interpreter and any(a in ("-c", "-e", "--eval", "--command") for a in args):
+            errs.append(f"inline interpreter code in {seg[:60]!r}: a gate runs repository tools, not a script")
+        if exe == "git":
+            verb = next((a for a in args if not a.startswith("-")), "")
+            if verb not in GIT_VERBS:
+                errs.append(f"git {verb!r} is not read-only (allowed: {', '.join(sorted(GIT_VERBS))})")
+        if exe == "bundle":
+            if not args or args[0] != "exec" or len(args) < 2 or args[1] not in WRAPPED_TOOLS:
+                errs.append(f"bundle must be `bundle exec <repo tool>` in {seg[:60]!r}")
+        if exe == "bin/rails" and args[:1] == ["runner"]:
+            code = " ".join(args[1:])
+            if RUBY_ESCAPE.search(code):
+                errs.append(f"rails runner code may not shell out or write files ({code[:60]!r})")
+    return errs
+

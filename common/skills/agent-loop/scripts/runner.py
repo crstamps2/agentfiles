@@ -585,6 +585,13 @@ class Runner:
                     stgs[-1] = {**stgs[-1], "proc": proc}
                     holder["rec"] = attempt.transition(cur, "RUNNING", proc=proc, stages=stgs)
 
+                # Validate again HERE, not only at manifest load: the manifest is a file on disk
+                # that a worker, a repair or an operator can rewrite between load and execution, and
+                # this is the line that actually starts a process (branch review 2026-09-23).
+                cmd_errs = contracts.validate_command(cmd)
+                if cmd_errs:
+                    print(f"{t.key}/{task.id}: refusing verification command: {cmd_errs[0]}", file=sys.stderr, flush=True)
+                    return "environment", f"unsafe verification command refused: {cmd_errs[0]}", None
                 try:
                     # Verification commands are real shell commands ("true", "npm test", ...)
                     # and must never be redirected through self.launch -- that hook exists

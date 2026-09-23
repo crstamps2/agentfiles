@@ -159,6 +159,36 @@ class VerifyRestoredTests(unittest.TestCase):
         self.assertTrue(worktree.verify_restored(self.wt, base))
 
 
+
+
+class IgnoredPathExemptionTests(unittest.TestCase):
+    """Branch review 2026-09-23: every gitignored path bypassed the allowlist, so a worker could
+    write .env, credentials or the loop's own state without a violation."""
+
+    class T:
+        id = "001"; slug = "s"; allowed_files = ["app/x.rb"]; may_edit_tests = False
+
+    def _wt(self, d, ignore):
+        import subprocess
+        wt = pathlib.Path(d)
+        subprocess.run(["git", "init", "-q"], cwd=wt)
+        (wt / ".gitignore").write_text(ignore)
+        return wt
+
+    def test_build_artifacts_stay_exempt(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            wt = self._wt(d, "tmp/\nnode_modules/\n")
+            self.assertEqual(worktree.check_allowlist(["tmp/cache/bootsnap"], self.T, [], [], wt=wt), [])
+
+    def test_an_ignored_secret_is_still_an_allowlist_violation(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            wt = self._wt(d, ".env\n")
+            viol = worktree.check_allowlist([".env"], self.T, [], [], wt=wt)
+            self.assertTrue(viol, "an ignored .env must not bypass the allowlist")
+
+
 if __name__ == "__main__":
     unittest.main()
 

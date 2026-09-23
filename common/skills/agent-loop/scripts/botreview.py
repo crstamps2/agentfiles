@@ -70,7 +70,19 @@ def load_ledger(path: pathlib.Path) -> dict:
 
 
 def save_ledger(path: pathlib.Path, ledger: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True); path.write_text(json.dumps(ledger, indent=2, sort_keys=True))
+    """Atomic: this file is the only record of which public replies were already posted, and it is
+    now written before every POST. A torn write would re-open answered comments and post duplicates."""
+    import os, tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(ledger, f, indent=2, sort_keys=True)
+            f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        pathlib.Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 # ----------------------------------------------------------------------------- adjudication

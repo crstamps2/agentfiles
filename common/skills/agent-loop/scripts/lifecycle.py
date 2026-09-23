@@ -184,7 +184,12 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             return _pause_step(cfg, t, "plan", f"budget: {stop}")
         manifest = _manifest_path(wt, key)
         review = manifest.with_name("plan-review.md")
-        if manifest.exists() and plan_mod.review_verdict(review) == "approve":
+        # The verdict must judge THIS plan. A stale `approve` left by an earlier round skipped the
+        # required opposite-vendor review entirely -- the mirror of the stale-`revise` bug fixed on
+        # 2026-09-21, and the more dangerous direction (branch review 2026-09-23).
+        if (manifest.exists() and plan_mod.review_verdict(review) == "approve"
+                and plan_mod.review_is_current(review, manifest.with_name("plan.md"))
+                and plan_mod.review_is_current(review, manifest)):
             t = state.transition(t, "plan-review") if t.state == "plan" else t
             t = state.transition(t, "implement"); _save(cfg, t)
             return Step(key, "plan-review", "approved manifest present", detail=str(manifest))

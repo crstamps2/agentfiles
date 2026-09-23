@@ -84,3 +84,26 @@ class InPlaceAttributionTests(Fixture):
         self.assertEqual(guards.attribute_rejection(T([cmd]), cmd, self.wt, "unused"), "worker")
         self.assertEqual((self.wt / "app" / "base.rb").read_text(), "BAD\n")         # worker's change restored
 
+
+class GuardAttributionSignatureTests(unittest.TestCase):
+    """Branch review 2026-09-23: attribution compared exit codes only, so a correct failing test could
+    be deleted as a 'bad guard' when the base tree happened to fail for an unrelated reason."""
+
+    def test_the_same_failure_on_both_trees_is_the_guard(self):
+        self.assertEqual(guards._same_failure(
+            "app/x.rb:12:5: C: Metrics/AbcSize: too high",
+            "app/x.rb:88:1: C: Metrics/AbcSize: too high"), "guard")
+
+    def test_a_different_failure_is_ambiguous_not_a_bad_guard(self):
+        self.assertEqual(guards._same_failure(
+            "FAIL test_the_behaviour_this_ticket_adds",
+            "app/x.rb:1:1: C: Layout/LineLength: line too long"), "unknown")
+
+    def test_signatures_ignore_paths_and_line_numbers(self):
+        a = guards.failure_signature("/tmp/al-base-9/app/x.rb:12:5: C: Metrics/AbcSize: too high")
+        b = guards.failure_signature("/Users/cody/wt/app/x.rb:404:1: C: Metrics/AbcSize: too high")
+        self.assertTrue(a & b)
+
+    def test_no_attempt_evidence_keeps_the_previous_behaviour(self):
+        self.assertEqual(guards._same_failure("", "anything failed"), "guard")
+

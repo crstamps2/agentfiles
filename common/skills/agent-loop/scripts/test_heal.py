@@ -46,6 +46,36 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(heal.decide(pathlib.Path(d), "rebase conflict; needs a human"), ("human", "policy: needs an owner"))
 
+    def test_a_ticket_cannot_heal_forever(self):
+        """Branch review: budgets were per reason bucket, so one root defect presenting under several
+        reasons had no ticket-wide stop."""
+        import tempfile, pathlib as _p
+        with tempfile.TemporaryDirectory() as d:
+            tdir = _p.Path(d)
+            for i in range(heal.MAX_HEALS_PER_TICKET):
+                heal.record(tdir, "retry", f"resource: transient number {i}", "implement")
+            action, why = heal.decide(tdir, "resource: yet another transient")
+            self.assertEqual(action, "human")
+            self.assertIn("self-healed", why)
+
+    def test_the_same_failure_recurring_stops_even_under_a_fresh_reason_string(self):
+        import tempfile, pathlib as _p
+        with tempfile.TemporaryDirectory() as d:
+            tdir = _p.Path(d)
+            for i in range(heal.MAX_SAME_SIGNATURE):
+                # same failure, different volatile numbers/paths each time
+                heal.record(tdir, "retry", f"gates failed: rails test /Users/x/wt{i}/test/a_test.rb:{i}", "gates")
+            action, why = heal.decide(tdir, "gates failed: rails test /Users/x/wt99/test/a_test.rb:99")
+            self.assertEqual(action, "human")
+            self.assertIn("recurred", why)
+
+    def test_distinct_failures_still_heal(self):
+        import tempfile, pathlib as _p
+        with tempfile.TemporaryDirectory() as d:
+            tdir = _p.Path(d)
+            heal.record(tdir, "retry", "resource: on battery power", "implement")
+            self.assertEqual(heal.decide(tdir, "gates failed: yarn build rc=1")[0], "prepare-retry")
+
 
 if __name__ == "__main__":
     unittest.main()

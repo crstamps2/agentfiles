@@ -175,6 +175,13 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         return Step(key, "spinup", "worktree present", detail=str(wt)) if _save(cfg, t) else None
 
     if t.state in ("plan", "plan-review"):
+        # Planning, critique and repair are the most expensive calls in the loop; ask the budget
+        # before spending (the configured ceilings had no production reader, branch review 2026-09-23).
+        import budget
+        stop = budget.check(cfg, premium=True)
+        if stop:
+            _notify_once(tdir, key, f"{key} stopped on budget", stop)
+            return _pause_step(cfg, t, "plan", f"budget: {stop}")
         manifest = _manifest_path(wt, key)
         review = manifest.with_name("plan-review.md")
         if manifest.exists() and plan_mod.review_verdict(review) == "approve":
@@ -434,6 +441,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             rnd += 1; cis["bot_rounds"] = rnd; _ci_state_path(cfg, key).write_text(json.dumps(cis))
             stage = cfg.state_root / "botreview" / key / f"round-{rnd}"; stage.mkdir(parents=True, exist_ok=True)
             botreview.write_comments_file(todo, stage / "comments.md")
+            import budget
+            stop = budget.check(cfg, premium=True)
+            if stop:
+                _notify_once(tdir, key, f"{key} stopped on budget", stop)
+                return _pause_step(cfg, t, "bot-loop", f"budget: {stop}")
             prompt = botreview.ADJUDICATION_PROMPT.format(key=key, pr=pr, out=stage / "adjudication.json", schema=stage / "schema.toml",
                                                           wt=wt, plan=_manifest_path(wt, key).with_name("plan.md"), comments=stage / "comments.md")
             (stage / "schema.toml").write_text(plan_mod.SCHEMA_EXAMPLE)

@@ -409,6 +409,11 @@ class Runner:
     PREMIUM_ALTERNATE = {"openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5"}   # same tier, other vendor
 
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
+        import budget
+        stop = budget.check(self.cfg, premium=(getattr(rung, "tier", "") == "premium"))
+        if stop:
+            print(f"{t.key}/{task.id}: {stop}", file=sys.stderr, flush=True)
+            return "environment", f"budget: {stop}", None
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
         # If the PREVIOUS attempt on this lineage died because this vendor is out of quota, run the same
         # rung on the other vendor rather than waiting for the limit to reset (2026-09-18).

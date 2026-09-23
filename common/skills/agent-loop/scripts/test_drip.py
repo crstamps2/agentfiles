@@ -57,5 +57,37 @@ class DripTests(unittest.TestCase):
         self.assertEqual(drip.tick(self.cfg, log=lambda m: None, dry_run=True), [])
 
 
+
+
+class DripSerializationTests(unittest.TestCase):
+    """Branch review 2026-09-23: selection -> Jira transition -> spinup ran with no lease, so a
+    scheduled tick and an operator start could build two workspaces for one ticket."""
+
+    def test_a_second_tick_skips_while_one_holds_the_lease(self):
+        import tempfile, pathlib as _p, locks, config
+        with tempfile.TemporaryDirectory() as d:
+            root = _p.Path(d)
+            toml = (_p.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
+            (root / "hopper.toml").write_text(toml)
+            cfg = config.load(root / "hopper.toml"); cfg.ensure_dirs()
+            held = locks.Lease(_p.Path(cfg.state_root) / "locks" / "drip", "other-drip")
+            self.assertTrue(held.acquire(hold=True))
+            try:
+                msgs = []
+                started = drip.tick(cfg, log=msgs.append)
+                self.assertEqual(started, [])
+                self.assertTrue(any("lease" in m for m in msgs), msgs)
+            finally:
+                held.release()
+
+    def test_selection_and_spinup_are_inside_the_lease(self):
+        import inspect
+        src = inspect.getsource(drip.tick)
+        self.assertIn("locks.Lease", src)
+        self.assertIn("_tick_locked", src)
+        self.assertNotIn("in_flight(cfg)", src)      # the read happens under the lease, not before it
+
+
 if __name__ == "__main__":
     unittest.main()

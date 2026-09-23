@@ -25,6 +25,7 @@ import time
 import botreview
 import ci
 import contracts
+import guards
 import ledger
 import plan as plan_mod
 import publish
@@ -190,6 +191,21 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if (manifest.exists() and plan_mod.review_verdict(review) == "approve"
                 and plan_mod.review_is_current(review, manifest.with_name("plan.md"))
                 and plan_mod.review_is_current(review, manifest)):
+            # Guards are checked on the BASE tree before any worker runs. guards.precheck has been
+            # documented as a plan-approval step since it was written but had no caller, so a guard
+            # that cannot run at all (missing tool, typo) was discovered only by spending worker
+            # rungs on it (branch review 2026-09-23).
+            problems = []
+            for task in contracts.load_tasks(manifest):
+                problems += guards.precheck(task, wt)
+            if problems:
+                (tdir / "bad-guards.md").open("a").write(
+                    f"\n## guards unrunnable on the base tree at plan approval -- {time.strftime('%Y-%m-%dT%H:%M:%SZ')}\n\n"
+                    + "\n".join(f"- {p}" for p in problems)
+                    + "\n\nRewrite these verification commands so they run on the pre-work tree.\n")
+                return _pause_step(cfg, t, "plan-review",
+                                   f"guard failed on the BASE tree too (independent of the work): "
+                                   f"{len(problems)} unrunnable guard(s) at plan approval")
             t = state.transition(t, "plan-review") if t.state == "plan" else t
             t = state.transition(t, "implement"); _save(cfg, t)
             return Step(key, "plan-review", "approved manifest present", detail=str(manifest))

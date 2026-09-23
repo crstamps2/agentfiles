@@ -132,7 +132,23 @@ def spinup_with_panes(key: str, log=print) -> pathlib.Path:
 
 
 def tick(cfg, log=print, dry_run: bool = False) -> list[str]:
-    """One drip tick: fill free slots from the top of the board. Returns keys started."""
+    """One drip tick: fill free slots from the top of the board. Returns keys started.
+
+    Serialized by a lease: selection reads in-flight state, then mutates Jira and creates a worktree.
+    A scheduled tick racing `/agent-loop start` could select the same ticket twice and build two
+    workspaces and two supervisors for it (branch review 2026-09-23)."""
+    import locks, supervise
+    lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "drip", "drip")
+    if not lease.acquire(hold=True):
+        log("drip: another drip tick holds the lease; skipping")
+        return []
+    try:
+        return _tick_locked(cfg, log, dry_run)
+    finally:
+        lease.release()
+
+
+def _tick_locked(cfg, log=print, dry_run: bool = False) -> list[str]:
     import supervise
     limit = int(cfg.drip.get("max_in_flight", 3))
     flight = in_flight(cfg)

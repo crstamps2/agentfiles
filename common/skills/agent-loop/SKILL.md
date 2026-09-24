@@ -3,7 +3,7 @@ name: agent-loop
 description: Operate the autonomous ZIP-6774 agent loop -- status, pause/resume, human takeover of a ticket, dry runs. Use when Cody asks about the loop, the hopper, worker attempts, or wants to stop/take over autonomous work.
 ---
 
-# /agent-loop [status | resume | start | pause | unpause | stop | ledger | hopper]
+# /agent-loop [status | resume | start | pause | unpause | stop | spend | ledger | hopper]
 
 Cody's operator surface for the autonomous loop. Every command below is `python3 runner.py <verb>`
 run from `~/workspace/agentfiles/common/skills/agent-loop/scripts`; never hand-edit state files.
@@ -60,6 +60,13 @@ Tickets at Human Gate 1 do not occupy a slot (they wait on Cody, not the machine
 `python3 runner.py supervise stop --ticket X`. The ticket keeps its state; `resume` brings it back.
 Use `touch ~/.local/state/agent-loop/tickets/X/HUMAN` when Cody takes a ticket over by hand
 (runner refuses to touch it until the file is removed).
+
+## `/agent-loop spend [since YYYY-MM-DD] [ticket ZIP-1234]`
+`python3 runner.py spend [--since ...] [--ticket ZIP-1234] [--by ticket,model,stage,day,role]` --
+what the loop cost, as a bar chart: totals, share and call counts by ticket, model and stage. With
+`--ticket`, where that one ticket's money went. This is reporting only; the loop is never stopped by
+a dollar figure (Cody, 2026-09-23). Read it in the morning: a night where planning dominates, or one
+model dwarfs the rest, is visible at a glance.
 
 ## `/agent-loop ledger [since YYYY-MM-DD]`
 `python3 runner.py ledger [--since ...]` -- billed $ by model / role / ticket / day. Quote the first

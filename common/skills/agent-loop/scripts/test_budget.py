@@ -1,69 +1,64 @@
-# test_budget.py — the configured spend ceilings must actually stop spending
+# test_budget.py — spend must be legible; it is deliberately NOT a gate (Cody, 2026-09-23)
 import pathlib, tempfile, unittest
 from unittest.mock import patch
 
-import budget, config, heal
+import budget
 
 
-class FakeBudgets:
-    premium_daily_usd = 5.0
-    premium_monthly_usd = 40.0
-    total_unattended_daily_usd = 15.0
+def row(ticket="ZIP-1", model="m", stage="plan", usd=1.0, day="2026-09-22", role="author"):
+    return {"ticket": ticket, "model": model, "stage": stage, "billed_usd": usd, "day": day, "role": role}
 
 
-class FakeCfg:
-    def __init__(self, root): self.state_root = root; self.budgets = FakeBudgets()
-
-
-class BudgetAdmissionTests(unittest.TestCase):
-    """Branch review 2026-09-23: premium_daily_usd, premium_monthly_usd and
-    total_unattended_daily_usd were configured, documented and never read by any production path."""
-
-    def rows(self, *rows): return list(rows)
-
-    def test_under_every_ceiling_admits(self):
+class SpendReportTests(unittest.TestCase):
+    def render(self, rows, **kw):
         with tempfile.TemporaryDirectory() as d:
-            cfg = FakeCfg(pathlib.Path(d))
-            with patch.object(budget.ledger, "collect", return_value=self.rows(
-                    {"day": budget._today(), "role": "premium", "billed_usd": 1.0})):
-                self.assertEqual(budget.check(cfg, premium=True), "")
-
-    def test_premium_daily_ceiling_stops_premium_but_not_cheap(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = FakeCfg(pathlib.Path(d))
-            rows = self.rows({"day": budget._today(), "role": "premium", "billed_usd": 6.0})
             with patch.object(budget.ledger, "collect", return_value=rows):
-                self.assertIn("premium daily budget", budget.check(cfg, premium=True))
-                self.assertEqual(budget.check(cfg, premium=False), "")   # 6 < 15 total
+                return budget.render(pathlib.Path(d), **kw)
 
-    def test_total_daily_ceiling_stops_everything(self):
+    def test_totals_and_shares_per_ticket(self):
+        out = self.render([row(ticket="ZIP-1", usd=75.0), row(ticket="ZIP-2", usd=25.0)], by=("ticket",))
+        self.assertIn("$100.00", out)
+        self.assertIn("ZIP-1", out)
+        self.assertIn("75.0%", out)
+
+    def test_grouping_by_model_and_stage(self):
+        rows = [row(model="opus", stage="plan", usd=10.0), row(model="sonnet", stage="worker", usd=5.0)]
+        out = self.render(rows, by=("model", "stage"))
+        self.assertIn("by model", out)
+        self.assertIn("by stage", out)
+        self.assertIn("opus", out)
+        self.assertIn("worker", out)
+
+    def test_small_values_still_draw_a_bar(self):
+        self.assertTrue(budget.bar(0.01, 100.0).strip(), "a tiny but non-zero cost must remain visible")
+        self.assertEqual(budget.bar(0.0, 0.0), "")
+
+    def test_since_filters_by_day(self):
+        rows = [row(day="2026-09-01", usd=50.0), row(day="2026-09-22", usd=5.0)]
+        out = self.render(rows, since="2026-09-20", by=("ticket",))
+        self.assertIn("$5.00", out)
+        self.assertNotIn("55.00", out)
+
+    def test_empty_ledger_says_so_instead_of_dividing_by_zero(self):
+        self.assertIn("no recorded spend", self.render([]))
+
+    def test_per_ticket_detail_breaks_down_stage_and_model(self):
+        rows = [row(ticket="ZIP-7874", stage="plan", model="opus", usd=60.0),
+                row(ticket="ZIP-7874", stage="worker", model="sonnet", usd=40.0),
+                row(ticket="ZIP-OTHER", usd=999.0)]
         with tempfile.TemporaryDirectory() as d:
-            cfg = FakeCfg(pathlib.Path(d))
-            rows = self.rows({"day": budget._today(), "role": "worker", "billed_usd": 16.0})
             with patch.object(budget.ledger, "collect", return_value=rows):
-                self.assertIn("daily budget reached", budget.check(cfg, premium=False))
+                out = budget.per_ticket_detail(pathlib.Path(d), "ZIP-7874")
+        self.assertIn("$100.00", out)          # the other ticket is excluded
+        self.assertIn("plan", out)
+        self.assertIn("sonnet", out)
 
-    def test_premium_monthly_ceiling_counts_the_month(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = FakeCfg(pathlib.Path(d))
-            rows = self.rows({"day": budget._month() + "-01", "role": "author", "billed_usd": 41.0})
-            with patch.object(budget.ledger, "collect", return_value=rows):
-                self.assertIn("premium monthly budget", budget.check(cfg, premium=True))
-
-    def test_a_budget_stop_is_an_owner_decision_never_a_retry(self):
-        self.assertEqual(heal.policy("budget: premium daily budget reached: $6.00")[0], "human")
-
-    def test_the_real_config_exposes_all_three_ceilings(self):
-        cfg = config.load()
-        for k in ("premium_daily_usd", "premium_monthly_usd", "total_unattended_daily_usd"):
-            self.assertTrue(getattr(cfg.budgets, k) > 0, k)
-
-    def test_every_paid_dispatch_consults_the_budget(self):
-        """Plan/critique, review adjudication and worker attempts are the three paid entry points."""
-        import inspect, lifecycle, runner
-        life = inspect.getsource(lifecycle.step)
-        self.assertEqual(life.count("budget.check(cfg, premium=True)"), 2)   # plan stage + adjudication
-        self.assertIn("budget.check(self.cfg", inspect.getsource(runner.Runner._attempt))
+    def test_reporting_never_blocks_work(self):
+        """Regression on intent: budget.py must expose no gate that a dispatch path could call."""
+        self.assertFalse(hasattr(budget, "check"))
+        import lifecycle, runner, inspect
+        for src in (inspect.getsource(lifecycle), inspect.getsource(runner)):
+            self.assertNotIn("budget.check", src)
 
 
 if __name__ == "__main__":

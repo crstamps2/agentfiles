@@ -42,7 +42,6 @@ POLICIES = [
     (r"^plan failed|budget exceeded|task-writer left the manifest invalid", "replan", 3),   # -> plan stage; it repairs from the revise review when one exists
     (r"^publish failed|^finalize failed|^mark ready failed|^reply failed|^adjudication unusable|^adjudication is not valid", "republish", 3),
     (r"^rebase (onto origin/main )?conflict", "human", 0),
-    (r"^budget: ", "human", 0),            # a configured ceiling is an owner decision, never a retry
     (r"^planning ceiling", "human", 0),
     (r"need Cody|NEEDS CODY|^HUMAN file|owner question|tier-3", "human", 0),
 ]

@@ -409,11 +409,6 @@ class Runner:
     PREMIUM_ALTERNATE = {"openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5"}   # same tier, other vendor
 
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
-        import budget
-        stop = budget.check(self.cfg, premium=(getattr(rung, "tier", "") == "premium"))
-        if stop:
-            print(f"{t.key}/{task.id}: {stop}", file=sys.stderr, flush=True)
-            return "environment", f"budget: {stop}", None
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
         # If the PREVIOUS attempt on this lineage died because this vendor is out of quota, run the same
         # rung on the other vendor rather than waiting for the limit to reset (2026-09-18).
@@ -708,6 +703,10 @@ def main(argv=None) -> int:
     wa.add_argument("--ticket", required=True); wa.add_argument("--once", action="store_true"); wa.add_argument("--interval", type=int, default=20)
     lg = sub.add_parser("ledger", help="tokens and cost by model / role / ticket / day from the pi session logs")
     lg.add_argument("--since", default=None, metavar="YYYY-MM-DD")
+    sp = sub.add_parser("spend", help="what the loop cost, by ticket / model / stage / day (bars)")
+    sp.add_argument("--since", default=None, metavar="YYYY-MM-DD")
+    sp.add_argument("--ticket", default=None, help="one ticket: where its money went")
+    sp.add_argument("--by", default="ticket,model,stage", help="comma-separated: ticket,model,stage,day,role")
     cf = sub.add_parser("clear-fence"); cf.add_argument("--force", action="store_true")
     pl = sub.add_parser("plan", help="flagship author writes planning/<key>/tasks.toml; opposite-vendor critic reviews")
     pl.add_argument("--ticket", required=True); pl.add_argument("--worktree", required=True)
@@ -776,6 +775,12 @@ def main(argv=None) -> int:
     if a.cmd == "ledger":
         import ledger
         print(ledger.report(cfg.state_root, a.since)); return 0
+    if a.cmd == "spend":
+        import budget
+        if a.ticket:
+            print(budget.per_ticket_detail(cfg.state_root, a.ticket)); return 0
+        print(budget.render(cfg.state_root, a.since or "", tuple(x.strip() for x in a.by.split(",") if x.strip())))
+        return 0
     if a.cmd == "clear-fence":
         return reconcile.clear_fence(cfg, a.force)
     if a.cmd == "plan":

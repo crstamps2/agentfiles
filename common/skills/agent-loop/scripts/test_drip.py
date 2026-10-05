@@ -72,6 +72,17 @@ class DripTests(unittest.TestCase):
 
 
 
+class DoneInJiraTests(unittest.TestCase):
+    def test_reads_keys_of_done_dependencies_from_acli(self):
+        def acli(argv, **kw):
+            fields = argv[argv.index("--fields") + 1].split(",")
+            # acli prints one null per match when only `key` (not a Jira field) is requested.
+            rows = [None] if fields == ["key"] else [{"key": "ZIP-7872", "fields": {"status": {"name": "Closed"}}}]
+            return drip.subprocess.CompletedProcess(argv, 0, drip.json.dumps(rows), "")
+        with patch.object(drip.subprocess, "run", side_effect=acli):
+            self.assertEqual(drip.done_in_jira(["ZIP-7872"]), {"ZIP-7872"})
+
+
 class DripSerializationTests(unittest.TestCase):
     """Branch review 2026-09-23: selection -> Jira transition -> spinup ran with no lease, so a
     scheduled tick and an operator start could build two workspaces for one ticket."""

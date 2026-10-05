@@ -58,7 +58,7 @@ def board(cfg) -> list[dict]:
 def done_in_jira(keys: list[str]) -> set[str]:
     if not keys:
         return set()
-    rows = _acli_json(["jira", "workitem", "search", "--jql", f"key in ({','.join(keys)}) AND statusCategory = Done", "--fields", "key"])
+    rows = _acli_json(["jira", "workitem", "search", "--jql", f"key in ({','.join(keys)}) AND statusCategory = Done", "--fields", "status"])
     return {r["key"] for r in rows}
 
 

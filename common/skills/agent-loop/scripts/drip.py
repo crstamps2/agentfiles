@@ -27,6 +27,7 @@ IN_FLIGHT_STATES = {"spinup", "plan", "plan-review", "implement", "gates", "draf
 TERMINAL = {"human-gate-1", "done", "blocked", "colleague-loop", "human-gate-2"}
 WORKTREES = pathlib.Path("~/workspace/zipline-worktrees").expanduser()
 SPINUP_SCRIPTS = pathlib.Path("~/.claude/skills/spinup/scripts").expanduser()
+ZIPLINE_APP = pathlib.Path("~/workspace/zipline-app").expanduser()
 ME = "cody@zipline.inc"
 READY_STATUSES = {"Selected for Work", "To Do", "Ready", "Ready for Development"}
 
@@ -131,6 +132,20 @@ def spinup_with_panes(key: str, log=print) -> pathlib.Path:
     return pathlib.Path(res["worktree"])
 
 
+def shared_services_ready(log=print) -> bool:
+    """Postgres, Redis and Elasticsearch must answer before a spinup; Elasticsearch needs ~35s after login."""
+    try:
+        r = subprocess.run([str(ZIPLINE_APP / "bin" / "dev-services"), "status"], cwd=ZIPLINE_APP,
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"drip: shared services check failed: {e}")
+        return False
+    if r.returncode != 0:
+        log(f"drip: {(r.stdout + r.stderr).strip()}")
+        return False
+    return True
+
+
 def tick(cfg, log=print, dry_run: bool = False) -> list[str]:
     """One drip tick: fill free slots from the top of the board. Returns keys started.
 
@@ -155,6 +170,9 @@ def _tick_locked(cfg, log=print, dry_run: bool = False) -> list[str]:
     free = limit - len(flight)
     log(f"drip: in flight {flight} ({len(flight)}/{limit})")
     if free <= 0:
+        return []
+    if not dry_run and not shared_services_ready(log):
+        log("drip: shared services are not ready; skipping this tick")
         return []
     started = []
     for r in candidates(cfg, log)[:free]:

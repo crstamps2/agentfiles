@@ -83,7 +83,7 @@ they fail there too, accepted work is committed completely (deletions included) 
 
 ```
 /agent-loop                       # fleet: state, PR, spend, supervisor per ticket
-/agent-loop resume all            # after a reboot or a stop: everything back in motion + panes
+/agent-loop resume all            # after a reboot or a stop: `runner.py resume --all`, then operator tickets + panes
 /agent-loop start                 # drip: next ready ticket(s) from the top of the epic board (Jira Rank)
 #   runner.py supervise drip-start   # install the 15-min LaunchAgent so the drip runs itself
 /agent-loop pause | unpause       # touch/rm ~/.local/state/agent-loop/PAUSE
@@ -93,7 +93,8 @@ they fail there too, accepted work is committed completely (deletions included) 
 Per-ticket, from `scripts/`: `runner.py watch --ticket X` (live pane view), `resume --ticket X
 [--from stage]`, `supervise status|start|stop`, `overview`.
 
-Reboot: supervisors auto-start (`RunAtLoad`); run `/agent-loop resume all` to reopen the panes.
+Reboot: supervisors and the drip auto-start (`RunAtLoad`); the drip skips ticks until `bin/dev-services status`
+is green. Run `/agent-loop resume all` (`runner.py resume --all`) to restart any stopped supervisors and reopen panes.
 Kill switch: `touch ~/.local/state/agent-loop/PAUSE`. Take a ticket over by hand: `touch
 ~/.local/state/agent-loop/tickets/ZIP-X/HUMAN`.
 

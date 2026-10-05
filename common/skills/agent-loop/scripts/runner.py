@@ -684,6 +684,33 @@ class Runner:
         return 0
 
 
+def resume_all(cfg, log=print) -> dict:
+    """Restart the supervisor of every in-flight ticket that has a worktree, leaving ticket state alone:
+    heal.py's policies decide what a paused ticket does next. HUMAN takeovers and blocked tickets are
+    reported for the operator, never restarted."""
+    import drip, supervise
+    out = {"started": [], "running": [], "needs_operator": []}
+    root = cfg.state_root / "tickets"
+    for tdir in sorted(root.iterdir()) if root.exists() else []:
+        if not (tdir / "state.json").exists():
+            continue
+        t = state.load(tdir)
+        if t.state not in drip.IN_FLIGHT_STATES and t.state != "blocked":
+            continue
+        wt = t.worktree or str(drip.WORKTREES / t.key.lower())
+        if not pathlib.Path(wt).is_dir():
+            continue
+        if (tdir / "HUMAN").exists() or t.state == "blocked":
+            log(f"{t.key}: needs operator ({'HUMAN takeover' if (tdir / 'HUMAN').exists() else t.reason or 'blocked'})")
+            out["needs_operator"].append(t.key); continue
+        if "state=running" in supervise.status(t.key):
+            log(f"{t.key}: supervisor already running ({t.state})")
+            out["running"].append(t.key); continue
+        log(f"{t.key}: {t.state}; supervisor {supervise.start(t.key, wt, cfg.state_root)}")
+        out["started"].append(t.key)
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="agent-loop"); ap.add_argument("--config", default=None)
     sub = ap.add_subparsers(dest="cmd", required=True); sub.add_parser("status")
@@ -694,7 +721,9 @@ def main(argv=None) -> int:
     sv = sub.add_parser("supervise", help="start/stop/status launchd agents that keep run-once alive per ticket")
     sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
     rs = sub.add_parser("resume", help="operator: put a paused/blocked ticket back in motion (default: re-plan) and (re)start its supervisor")
-    rs.add_argument("--ticket", required=True); rs.add_argument("--from", dest="from_state", default="plan", choices=["plan", "implement", "gates", "draft-pr", "ready", "bot-loop"])
+    target = rs.add_mutually_exclusive_group(required=True)
+    target.add_argument("--ticket"); target.add_argument("--all", action="store_true", help="restart supervisors for every in-flight ticket; ticket state is not changed")
+    rs.add_argument("--from", dest="from_state", default=None, choices=["plan", "implement", "gates", "draft-pr", "ready", "bot-loop"])
     rs.add_argument("--worktree", default=None)
     ov = sub.add_parser("overview", help="one line per hopper ticket: state, reason, PR, supervisor, spend")
     dp = sub.add_parser("drip", help="fill free in-flight slots from the top of the epic board (Jira Rank order); spinup + supervisor + pane per ticket")
@@ -720,8 +749,14 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
+    if a.cmd == "resume" and a.all:
+        if a.from_state or a.worktree:
+            ap.error("resume --all does not take --from or --worktree; resume one ticket to change its stage")
+        result = resume_all(cfg, log=lambda m: print(m, flush=True))
+        print("resume --all:", result); return 0
     if a.cmd == "resume":
         import supervise
+        a.from_state = a.from_state or "plan"
         tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
         if t.state in ("human-gate-1", "done"):
             print(f"{a.ticket} is at {t.state}; nothing to resume"); return 0

@@ -23,7 +23,12 @@ workspace runs `/loop-watch <TICKET>` as the coordinator. This skill is the *fle
 Normally unnecessary: supervisors are `RunAtLoad` and pauses self-heal by policy (`heal.py`). Use this
 after `supervise stop`, after removing a `HUMAN` file, or when `overview` shows `needs operator`.
 
-For each in-flight ticket (has a worktree; state not human-gate-1/done):
+`all`: start with `python3 runner.py resume --all`. It restarts the supervisor of every in-flight ticket
+that has a worktree without changing its state (heal.py then handles `paused` by policy), leaves running
+supervisors alone, and lists `HUMAN` takeovers and `blocked` tickets under `needs_operator`. Work through
+only those listed tickets with the rules below, then reopen panes.
+
+For one ticket, or each ticket `--all` listed under `needs_operator`:
 - state `paused` or `blocked`: read the reason.
   - `resource:` / `heavy lane` → `python3 runner.py resume --ticket X --from implement` (transient).
   - `plan failed` / `budget exceeded` → `python3 runner.py resume --ticket X` (back to `plan`, which

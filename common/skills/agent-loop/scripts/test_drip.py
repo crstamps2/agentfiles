@@ -1,7 +1,7 @@
 import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import config
 import drip
@@ -19,7 +19,7 @@ BOARD = [
 ]
 
 
-class DripTests(unittest.TestCase):
+class DripFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); root = pathlib.Path(self.tmp.name)
         toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
@@ -36,6 +36,8 @@ class DripTests(unittest.TestCase):
         for p in self.patches: p.stop()
         self.tmp.cleanup()
 
+
+class DripTests(DripFixture):
     def test_candidates_follow_board_order_with_the_rules(self):
         keys = [r["key"] for r in drip.candidates(self.cfg, log=lambda m: None)]
         # 4281 dep on 7872 not Done; 4293 excluded; 7872 gated; 7875 in flight; 8025 In Progress (Martin); 8079 Triage
@@ -70,6 +72,78 @@ class DripTests(unittest.TestCase):
         self.assertTrue(any("shared services are not ready" in m for m in msgs), msgs)
 
 
+
+
+class DripSpinupFailureTests(DripFixture):
+    """2026-10-05: a setup failure left two tickets In Progress in Jira with no loop state and no
+    supervisor, and the drip could not retry them without opening a duplicate workspace."""
+
+    def setUp(self):
+        super().setUp()
+        import supervise
+        self.cc, self.sh = MagicMock(), MagicMock()
+        self.cc.worktree_name_for_ticket.side_effect = lambda key: key.lower()
+        self.cc.workspace_ref_for_name.return_value = "workspace:19"
+        self.sh.fetch_ticket.side_effect = lambda key: {"key": key, "issue_type": "Task", "title": "t", "status": "Selected for Work"}
+        self.run = MagicMock(return_value=drip.subprocess.CompletedProcess([], 0, "", ""))
+        self.rerun = MagicMock(return_value=(True, "setup log"))
+        for p in (patch.object(drip, "_spinup_modules", return_value=(self.cc, self.sh)),
+                  patch.object(drip, "shared_services_ready", return_value=True),
+                  patch.object(drip.subprocess, "run", self.run),
+                  patch.object(drip, "rerun_setup", self.rerun)):
+            p.start(); self.addCleanup(p.stop)
+        self.start = patch.object(supervise, "start", return_value="label").start(); self.addCleanup(patch.stopall)
+        self.cfg.drip["max_in_flight"] = 2                                            # 7875 in flight -> one free slot
+
+    def worktree(self, key):
+        wt = self.wts / key.lower(); wt.mkdir(parents=True, exist_ok=True); return wt
+
+    def jira_assignments(self):
+        return [c for c in self.run.call_args_list if c.args and c.args[0][:3] == ["acli", "jira", "workitem"]]
+
+    def failed(self, key, attempts):
+        state.save(self.cfg.ticket_dir(key), state.Ticket(key=key, state="blocked", worktree=str(self.worktree(key)),
+                   attempts={"spinup": attempts}, reason=f"spinup failed (setup-failed), attempt {attempts}/3"))
+
+    def test_a_failed_setup_leaves_jira_alone_and_is_recorded_for_retry(self):
+        self.cfg.drip["max_in_flight"] = 3
+        self.cc.run_chain.return_value = {"status": "setup-failed", "workspace": "workspace:19", "worktree": str(self.worktree("ZIP-7874"))}
+        self.assertEqual(drip.tick(self.cfg, log=lambda m: None), [])
+        self.sh.transition_to_in_progress.assert_not_called(); self.assertEqual(self.jira_assignments(), [])
+        self.start.assert_not_called()
+        self.assertEqual(self.cc.run_chain.call_count, 1)                           # the pass stops after a failure
+        t = state.load(self.cfg.ticket_dir("ZIP-7874"))
+        self.assertEqual((t.state, t.attempts, t.worktree), ("blocked", {"spinup": 1}, str(self.wts / "zip-7874")))
+        self.assertTrue(t.reason.startswith("spinup failed"), t.reason)
+
+    def test_jira_is_claimed_after_a_successful_setup(self):
+        self.cc.run_chain.return_value = {"status": "ok", "workspace": "workspace:19", "worktree": str(self.worktree("ZIP-7874"))}
+        self.assertEqual(drip.tick(self.cfg, log=lambda m: None), ["ZIP-7874"])
+        self.sh.transition_to_in_progress.assert_called_once_with("ZIP-7874", "Selected for Work")
+        self.assertEqual(len(self.jira_assignments()), 1)
+        self.start.assert_called_once()
+
+    def test_next_pass_reruns_setup_in_place_and_finishes_the_chain(self):
+        self.failed("ZIP-7874", attempts=1)
+        self.cc.finish_chain.return_value = {"status": "ok", "workspace": "workspace:19", "worktree": str(self.wts / "zip-7874")}
+        self.assertEqual(drip.tick(self.cfg, log=lambda m: None), ["ZIP-7874"])
+        self.rerun.assert_called_once_with(str(self.wts / "zip-7874"), "zip-7874")
+        self.cc.run_chain.assert_not_called()
+        self.assertEqual(self.cc.finish_chain.call_args.args[:3], ("zip-7874", "workspace:19", str(self.wts / "zip-7874")))
+        self.sh.transition_to_in_progress.assert_called_once()
+        self.start.assert_called_once_with("ZIP-7874", str(self.wts / "zip-7874"), self.cfg.state_root)
+        self.assertNotEqual(state.load(self.cfg.ticket_dir("ZIP-7874")).state, "blocked")
+
+    def test_retries_stop_at_the_limit_and_ask_for_the_operator(self):
+        self.failed("ZIP-7874", attempts=2)
+        self.rerun.return_value = (False, "setup log")
+        self.assertEqual(drip.tick(self.cfg, log=lambda m: None), [])
+        self.cc.finish_chain.assert_not_called(); self.sh.transition_to_in_progress.assert_not_called()
+        t = state.load(self.cfg.ticket_dir("ZIP-7874"))
+        self.assertEqual((t.state, t.attempts), ("blocked", {"spinup": 3}))
+        self.assertIn("needs operator", t.reason)
+        self.rerun.reset_mock(); drip.tick(self.cfg, log=lambda m: None)
+        self.rerun.assert_not_called()
 
 
 class DoneInJiraTests(unittest.TestCase):

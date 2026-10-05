@@ -56,6 +56,19 @@ class DripTests(unittest.TestCase):
         self.cfg.drip["max_in_flight"] = 1
         self.assertEqual(drip.tick(self.cfg, log=lambda m: None, dry_run=True), [])
 
+    def test_tick_waits_for_shared_services_before_spinup(self):
+        msgs = []
+        not_ready = drip.subprocess.CompletedProcess(["bin/dev-services"], 1, "", "elasticsearch not ready")
+        import supervise
+        with patch.object(drip.subprocess, "run", return_value=not_ready), \
+             patch.object(drip, "spinup_with_panes", return_value=self.wts / "zip-7874") as spinup, \
+             patch.object(supervise, "start") as start_supervisor:
+            started = drip.tick(self.cfg, log=msgs.append)
+        self.assertEqual(started, [])
+        spinup.assert_not_called()
+        start_supervisor.assert_not_called()
+        self.assertTrue(any("shared services are not ready" in m for m in msgs), msgs)
+
 
 
 

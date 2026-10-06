@@ -69,6 +69,17 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(action, "human")
             self.assertIn("recurred", why)
 
+    def test_an_operator_resume_starts_fresh_budgets_without_erasing_history(self):
+        # 2026-10-06: ZIP-4281 spent its three replans on a runner defect; once it was fixed and the
+        # ticket resumed, its first genuine critic revise was refused as "budget 3 spent".
+        with tempfile.TemporaryDirectory() as d:
+            tdir = pathlib.Path(d); r = "plan failed: task-writer left the manifest invalid: x"
+            for _ in range(3): heal.record(tdir, "replan", r, "plan")
+            self.assertEqual(heal.decide(tdir, "plan failed: critic verdict 'revise' after repair")[0], "human")
+            heal.mark_operator_resume(tdir, "runner defect fixed")
+            self.assertEqual(heal.decide(tdir, "plan failed: critic verdict 'revise' after repair"), ("replan", "replan (1/3)"))
+            self.assertEqual(len(heal.history(tdir)), 4)                     # the audit trail is kept
+
     def test_distinct_failures_still_heal(self):
         import tempfile, pathlib as _p
         with tempfile.TemporaryDirectory() as d:

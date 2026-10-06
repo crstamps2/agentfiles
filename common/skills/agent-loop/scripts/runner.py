@@ -755,9 +755,12 @@ def main(argv=None) -> int:
         result = resume_all(cfg, log=lambda m: print(m, flush=True))
         print("resume --all:", result); return 0
     if a.cmd == "resume":
-        import supervise
+        import heal, supervise
         a.from_state = a.from_state or "plan"
         tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
+        heal.mark_operator_resume(tdir, f"resume from {t.state}")
+        if t.needs_operator:
+            t.needs_operator = ""; state.save(tdir, t)
         if t.state in ("human-gate-1", "done"):
             print(f"{a.ticket} is at {t.state}; nothing to resume"); return 0
         if t.state in ("paused", "blocked"):

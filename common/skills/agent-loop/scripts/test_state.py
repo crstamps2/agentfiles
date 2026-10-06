@@ -38,8 +38,10 @@ class TransitionTests(unittest.TestCase):
         t = state.transition(state.load(self.d / "Z"), "spinup")
         t = state.transition(t, "paused", reason="resource")
         self.assertEqual(t.reason, "resource")
+        t.needs_operator = "budget spent"
         t = state.transition(t, "spinup")           # resume to previous only
         self.assertEqual(t.state, "spinup")
+        self.assertEqual(t.needs_operator, "")      # moving again means nobody is waited on
         with self.assertRaises(state.IllegalTransition):
             state.transition(state.transition(t, "paused"), "gates")
 

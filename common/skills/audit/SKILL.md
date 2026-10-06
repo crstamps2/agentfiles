@@ -101,16 +101,17 @@ Report per fact: `subject`, `present_in`, `missing_from`, `harness_specific`, `c
 
 **Agent prompt** (`subagent_type: "general-purpose"`, `model: "haiku"`):
 
-> Audit the source-of-truth instructions file and its derived renders only. **Do not audit subdirectory-level or project-owner CLAUDE.md files** -- those are out of scope for this audit.
+> Audit the source-of-truth instructions file and its global entry points only. **Do not audit repository-owned project or subdirectory instruction files** (`AGENTS.md`, `CLAUDE.md`, or `.claude/` equivalents) -- those are out of scope for this audit.
 >
 > 1. Read `~/workspace/agentfiles/common/instructions/AGENTS.md` (the shared source of truth) -- check for references to tools, paths, or conventions that may be stale.
-> 2. Read the derived global renders -- `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.pi/agent/AGENTS.md`, and any other harness's global instructions file -- and diff each against the `common/` source. Run `readlink` on each first: one that symlinks back to `common/instructions/AGENTS.md` is by definition in sync, so report it as linked and move on. For the real-file renders, flag any content not traceable back to `common/instructions/AGENTS.md` or a `tools/<tool>/` overlay; that's drift in the derived tree, not the source. Also flag a stale `.orig`/`.bak` copy sitting next to a render -- it's a leftover from a hand-edit and hides which file the harness actually reads.
-> 3. Determine the project root: `PROJECT=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)` -- works for both main workspace and atlas worktrees. Read `$PROJECT/CLAUDE.md` (project-level) -- check for stale references. Spot-check 2-3 file/class references via Glob/Grep.
+> 2. Inspect the global entry points -- `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.pi/agent/AGENTS.md`, and any other harness's global instructions file. Run `readlink` on each first. An agentfiles-managed entry point must resolve to `common/instructions/AGENTS.md`; report it as linked and move on. Claude Code does not auto-load a user-global `AGENTS.md`, so its agentfiles-managed `CLAUDE.md` link is an intentional compatibility entry point, not a second copy. A resolved Claude `CLAUDE.md` whose entire content is `@AGENTS.md` is also a valid user-owned global bridge: resolve that import relative to the bridge file, verify the target exists, and audit that target for stale references. Report the bridge as user-owned; do not compare or sync it to `common/`. For every other real-file entry point, flag content not traceable to `common/instructions/AGENTS.md` or a `tools/<tool>/` overlay as derived-tree drift. Also flag a stale `.orig`/`.bak` copy sitting next to an agentfiles-managed entry point -- it is a leftover from a hand-edit and hides which file the harness actually reads.
+> 3. Do not treat `$PROJECT/CLAUDE.md` or `$PROJECT/AGENTS.md` as a derived global render. Repository owners audit those files in their own scope.
 >
 > Return:
 > ```
 > stale_refs: [{file, reference, reason}]
 > derived_drift: [{tool, file, reason}]
+> user_owned: [{tool, file, target}]
 > total_files: N
 > healthy_files: N
 > ```
@@ -186,9 +187,10 @@ done
 
 Same diff logic as agents, minus anything the `readlink` column shows as a symlink into `common/` (in sync by construction). Skip skills present only in a harness tree and absent from `common/skills/` -- they're local-only by design.
 
-**Instructions (AGENTS.md / CLAUDE.md):**
-- Diff `~/workspace/agentfiles/common/instructions/AGENTS.md` against each harness's global render (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.pi/agent/AGENTS.md`, ...), skipping any that symlinks to the source
-- Flag generic rules present in a derived render but missing from the `common/` source
+**Instructions (one content source per scope):**
+- Resolve each global entry point before diffing. The agentfiles-managed `~/.claude/CLAUDE.md` is an intentional user-global compatibility pointer because Claude Code does not auto-load `~/.claude/AGENTS.md`; confirm it resolves to `common/instructions/AGENTS.md`. Also confirm each agentfiles-managed `~/.codex/AGENTS.md`, `~/.pi/agent/AGENTS.md`, and equivalent harness entry point resolves to that source.
+- A resolved Claude `CLAUDE.md` whose entire content is `@AGENTS.md` is a user-owned global bridge. Resolve its import relative to the bridge, confirm the target exists, and report it as user-owned rather than drift; do not sync it to `common/`.
+- Flag generic rules present in every other derived render but missing from the `common/` source.
 
 **Hooks, MCP config, model tiers:**
 - Diff `~/workspace/agentfiles/common/hooks/`, `common/mcp/`, and `common/model-tiers.toml` against whatever the bootstrap materializes into each tool's config dir. Same derived-ahead/source-ahead/derived-only/source-only categorization.

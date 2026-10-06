@@ -244,7 +244,7 @@ class Runner:
             if t.state == "paused":
                 return "paused"
 
-            history = t.attempts.get(lineage, [])
+            history = ladder.since_reset(t.attempts.get(lineage, []))
             # The arm is sticky for a task once an attempt has produced a REAL outcome. Attempts that
             # never got a fair shot (environment / interrupted) do not pin it, so an operator can
             # re-pin a ticket after an environment defect (ZIP-7873/001: three local attempts died on
@@ -691,6 +691,21 @@ class Runner:
         return 0
 
 
+def retry_task(cfg, key: str, task_id: str, note: str = "") -> None:
+    """Give one task a fresh escalation ladder after its rejections turned out to be a runner defect.
+    Appends an operator-reset entry (earlier attempts stay on record; attempt numbers continue) and
+    moves a ticket blocked on that task back to implement."""
+    import ladder
+    tdir = cfg.ticket_dir(key); t = state.load(tdir)
+    lineage = f"{key}/{task_id}"
+    if lineage not in t.attempts:
+        raise SystemExit(f"{key} has no attempts for task {task_id}")
+    t.attempts[lineage] = t.attempts[lineage] + [{"outcome": ladder.OPERATOR_RESET, "note": note, "utc": _now()}]
+    if t.state == "blocked":
+        t = state.transition(t, "implement", reason=f"operator retry of task {task_id}: {note}"[:200])
+    state.save(tdir, t)
+
+
 def resume_all(cfg, log=print) -> dict:
     """Restart the supervisor of every in-flight ticket that has a worktree, leaving ticket state alone:
     heal.py's policies decide what a paused ticket does next. HUMAN takeovers and blocked tickets are
@@ -732,6 +747,7 @@ def main(argv=None) -> int:
     target.add_argument("--ticket"); target.add_argument("--all", action="store_true", help="restart supervisors for every in-flight ticket; ticket state is not changed")
     rs.add_argument("--from", dest="from_state", default=None, choices=["plan", "implement", "gates", "draft-pr", "ready", "bot-loop"])
     rs.add_argument("--worktree", default=None)
+    rs.add_argument("--retry-task", default=None, metavar="ID", help="fresh escalation ladder for this task (its rejections were a runner defect); implies --from implement")
     ov = sub.add_parser("overview", help="one line per hopper ticket: state, reason, PR, supervisor, spend")
     dp = sub.add_parser("drip", help="fill free in-flight slots from the top of the epic board (Jira Rank order); spinup + supervisor + pane per ticket")
     dp.add_argument("--dry-run", action="store_true"); dp.add_argument("--max-in-flight", type=int, default=None)
@@ -766,6 +782,8 @@ def main(argv=None) -> int:
         a.from_state = a.from_state or "plan"
         tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
         heal.mark_operator_resume(tdir, f"resume from {t.state}")
+        if a.retry_task:
+            retry_task(cfg, a.ticket, a.retry_task, note="operator --retry-task"); t = state.load(tdir)
         if t.needs_operator:
             t.needs_operator = ""; state.save(tdir, t)
         if t.state in ("human-gate-1", "done"):

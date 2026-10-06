@@ -6,6 +6,15 @@ C = ci.Check
 
 
 class ClassifyTests(unittest.TestCase):
+    def test_a_pr_with_no_checks_yet_is_pending_not_an_error(self):
+        # A just-opened draft PR: gh exits 1 with "no checks reported" before CI has registered.
+        from unittest.mock import patch
+        import subprocess
+        r = subprocess.CompletedProcess([], 1, "", "no checks reported on the 'internal/x' branch\n")
+        with patch.object(ci.subprocess, "run", return_value=r):
+            self.assertEqual(ci.fetch_checks(1, "o/r", "."), [])
+        self.assertEqual(ci.classify([], behind=0, attempts=0).action, "wait")   # empty is never green
+
     def test_all_pass_or_skipped_is_green(self):
         v = ci.classify([C("rubocop", "pass"), C("claude-review", "skipping")], behind=0, attempts=0)
         self.assertEqual(v.action, "green")

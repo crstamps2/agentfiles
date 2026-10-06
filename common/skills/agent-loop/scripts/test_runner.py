@@ -1072,6 +1072,25 @@ class FenceBlastRadiusTests(unittest.TestCase):
             reconcile._fence_ticket(cfg, "ZIP-7875", "observed_tree missing")     # idempotent
             self.assertEqual(state.load(other).previous, "implement")
 
+    def test_an_orphan_under_another_ticket_does_not_stop_this_ticket_end_to_end(self):
+        """2026-10-06: an attempt dir without a record under ZIP-4281 stopped ZIP-4282 too. reconcile()
+        named the owner from str(FenceExit), which is the exit code "3", so the owner was never found."""
+        import reconcile, state, config, tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
+            toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
+            (root / "hopper.toml").write_text(toml)
+            cfg = config.load(root / "hopper.toml"); cfg.ensure_dirs()
+            other = cfg.ticket_dir("ZIP-4281"); state.save(other, state.Ticket(key="ZIP-4281", state="implement", previous="plan"))
+            orphan = cfg.state_root / "attempts" / "ZIP-4281" / "003a" / "1"; os.makedirs(orphan)
+            (orphan / "task.toml").write_text("x")
+            ctx = reconcile.reconcile(cfg, "test", ticket="ZIP-4282")             # must not raise FenceExit
+            ctx.close()
+            self.assertEqual(state.load(other).state, "paused")
+            self.assertIn("ZIP-4281/003a", state.load(other).reason)
+
 
 class SnapshotExcludesCoordinationStateTests(unittest.TestCase):
     """ZIP-7874: attempt restore reverted planning/tasks.toml to the attempt's base tree, so no manifest

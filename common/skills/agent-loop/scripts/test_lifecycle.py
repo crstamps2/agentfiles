@@ -349,6 +349,16 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("promised in replies but never implemented", t.reason)
         self.assertIn("comment 4066916935 -> task 902", t.reason)
 
+    def test_bot_loop_waits_while_no_checks_are_registered(self):
+        # Right after mark-ready the review workflows have not registered yet; an empty list is not "done".
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready"))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 1, "bot_rounds": 1, "actions": []}))
+        self.checks, self.comments = [], []
+        r, steps, t = self.run_once(max_steps=1)
+        self.assertTrue(steps[0].wait); self.assertEqual(t.state, "bot-loop")
+        self.assertIn("still running", steps[0].action)
+
     def test_gate_opens_once_the_promised_fix_is_accepted(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
         mf = self.wt / "planning" / "zip-7873" / "tasks.toml"

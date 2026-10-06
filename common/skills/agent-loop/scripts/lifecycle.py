@@ -885,7 +885,13 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=
         reason = reason + "\n" + full.read_text()
     files = sorted({m.group(1) for m in _re.finditer(r"([\w./-]+\.(?:rb|rake)):\d+:\d+:", reason)})
     if not files:
-        # Formatters name the file without line:col (prettier prints bare paths it would rewrite).
+        # Prettier names each offending file on its own `[warn] <path>` line. Its other output is not a
+        # file list: the command line names every staged file, and the non-TTY progress lines run
+        # checked paths together with no separator (ZIP-4281/901).
+        files = sorted({m.group(1) for m in _re.finditer(
+            r"\[warn\] ((?:app|test|lib|config|linters)/[\w./-]+\.(?:ts|js|tsx|jsx|scss|css))\s*$", reason, _re.M)})
+    if not files:
+        # Other formatters name the file without line:col.
         files = sorted({m.group(1) for m in _re.finditer(
             r"\b((?:app|test|lib|config|linters)/[\w./-]+\.(?:ts|js|tsx|jsx|scss|css|rb|rake|slim))\b", reason)})
     if not files:

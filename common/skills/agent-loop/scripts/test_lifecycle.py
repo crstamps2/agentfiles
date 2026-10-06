@@ -184,6 +184,20 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(r.calls, ["001", "002", "901"]); self.assertEqual(t.state, "implement")
         self.assertEqual([c for c, _ in self.replies], [5])                # one reply, posted after a valid task existed
 
+    def test_a_cached_adjudication_whose_fix_task_breaks_the_schema_is_not_replayed(self):
+        """ZIP-4281 after b0add05: the round-1 adjudication on disk was replayed and skipped the new check."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready"))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 1, "bot_rounds": 1, "actions": []}))
+        self.comments = [{"kind": "inline", "id": 5, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "x", "body_hash": "h5"}]
+        cached = self.cfg.state_root / "botreview" / "ZIP-7873" / "round-1"; cached.mkdir(parents=True)
+        (cached / "adjudication.json").write_text(json.dumps({"decisions": [{"id": 5, "decision": "fix", "reply": "Adding the guard.",
+            "task": {"allowed_files": ["app/a.rb"], "verification_commands": ["ruby -e 'abort'"], "summary": "x"}}]}))
+        self.adjudication = {"decisions": [{"id": 5, "decision": "fix", "reply": "Adding the guard.",
+                             "task": {"allowed_files": ["app/a.rb"], "verification_commands": ["true"], "summary": "x"}}]}
+        r, steps, t = self.run_once(max_steps=1)
+        self.assertEqual(t.state, "implement"); self.assertIn("review-fix", (self.wt / "planning" / "zip-7873" / "tasks.toml").read_text())
+
     def test_reply_publish_error_pauses_and_keeps_ledger(self):
         self.comments = [{"kind": "inline", "id": 5, "path": "a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "x", "body_hash": "h5"}]
         self.adjudication = {"decisions": [{"id": 5, "decision": "decline", "reply": "No."}]}

@@ -996,6 +996,25 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         self.assertEqual(cm.exception.code, 3)
         self.assertTrue(fence_path.exists())
 
+    def test_cw_24b_fence_written_before_orphaned_with_a_dead_group_recovers(self):
+        """Same torn state as row 24, but the group is dead (e.g. after a reboot): nothing can
+        still be writing, so finish the transition and recover instead of fencing forever."""
+        t = self._ticket()
+        rec = attempt.create(self.cfg, t.key, self.tasks[0], self.wt, 1,
+                             agentdef.load(self.cfg.pi_agents_dir, "cloud-worker"),
+                             "cloud", self._rung(), "test")
+        dead_proc = {"boot_id": locks.boot_id(), "pgid": 999999, "pid": 999999, "start_time": "x", "cmd": "y"}
+        rec = attempt.transition(rec, "LAUNCHING")
+        rec = attempt.transition(rec, "RUNNING", proc=dead_proc)
+        rec = attempt.transition(rec, "STAGE_DONE", stages=[])
+        rec = attempt.transition(rec, "FENCING")
+        fence_path = self.cfg.state_root / "locks" / "heavy.fence"
+        fence_path.parent.mkdir(parents=True, exist_ok=True)
+        attempt.safe_write(fence_path, json.dumps({"attempt_dir": str(rec.path), "proc": dead_proc, "reason": "t"}))
+        self._reconcile()
+        self.assertFalse(fence_path.exists())
+        self.assertEqual(attempt.load(rec.path).status, "INTERRUPTED")
+
     # ----- Row 25 ----------------------------------------------------------------------
 
     def test_cw_25_clear_fence_while_runner_is_live(self):

@@ -33,6 +33,13 @@ class WatchTests(unittest.TestCase):
         for frag in ("ZIP-1 [implement]", "task 003 #2 premium", "PR #4711 (draft)", "ci:rebase", "bot-round 1", "$12.50"):
             self.assertIn(frag, line)
 
+    def test_a_ticket_waiting_on_the_operator_says_so(self):
+        t = state.load(self.cfg.ticket_dir("ZIP-1")); t.state = "paused"; t.reason = "plan failed: critic verdict 'revise' after repair"
+        t.needs_operator = "replan already tried 3x for this reason; budget 3 spent"; state.save(self.cfg.ticket_dir("ZIP-1"), t)
+        with patch.object(watch.supervise, "status", return_value="-"), patch.object(watch, "pr_state", return_value="draft"):
+            line = watch.fmt("ZIP-1", watch.snapshot(self.cfg, "ZIP-1"), 1.0)
+        self.assertIn("NEEDS OPERATOR: replan already tried 3x", line)
+
     def test_paused_reason_is_shown_and_once_mode_returns(self):
         t = state.load(self.cfg.ticket_dir("ZIP-1")); t.state = "paused"; t.reason = "guard failed on the BASE tree too: x"; state.save(self.cfg.ticket_dir("ZIP-1"), t)
         lines = []

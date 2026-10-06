@@ -649,6 +649,8 @@ class LifecycleTests(unittest.TestCase):
         r, steps, t = self.run_once()
         self.assertTrue(steps[0].wait); self.assertIn("needs operator", steps[0].action); self.assertEqual(r.calls, [])
         self.assertIn("ZIP-7873 needs an operator", self.notified)
+        # The coordinator pane and overview read state, not the supervisor log: say it there too.
+        self.assertIn("budget 2 spent", state.load(tdir).needs_operator)
 
     def test_human_pause_reasons_wait(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)

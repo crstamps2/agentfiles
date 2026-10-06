@@ -202,8 +202,9 @@ WRAPPED_TOOLS = {"rubocop", "reek", "rails", "rspec", "ruby", "i18n-tasks", "sli
 ENV_PREFIX = re.compile(r"^[A-Z_][A-Z0-9_]*=[\w./:@-]*$")
 # `rails runner` executes Ruby in the app. It is how plans pin public contracts, so it stays --
 # but Ruby that shells out or writes files is not a verification gate.
-RUBY_ESCAPE = re.compile(r"\b(system|exec|spawn|%x|Open3|Kernel\.|FileUtils|File\.(write|open|delete)|"
-                         r"require\s+['\"](net/|open-uri|socket)|`)", re.I)
+# `system` etc. followed by `/` is a path segment such as "system/front_end", not a call.
+RUBY_ESCAPE = re.compile(r"\b(system|exec|spawn)\b(?!/)|%x|Open3|Kernel\.|IO\.popen|\bopen\(\s*['\"]\||FileUtils|"
+                         r"File\.(write|open|delete)|require\s+['\"](net/|open-uri|socket)|`", re.I)
 
 
 def validate_command(cmd: str) -> list[str]:

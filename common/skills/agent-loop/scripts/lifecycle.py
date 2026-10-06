@@ -149,6 +149,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if action == "human":
             waited = _waiting_since(tdir, t)
             _notify_once(tdir, key, f"{key} needs an operator{waited}", f"{why}: {t.reason[:120]}")
+            if t.needs_operator != why:
+                t.needs_operator = why; state.save(tdir, t)
             return Step(key, "paused", f"needs operator: {why}", detail=t.reason, wait=True)
         if action == "fix-task":
             try:

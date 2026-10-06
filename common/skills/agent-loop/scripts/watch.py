@@ -25,6 +25,8 @@ def snapshot(cfg, key: str) -> dict:
     tdir = cfg.ticket_dir(key)
     t = state.load(tdir) if (tdir / "state.json").exists() else None
     snap = {"state": t.state if t else "queued", "reason": (t.reason or "")[:120] if t else ""}
+    if t and t.needs_operator:
+        snap["needs_operator"] = t.needs_operator[:160]
     cij = tdir / "ci.json"
     if cij.exists():
         ci = json.loads(cij.read_text()); snap["pr"] = ci.get("pr"); snap["ci_actions"] = ci.get("actions", [])[-1:] ; snap["bot_rounds"] = ci.get("bot_rounds")
@@ -68,6 +70,7 @@ def fmt(key: str, s: dict, cost: float) -> str:
     parts.append(f"sup:{s.get('sup','?').replace('state=','')}")
     parts.append(f"${cost:.2f}")
     line = "  ".join(parts)
+    if s.get("needs_operator"): line += f"\n           \u21b3 NEEDS OPERATOR: {s['needs_operator']}"
     if s.get("reason") and s["state"] in ("paused", "blocked"): line += f"\n           ↳ {s['reason']}"
     elif s.get("attempt_reason"): line += f"\n           ↳ {s['attempt_reason']}"
     return line

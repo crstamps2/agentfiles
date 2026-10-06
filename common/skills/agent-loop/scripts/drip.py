@@ -197,7 +197,7 @@ def spinup_retries(cfg) -> list[state.Ticket]:
             continue
         t = state.load(tdir)
         if (t.state == "blocked" and t.reason.startswith("spinup failed")
-                and t.attempts.get("spinup", 0) < MAX_SPINUP_ATTEMPTS and pathlib.Path(t.worktree).is_dir()):
+                and t.spinup_failures < MAX_SPINUP_ATTEMPTS and pathlib.Path(t.worktree).is_dir()):
             out.append(t)
     return out
 
@@ -206,8 +206,7 @@ def record_spinup_failure(cfg, key: str, e: SpinupFailed, log=print) -> None:
     """Blocked keeps the drip from re-running the chain (a duplicate workspace) and frees the slot."""
     tdir = cfg.ticket_dir(key)
     t = state.load(tdir) if (tdir / "state.json").exists() else state.Ticket(key=key)
-    n = t.attempts.get("spinup", 0) + 1
-    t.attempts = {**t.attempts, "spinup": n}
+    n = t.spinup_failures = t.spinup_failures + 1
     t.state, t.worktree = "blocked", e.worktree or t.worktree
     nxt = "needs operator" if n >= MAX_SPINUP_ATTEMPTS else "the drip re-runs setup next pass"
     t.reason = f"spinup failed ({e.status}), attempt {n}/{MAX_SPINUP_ATTEMPTS}; {nxt}"

@@ -79,6 +79,14 @@ class ResumeAllTests(unittest.TestCase):
         self.assertEqual(heal.decide(tdir, "plan failed: x")[0], "replan")
         self.assertEqual(state.load(tdir).needs_operator, "")
 
+    def test_resume_retry_task_restarts_that_task_and_the_supervisor(self):
+        wt = self.ticket("ZIP-1", "blocked", reason="task 003: ladder exhausted")
+        with patch.object(runner, "retry_task") as retry, contextlib.redirect_stdout(io.StringIO()):
+            runner.main(["--config", str(self.config_path), "resume", "--ticket", "ZIP-1", "--retry-task", "003"])
+        retry.assert_called_once()
+        self.assertEqual(retry.call_args.args[1:3], ("ZIP-1", "003"))
+        self.assertEqual(self.started_keys(), ["ZIP-1"])
+
     def test_cli_accepts_all_and_rejects_ambiguous_forms(self):
         self.ticket("ZIP-1", "implement")
         with contextlib.redirect_stdout(io.StringIO()):

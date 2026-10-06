@@ -27,6 +27,16 @@ class Attempt:
     outcome: str   # accepted | rejected | timeout | protocol | unusable | environment
 
 
+OPERATOR_RESET = "operator-reset"
+
+
+def since_reset(history: list) -> list:
+    """History entries after the latest operator reset. The ladder, arm pin and environment count read
+    this; the full list stays in state as the audit trail."""
+    last = max((i for i, e in enumerate(history) if e.get("outcome") == OPERATOR_RESET), default=-1)
+    return history[last + 1:]
+
+
 def assign_arm(task_index: int, visual: bool, pin: str | None, alternate: list) -> str:
     if pin is not None:
         if pin not in CHEAP_ARMS:

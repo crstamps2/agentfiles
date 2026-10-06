@@ -46,6 +46,7 @@ class Ticket:
     decisions: list = dataclasses.field(default_factory=list)
     reason: str = ""
     spinup_failures: int = 0
+    needs_operator: str = ""
     updated_utc: str = ""
 
 
@@ -78,7 +79,7 @@ def transition(t: Ticket, to: str, reason: str = "") -> Ticket:
     allowed = {t.previous} if t.state == "paused" else EDGES[t.state]
     if to not in allowed:
         raise IllegalTransition(f"{t.key}: {t.state} -> {to} not allowed (allowed: {sorted(allowed)})")
-    return dataclasses.replace(t, state=to, previous=t.state, reason=reason, updated_utc=_now(),
+    return dataclasses.replace(t, state=to, previous=t.state, reason=reason, updated_utc=_now(), needs_operator="",
                                attempts={k: list(v) for k, v in t.attempts.items()},
                                decisions=list(t.decisions))
 

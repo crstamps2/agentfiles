@@ -69,6 +69,16 @@ class ResumeAllTests(unittest.TestCase):
         self.assertEqual(self.started_keys(), [])
         self.assertEqual(result, {"started": [], "running": [], "needs_operator": []})
 
+    def test_resuming_one_ticket_resets_its_heal_budgets_and_operator_flag(self):
+        import heal
+        self.ticket("ZIP-1", "paused", reason="plan failed: x")
+        tdir = self.cfg.ticket_dir("ZIP-1"); t = state.load(tdir); t.previous = "plan"; t.needs_operator = "budget spent"; state.save(tdir, t)
+        for _ in range(3): heal.record(tdir, "replan", "plan failed: x", "plan")
+        with contextlib.redirect_stdout(io.StringIO()):
+            runner.main(["--config", str(self.config_path), "resume", "--ticket", "ZIP-1"])
+        self.assertEqual(heal.decide(tdir, "plan failed: x")[0], "replan")
+        self.assertEqual(state.load(tdir).needs_operator, "")
+
     def test_cli_accepts_all_and_rejects_ambiguous_forms(self):
         self.ticket("ZIP-1", "implement")
         with contextlib.redirect_stdout(io.StringIO()):

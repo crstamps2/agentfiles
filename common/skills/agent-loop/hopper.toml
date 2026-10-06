@@ -74,7 +74,7 @@ harness_artifact_globs = [".pi/**", ".ruby-lsp/**", ".claude/**", ".codex/**", "
 [arms]
 workers_parallel = 4        # MACHINE-WIDE worker slots (light: remote inference + edits). One per in-flight ticket; verification is still one-at-a-time on the heavy lane.
 # Cheap arms alternate by task index unless a ticket pins one. Values: cloud | local
-alternate = ["cloud", "cloud"]   # "cloud" arm = anthropic/claude-sonnet-5 (Ollama Cloud disallowed by security). Ollama LOCAL is used only via size="small" tasks (see ladder).
+alternate = ["cloud", "cloud"]   # "cloud" arm = anthropic/claude-sonnet-5-5 (Ollama Cloud disallowed by security). Ollama LOCAL is used only via size="small" tasks (see ladder).
 
 [local]
 model = "ollama-local/gpt-oss-ctx32k:20b"   # MUST be ctx-pinned: stock num_ctx=4096 silently truncates pi's ~11K system prompt

@@ -182,7 +182,8 @@ class FailoverTests(unittest.TestCase):
     def test_sibling_model_is_the_other_vendor_same_tier(self):
         self.assertEqual(plan.sibling_model("openai-codex/gpt-6-astra"), "anthropic/claude-fable-5-1")
         self.assertEqual(plan.sibling_model("anthropic/claude-opus-5-5"), "openai-codex/gpt-5.6-sol")
-        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5"), "openai-codex/gpt-5.4-mini")
+        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5-5"), "openai-codex/gpt-5.4-mini")
+        self.assertEqual(plan.sibling_model("openai-codex/gpt-5.4-mini"), "anthropic/claude-sonnet-5-5")
         self.assertIsNone(plan.sibling_model("something/unknown"))
 
     def test_provider_exhaustion_retries_on_the_other_vendor_and_records_it(self):

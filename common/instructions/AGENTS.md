@@ -105,15 +105,15 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 ## Codex Review Pipeline
 
 - When dispatching code review, run three lanes in parallel:
-  1. **code-reviewer** agent (GPT-5.6 Terra, xhigh; Claude Sonnet 5 fallback) -- quality, conventions, performance
-  2. **security-engineer** agent (GPT-5.6 Terra, xhigh; Claude Sonnet 5 fallback) -- vulnerabilities, auth gaps
+  1. **code-reviewer** agent (GPT-5.6 Terra, xhigh; Claude Sonnet 5.5 fallback) -- quality, conventions, performance
+  2. **security-engineer** agent (GPT-5.6 Terra, xhigh; Claude Sonnet 5.5 fallback) -- vulnerabilities, auth gaps
   3. **Codex adversarial review** (`/codex:adversarial-review`) -- challenges design choices, questions assumptions
 - After all three complete, synthesize findings. Flag conflicts between reviewers for the user.
 - The Codex stop review gate is enabled -- session-end changes get an automatic Codex review.
 
 ## Agent Routing
 
-- **`.md` authoring/refactoring routes to `technical-writer`.** When a task is "produce or substantially rewrite Markdown content" -- agent definitions under `~/.claude/agents/`, skill specs under `~/.claude/skills/`, docs, plan documents, or any prompt that asks for research-then-write of `.md` files -- dispatch `technical-writer` (GPT-5.6 Terra, max; Claude Sonnet 5 fallback). The specialist owns voice, INDEX.md upkeep, and frontmatter conventions.
+- **`.md` authoring/refactoring routes to `technical-writer`.** When a task is "produce or substantially rewrite Markdown content" -- agent definitions under `~/.claude/agents/`, skill specs under `~/.claude/skills/`, docs, plan documents, or any prompt that asks for research-then-write of `.md` files -- dispatch `technical-writer` (GPT-5.6 Terra, max; Claude Sonnet 5.5 fallback). The specialist owns voice, INDEX.md upkeep, and frontmatter conventions.
 - **Carve-outs that stay with the orchestrator or `general-purpose`:**
   - The `writing-plans` skill runs in the parent session on GPT-5.6 Sol at the parent's existing `high` effort. Do not delegate its plan writing merely to change models.
   - Surgical edits to `~/.claude/CLAUDE.md`, agent definitions, or skills the orchestrator is making as a deliberate process/architecture change. The orchestrator is doing the thinking; no agent dispatch needed.
@@ -141,7 +141,7 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 - Execution specialists use Terra at `max`: `android-qa-engineer`, `frontend-engineer`, `qa-engineer`, `rails-engineer`, and `technical-writer`. Builtin `delegate` and `worker` also use Terra at `max`.
 - Other specialists and builtin support/review agents use Terra at `xhigh`.
 - The `writing-plans` skill is a parent-session workflow. Keep the parent on `openai-codex/gpt-5.6-sol:high`; do not raise its effort and do not route it through `technical-writer` solely for model selection.
-- Do not declare `fallbackModels`; pi-subagents supports one resolved model per launch. If a provider/model failure blocks a launch before useful work, retry through a later explicit launch using `anthropic/claude-sonnet-5`.
+- Do not declare `fallbackModels`; pi-subagents supports one resolved model per launch. If a provider/model failure blocks a launch before useful work, retry through a later explicit launch using `anthropic/claude-sonnet-5-5`.
 - Before submitting a launch with an explicit `model:`, verify the model and thinking level against the agent definition. A deliberate post-failure Claude retry is a separate launch, not an in-launch provider switch.
 
 ## Skills

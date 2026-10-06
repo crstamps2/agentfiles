@@ -29,6 +29,9 @@ class WorkerSourceTests(unittest.TestCase):
         self.assertTrue(t["worker-local"]["pi_model"].startswith("ollama-local/"))
         self.assertEqual(t["flagship-author"]["pi_model"], "anthropic/claude-opus-5-5")   # author tier one below flagship (2026-09-15)
         self.assertEqual(t["flagship-critic"]["pi_model"], "openai-codex/gpt-6-astra")
+        # Anthropic tiers use the 5.5 family (Cody 2026-10-06).
+        self.assertEqual(t["worker-cloud"]["pi_model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(t["task-writer"]["pi_model"], "anthropic/claude-sonnet-5-5")
     def test_worker_bodies_carry_the_contract(self):
         for w in WORKERS:
             body = (AGENTS / f"{w}.agent.md").read_text()

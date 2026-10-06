@@ -147,6 +147,21 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(git(self.wt, "status", "--porcelain").strip(), "")       # tree restored
         self.assertEqual(len(list(self.cfg.state_root.glob("attempts/ZIP-7873/001/*/diff.patch"))), 4)
 
+    def test_operator_retry_restarts_the_ladder_and_keeps_the_record(self):
+        # 2026-10-06: ZIP-4281/003 exhausted its ladder on a runner defect (premium's work had passed every
+        # verification). After the fix, an operator retry must get fresh rungs, not re-block instantly.
+        outcome, _ = self.run_task("fail", "fail", "fail", "fail")
+        self.assertEqual(outcome, "blocked")
+        runner.retry_task(self.cfg, "ZIP-7873", "001", note="runner defect fixed")
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertEqual(t.state, "implement")
+        self.assertEqual(len([e for e in t.attempts["ZIP-7873/001"] if e.get("outcome") == "rejected"]), 4)   # audit trail kept
+        self.scenarios = ["pass"]
+        outcome = self._implement(runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher), t, self.tasks[0], 0)
+        rows = metrics.read_all(self.cfg.state_root)
+        self.assertEqual(outcome, "accepted")
+        self.assertEqual((rows[-1]["attempt"], rows[-1]["agent"]), (5, "cloud-worker"))   # numbering continues; ladder restarts cheap
+
     def test_malformed_result_is_protocol_and_advances(self):
         outcome, rows = self.run_task("malformed", "pass")
         self.assertEqual(outcome, "accepted"); self.assertEqual(rows[0]["outcome"], "protocol")

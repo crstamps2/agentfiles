@@ -127,7 +127,9 @@ def _reach_note(plan_dir: pathlib.Path) -> str:
     """What the loop's agents can and cannot reach. Without it the planner made tasks wait on a worker
     inspecting Figma, which no agent in the loop can do (ZIP-4281, 2026-10-06)."""
     return ("\n## What workers can reach\nWorkers and the planner have file and shell tools in the worktree only. A worker "
-            "cannot inspect Figma, Jira, GitHub or any other external service. Never make an acceptance criterion or "
+            "cannot inspect Figma, Jira, GitHub or any other external service, and has no credentials or API tokens "
+            "(no FIGMA_ACCESS_TOKEN): a verification command needing one can never pass, so use the offline form "
+            "(e.g. `figma connect parse`, not `publish --dry-run`). Never make an acceptance criterion or "
             f"stop_when depend on such an inspection. Design facts come from `{plan_dir}/figma-*.md` when the operator has "
             "recorded them; otherwise state the needed fact as a tier-2 assumption in plan.md and make the task checkable "
             "without it.")

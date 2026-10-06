@@ -21,6 +21,8 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
+import types
 
 import botreview
 import ci
@@ -67,6 +69,18 @@ def _ci_state_path(cfg, key) -> pathlib.Path:
 
 def _load_json(p: pathlib.Path, default):
     return json.loads(p.read_text()) if p.exists() else default
+
+
+def _manifest_identities(manifest) -> list:
+    """(id, slug) of each task, read without schema validation: the plan stage runs precisely because
+    the manifest may be empty or rejected, and re-planning is how it gets replaced."""
+    try:
+        with open(manifest, "rb") as f:
+            rows = tomllib.load(f).get("tasks", [])
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    return [types.SimpleNamespace(id=str(r["id"]), slug=str(r["slug"]))
+            for r in rows if isinstance(r, dict) and r.get("id") and r.get("slug")]
 
 
 def _task_accepted(cfg, key, task) -> bool:
@@ -212,7 +226,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         rows = [r for r in ledger.collect(cfg.state_root) if r.get("ticket") == key]
         baseline = _ruling_baseline(cfg, key, wt)
         spent = sum(r["billed_usd"] for r in rows if (r.get("first_ts") or "") >= baseline)
-        has_work = any(_task_accepted(cfg, key, tk) for tk in (contracts.load_tasks(manifest) if manifest.exists() else []))
+        has_work = any(_task_accepted(cfg, key, tk) for tk in _manifest_identities(manifest))
         ceiling = float(getattr(cfg.budgets, "preimplementation_usd", 30.0))
         if not has_work and spent >= ceiling:
             _notify_once(tdir, key, f"{key} planning ceiling", f"${spent:.0f} spent with no accepted task")

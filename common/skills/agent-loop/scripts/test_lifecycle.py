@@ -715,6 +715,21 @@ class LifecycleTests(unittest.TestCase):
         rep.assert_called_once(); self.assertNotIn("ceiling", state.load(tdir).reason)
         self.assertTrue((tdir / "ruling-baseline.json").exists())
 
+    def test_an_invalid_manifest_left_by_a_failed_plan_is_replanned_not_a_crash(self):
+        """2026-10-05: a blocked plan left zero tasks, a task-writer left a rejected command; the plan
+        stage raised ManifestError on every supervisor restart for hours instead of re-planning."""
+        manifests = {"empty": "",
+                     "rejected command": '[[tasks]]\nid = "001"\nslug = "s"\nsummary = "x"\nallowed_files = ["app/a.rb"]\n'
+                                         'verification_commands = ["curl http://x"]\nacceptance = ["AC-1"]\n'}
+        for name, body in manifests.items():
+            with self.subTest(name):
+                tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="paused"))
+                pd = self.wt / "planning" / "zip-7873"; (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(body)
+                (pd / "plan-review.md").unlink(missing_ok=True)
+                with patch.object(lifecycle.plan_mod, "plan_ticket", return_value={"result": "approved", "rounds": [], "author_model": "A", "critic_model": "C"}) as pl:
+                    lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+                pl.assert_called_once(); self.assertEqual(state.load(tdir).state, "implement")
+
     def test_planning_ceiling_does_not_apply_once_work_is_accepted(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
         (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")

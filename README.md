@@ -78,6 +78,11 @@ hand-edit files under them directly -- edits get overwritten the next time
 you run `bootstrap.sh`. Change `common/` (or the relevant `tools/<tool>/`
 spec) instead, then re-run bootstrap.
 
+Claude Code's user-global entry point is `~/.claude/CLAUDE.md`; native
+`AGENTS.md` discovery covers project paths, not that scope. Claude setup
+therefore symlinks that entry point to `common/instructions/AGENTS.md`, keeping
+one content source rather than a second instructions copy.
+
 ## How it works
 
 1. **`bootstrap.sh` resolves the environment.** It figures out `$HOME`, the

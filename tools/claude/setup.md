@@ -16,13 +16,16 @@ remaining steps. Do not silently skip or substitute.
 
 ## 1. Instructions
 
-Symlink the top-level instructions file:
+Claude Code reads `AGENTS.md` natively at project paths, not as a user-global
+`~/.claude/AGENTS.md` file. Keep a single content source by using the
+user-global `CLAUDE.md` entry point as a symlink:
 
 ```
 $AF_HOME/.claude/CLAUDE.md  ->  $AF_REPO/common/instructions/AGENTS.md
 ```
 
-If `$AF_HOME/.claude/CLAUDE.md` already exists as a symlink pointing elsewhere, remove it and
+This is a compatibility entry point, not a second instructions copy. If
+`$AF_HOME/.claude/CLAUDE.md` already exists as a symlink pointing elsewhere, remove it and
 recreate it pointing at the correct target (see Idempotency, section 6). If it exists as a
 real file (not a symlink), stop and report -- do not overwrite a user's real file.
 

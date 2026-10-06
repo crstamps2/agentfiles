@@ -27,6 +27,15 @@ class ClassifyTests(unittest.TestCase):
     def test_other_boot_id_is_unknown(self):
         rec = procid.ProcId(boot_id="other-boot", pgid=self.rec.pgid, pid=self.rec.pid, start_time=self.rec.start_time, cmd=self.rec.cmd)
         self.assertEqual(procid.classify(rec), "unknown")
+    def test_proc_from_an_earlier_real_boot_is_dead(self):
+        # Nothing survives a reboot; treating it as unknown fenced the loop forever after one.
+        rec = procid.ProcId(**{**self.rec.to_dict(), "boot_id": "A9619ECE-8CE9-4A7E-9570-47EE2C55C878"})
+        with patch.object(locks, "boot_id", return_value="28CD7EE2-C0CC-4CEA-ACE3-F1535DB1A4BE"):
+            self.assertEqual(procid.classify(rec), "dead")
+    def test_unreadable_current_boot_stays_unknown(self):
+        rec = procid.ProcId(**{**self.rec.to_dict(), "boot_id": "A9619ECE-8CE9-4A7E-9570-47EE2C55C878"})
+        with patch.object(locks, "boot_id", return_value="unknown-boot"):
+            self.assertEqual(procid.classify(rec), "unknown")
     def test_start_time_mismatch_is_unknown(self):
         rec = procid.ProcId(**{**self.rec.to_dict(), "start_time": "Thu Jan  1 00:00:00 1970"})
         self.assertEqual(procid.classify(rec), "unknown")

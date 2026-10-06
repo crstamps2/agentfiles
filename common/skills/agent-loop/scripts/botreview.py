@@ -113,6 +113,9 @@ wrote the code, citing the CODE and the repo's own conventions:
 Write `{out}` as JSON: {{"decisions": [{{"id": <comment id>, "decision": "fix|decline|defer|question",
 "reply": "<reply text, no platitudes, no thanks, evidence-based>", "task": {{...task manifest table or null}}}}]}}
 Task tables follow the schema in `{schema}`; `allowed_files` must be as narrow as the fix permits.
+Verification commands run repository tools only (bin/**, bundle, yarn, npx, git read verbs, grep, test, ...):
+no inline interpreter code (`ruby -e`, `node -e`), no pipes, `;`, redirection or substitution outside single
+quotes, at most three bespoke commands. Prefer asserting the fix in a test file the task is allowed to edit.
 
 Worktree: `{wt}`   Plan: `{plan}`   Comments file: `{comments}`
 End with `ADJUDICATION: written`.

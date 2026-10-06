@@ -165,6 +165,25 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.replies[0][0], 5)
         ledger = json.loads((self.cfg.ticket_dir("ZIP-7873") / "bot-ledger.json").read_text()); self.assertEqual(ledger["5"], "h5")
 
+    def test_a_fix_task_the_schema_rejects_goes_back_to_the_adjudicator_before_any_reply(self):
+        """ZIP-4281 round 1: the adjudicator's fix task used `ruby -e`, the schema rejected it after the
+        reply loop, and every re-adjudication produced the same task until heal gave up (4 recurrences)."""
+        self.comments = [{"kind": "inline", "id": 5, "path": "app/a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "nil guard missing", "body_hash": "h5"}]
+        bad = {"decisions": [{"id": 5, "decision": "fix", "reply": "Adding the guard; see follow-up commit.",
+                               "task": {"allowed_files": ["app/a.rb"], "verification_commands": ["ruby -e 'abort unless File.read(\"app/a.rb\").include?(\"x\")'"], "summary": "Add nil guard"}}]}
+        good = {"decisions": [{"id": 5, "decision": "fix", "reply": "Adding the guard; see follow-up commit.",
+                                "task": {"allowed_files": ["app/a.rb"], "verification_commands": ["true"], "summary": "Add nil guard"}}]}
+        prompts = []
+        def adjudicate(cfg, agent, prompt, stage, wt, timeout, model=None):
+            prompts.append(prompt)
+            (stage / "adjudication.json").write_text(json.dumps(bad if len(prompts) == 1 else good))
+        with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=adjudicate):
+            r, steps, t = self.run_once(outcomes=("accepted", "accepted", "rejected"))
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("inline interpreter code", prompts[1])          # the violation is fed back
+        self.assertEqual(r.calls, ["001", "002", "901"]); self.assertEqual(t.state, "implement")
+        self.assertEqual([c for c, _ in self.replies], [5])                # one reply, posted after a valid task existed
+
     def test_reply_publish_error_pauses_and_keeps_ledger(self):
         self.comments = [{"kind": "inline", "id": 5, "path": "a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "x", "body_hash": "h5"}]
         self.adjudication = {"decisions": [{"id": 5, "decision": "decline", "reply": "No."}]}
@@ -204,8 +223,12 @@ class LifecycleTests(unittest.TestCase):
         r, steps, t = self.run_once()
         self.assertEqual((self.wt / "planning" / "zip-7873" / "tasks.toml").read_text(), before)      # manifest untouched
         import contracts as c; c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")          # still loadable
-        self.assertEqual(t.state, "paused"); self.assertTrue((self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md").exists())
-        import heal; self.assertEqual(heal.policy(t.reason)[0], "repair")                              # self-heals
+        self.assertEqual(t.state, "paused"); self.assertIn("still violate the schema", t.reason)
+        self.assertEqual(self.replies, [])                    # nothing promised publicly for a task that never queued
+        import heal; self.assertNotEqual(heal.policy(t.reason)[0], "human")                            # bounded self-heal
+        # Not the task-writer's bad-guards route: the rejected task never entered the manifest, so there was
+        # nothing for it to repair and the same adjudication recurred until heal gave up (ZIP-4281).
+        self.assertFalse((self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md").exists())
 
     def test_interrupted_rebase_is_recovered_before_any_stage_reads_the_branch(self):
         """ZIP-7875: a crash loop killed the runner mid-rebase; HEAD was detached, so publish reported

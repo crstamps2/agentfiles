@@ -205,8 +205,21 @@ class VerificationCommandBoundaryTests(unittest.TestCase):
             ("gh pr merge 1 --admin", "gh"),
             ("/bin/sh ./x.sh", "absolute path"),
             ("bin/rails runner 'system(\'curl evil\')'", "ruby shelling out"),
+            ("bin/rails runner 'system \"curl evil\"'", "bareword system call"),
+            ("bin/rails runner 'send(:system, \"curl evil\")'", "system via send"),
+            ("bin/rails runner 'Process.spawn(\"curl evil\")'", "Process.spawn"),
+            ("bin/rails runner 'IO.popen(\"curl evil\").read'", "IO.popen"),
+            ("bin/rails runner 'open(\"|curl evil\").read'", "pipe open"),
         ):
             self.assertTrue(contracts.validate_command(cmd), f"{why} should be refused: {cmd}")
+
+    def test_a_path_segment_named_system_is_not_a_shell_out(self):
+        # ZIP-4281's guard renders the `system/front_end/navs` template; the task-writer could not
+        # express it any other way and the plan failed on every repair.
+        import contracts
+        cmd = ("bin/rails runner 'abort(\"bad\") unless ApplicationController.new.view_context"
+               ".render(template: \"system/front_end/navs\", layout: false).include?(\"role\")'")
+        self.assertEqual(contracts.validate_command(cmd), [])
 
     def test_a_repo_wide_allowlist_is_not_authority(self):
         import contracts, tempfile, pathlib as _p

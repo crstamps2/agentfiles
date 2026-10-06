@@ -77,8 +77,8 @@ def sibling_model(model: str) -> str | None:
         if model in table.values():
             other = [m for v, m in table.items() if v != vendor_of(model)]
             return other[0] if other else None
-    return {"anthropic/claude-sonnet-5": "openai-codex/gpt-5.4-mini",
-            "openai-codex/gpt-5.4-mini": "anthropic/claude-sonnet-5"}.get(model)
+    return {"anthropic/claude-sonnet-5-5": "openai-codex/gpt-5.4-mini",
+            "openai-codex/gpt-5.4-mini": "anthropic/claude-sonnet-5-5"}.get(model)
 
 
 def run_agent_with_failover(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt, timeout_s: int,

@@ -406,7 +406,7 @@ class Runner:
                     f"contract cannot be satisfied as written. Rewrite the acceptance criterion / stop condition it names so a correct "
                     f"implementation can pass, or drop it. Evidence from the worker:\n\n{(res.evidence or '')[:1200]}\n\nUNVERIFIED: {(res.unverified or '')[:600]}\n\nNEXT: {(res.next or '')[:400]}\n")
 
-    PREMIUM_ALTERNATE = {"openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5"}   # same tier, other vendor
+    PREMIUM_ALTERNATE = {"openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5-5"}   # same tier, other vendor
 
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)

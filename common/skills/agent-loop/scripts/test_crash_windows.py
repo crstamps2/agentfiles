@@ -1466,9 +1466,7 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
         base = base.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}/agents"')
         for bad_model in ('ollama-local/gpt-oss-ctx4k:20b', ''):
             with self.subTest(bad_model=bad_model):
-                text = re.sub(r'model = "[^"]*"(?=\s*#? *MUST be ctx-pinned)',
-                              f'model = "{bad_model}"', base)
-                self.assertIn(f'model = "{bad_model}"', text)
+                text = base + f'\n[local]\nmodel = "{bad_model}"\n'      # production has no [local]; add one
                 p = root / "hopper_bad_local.toml"
                 p.write_text(text)
                 with self.assertRaises(config.ConfigError):

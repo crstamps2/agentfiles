@@ -62,7 +62,7 @@ class Task:
     acceptance: list
     may_edit_tests: bool = False
     visual: bool = False
-    size: str = "normal"          # "small" => free local model first (1-2 existing files, no browser)
+    size: str = "normal"          # "small" => small-worker (Haiku) first (1-2 existing files, no browser)
     after: list = dataclasses.field(default_factory=list)   # task ids that must LAND before this one runs (implied when allowed_files overlap)
     timeout_s: int = 4500
     invariants: list = dataclasses.field(default_factory=list)

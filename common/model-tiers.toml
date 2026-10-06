@@ -44,15 +44,15 @@ pi_thinking = "low"
 claude = "sonnet"                    # workers are pi-only; other tools get a sane default
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "anthropic/claude-sonnet-5-5"   # security: Ollama Cloud not allowed; 'cloud' arm = Sonnet 5.5 (cheap-1), see worker-local for cheap-2
+pi_model = "anthropic/claude-sonnet-5-5"   # security: Ollama Cloud not allowed; 'cloud' arm = Sonnet 5.5; size = "small" tasks start on worker-small
 pi_thinking = "low"
 
-[worker-local]
-claude = "sonnet"
-codex_model = "gpt-5.4-mini"
-codex_effort = "medium"
-pi_model = "ollama-local/gpt-oss-ctx32k:20b"   # ctx-pinned derived model; stock 4K ctx truncates pi's system prompt. Free; small tasks only.
-pi_thinking = "medium"
+[worker-small]
+claude = "haiku"
+codex_model = "gpt-6-luna"
+codex_effort = "low"
+pi_model = "anthropic/claude-haiku-4-5"   # truly small tasks (size = "small"); openai-codex/gpt-6-luna on Anthropic outage
+pi_thinking = "low"
 
 [worker-premium]
 claude = "sonnet"

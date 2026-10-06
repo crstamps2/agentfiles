@@ -1,7 +1,7 @@
 ---
-name: local-worker
-description: Local Ollama implementation worker for the autonomous agent loop. Same contract as cloud-worker; runs only when the heavy lane is idle. Not for interactive use.
-tier: worker-local
+name: small-worker
+description: Small-task implementation worker for the autonomous agent loop (planner-tagged size = "small": 1-2 existing files, no browser). Executes ONE bounded task from a runner-supplied manifest. Never makes design decisions. Not for interactive use.
+tier: worker-small
 access: Read, Grep, Glob, Bash, Write, Edit
 ---
 

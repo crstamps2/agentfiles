@@ -461,8 +461,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 unpostable = [d.get("id") for d in cand
                               if botreview.workflow_vocabulary(d.get("reply") or "")
                               or any(p in (d.get("reply") or "").lower() for p in botreview.PLATITUDES)]
+                bad_tasks = _fix_task_violations(_manifest_path(wt, key), cand)
                 if unpostable:
                     print(f"{key}: discarding cached adjudication; replies for {unpostable} cannot be posted", flush=True)
+                elif bad_tasks:
+                    print(f"{key}: discarding cached adjudication; its fix tasks break the schema: {bad_tasks[:2]}", flush=True)
                 elif {c["id"] for c in todo} <= {d.get("id") for d in cand}:
                     decisions = cand; stage = prev.parent
             except RuntimeError:

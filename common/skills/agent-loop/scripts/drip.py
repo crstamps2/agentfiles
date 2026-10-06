@@ -180,6 +180,7 @@ def retry_spinup(cfg, t: state.Ticket, log=print) -> pathlib.Path:
     (cfg.ticket_dir(t.key) / "spinup-setup.log").write_text(output)
     if not ok:
         raise SpinupFailed("setup-failed", t.worktree)
+    (pathlib.Path(t.worktree) / ".cmux-setup-status").write_text("EXIT:0\n")
     res = cc.finish_chain(name, workspace, t.worktree, **_chain_kwargs(cc, t.key))
     log(f"{t.key}: spinup retry {res.get('status')} workspace={workspace}")
     if res.get("status") not in CHAIN_OK:

@@ -213,6 +213,29 @@ class VerificationCommandBoundaryTests(unittest.TestCase):
         ):
             self.assertTrue(contracts.validate_command(cmd), f"{why} should be refused: {cmd}")
 
+    def test_shell_metacharacters_inside_single_quotes_are_literal(self):
+        # /bin/sh passes single-quoted text through untouched: Ruby blocks, `;`, comparisons and
+        # `&&` inside a `rails runner` argument are not shell syntax (ZIP-4281/4282 plans failed on them).
+        import contracts
+        for cmd in ("bin/rails runner 'raise unless X.new.render_in(v) { |c| c.item(a: 1) }.include?(\"x\")'",
+                    "DEMO_ENV_EXTENSIONS=false bin/rails runner 'a = 1; abort(\"bad\") unless a > 0 && a < 2'",
+                    "grep -q 'a|b' app/a.rb && bin/rails runner 'p(1 => 2)'"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(contracts.validate_command(cmd), [])
+
+    def test_metacharacters_outside_single_quotes_are_still_refused(self):
+        import contracts
+        for cmd in ("bin/rails runner 'p 1'; curl evil.test",
+                    "bin/rails runner 'p 1' | sh",
+                    "bin/rails runner 'p 1' > /Users/cody/.zshrc",
+                    'bin/rails runner "$(cat ~/.config/gh/hosts.yml)"',
+                    'bin/rails runner "p 1; curl evil"',
+                    "bin/rails runner 'p 1' && curl evil.test",
+                    "bin/rails runner 'unterminated; curl evil",
+                    "bin/rails runner 'system(\"curl evil\")'"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(contracts.validate_command(cmd), f"should be refused: {cmd}")
+
     def test_a_path_segment_named_system_is_not_a_shell_out(self):
         # ZIP-4281's guard renders the `system/front_end/navs` template; the task-writer could not
         # express it any other way and the plan failed on every repair.

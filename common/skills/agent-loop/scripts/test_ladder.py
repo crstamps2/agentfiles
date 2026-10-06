@@ -114,8 +114,9 @@ class SummarizeFeedbackTests(unittest.TestCase):
 
 
 class SmallArmTests(unittest.TestCase):
-    def test_small_arm_is_local_then_cloud_then_premium_twice(self):
-        r1 = ladder.next_rung([], "small"); self.assertEqual(r1, Rung("local-worker", "cheap", 1))
+    def test_small_arm_is_haiku_then_cloud_then_premium_twice(self):
+        # 2026-10-06: the local Ollama model went 0/12; small tasks start on the small cloud worker.
+        r1 = ladder.next_rung([], "small"); self.assertEqual(r1, Rung("small-worker", "cheap", 1))
         r2 = ladder.next_rung([Attempt(r1, "rejected")], "small"); self.assertEqual(r2, Rung("cloud-worker", "cheap", 2))
         r3 = ladder.next_rung([Attempt(r1, "rejected"), Attempt(r2, "rejected")], "small"); self.assertEqual(r3, Rung("premium-worker", "premium", 1))
 

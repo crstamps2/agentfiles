@@ -41,7 +41,7 @@ spinup → plan → plan-review → implement → gates → draft-pr → ready �
   round 2 is approve-with-concerns unless it names a wrong-code blocker. $25 cap per planning run.
 - **implement**: tasks in manifest order; before each, rebase onto `origin/main` (generated-file
   conflicts regenerate themselves). Ladder per task: cheap ×2 (Sonnet) → Terra ×2 → blocked. `size =
-  "small"` tasks try the free local Ollama model first. Worker stages are light (N slots); verification
+  "small"` tasks start on the small worker (Haiku 4.5; `gpt-6-luna` if Anthropic is out of quota). Worker stages are light (N slots); verification
   (Rails/browser) is one-at-a-time on the heavy lane. Every acceptance also runs the repo's rubocop +
   reek (+ i18n normalization when `en.yml` changed), then commits exactly the task's paths and pushes.
 - **guard soundness**: a verification command that rejects an attempt is re-run on the pre-work base

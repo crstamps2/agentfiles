@@ -406,16 +406,23 @@ class Runner:
                     f"contract cannot be satisfied as written. Rewrite the acceptance criterion / stop condition it names so a correct "
                     f"implementation can pass, or drop it. Evidence from the worker:\n\n{(res.evidence or '')[:1200]}\n\nUNVERIFIED: {(res.unverified or '')[:600]}\n\nNEXT: {(res.next or '')[:400]}\n")
 
-    PREMIUM_ALTERNATE = {"openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5-5"}   # same tier, other vendor
+    # Workers that fail over to the other vendor when theirs is out of quota. The cloud worker (Sonnet)
+    # does not: its sibling is the premium model, and a cheap rung must not silently cost premium.
+    FAILOVER_WORKERS = ("premium-worker", "small-worker")
+
+    @staticmethod
+    def worker_alternate(model: str) -> str | None:
+        import plan
+        return plan.sibling_model(model)
 
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
         # If the PREVIOUS attempt on this lineage died because this vendor is out of quota, run the same
         # rung on the other vendor rather than waiting for the limit to reset (2026-09-18).
         prior = [e for e in t.attempts.get(f"{t.key}/{task.id}", []) if e.get("outcome") == "environment"]
-        if prior and "provider unavailable" in (prior[-1].get("reason") or "") and agent.model in self.PREMIUM_ALTERNATE:
+        alt = self.worker_alternate(agent.model) if rung.agent in self.FAILOVER_WORKERS else None
+        if prior and "provider unavailable" in (prior[-1].get("reason") or "") and alt:
             import dataclasses as _dc
-            alt = self.PREMIUM_ALTERNATE[agent.model]
             print(f"{t.key}/{task.id}: {agent.model} is out of quota; attempt {n} runs on {alt}", file=sys.stderr, flush=True)
             agent = _dc.replace(agent, model=alt)
         agentdef.assert_worker_safe(agent)

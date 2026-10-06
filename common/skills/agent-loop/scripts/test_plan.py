@@ -182,8 +182,16 @@ class FailoverTests(unittest.TestCase):
     def test_sibling_model_is_the_other_vendor_same_tier(self):
         self.assertEqual(plan.sibling_model("openai-codex/gpt-6-astra"), "anthropic/claude-fable-5-1")
         self.assertEqual(plan.sibling_model("anthropic/claude-opus-5-5"), "openai-codex/gpt-5.6-sol")
-        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5-5"), "openai-codex/gpt-5.4-mini")
-        self.assertEqual(plan.sibling_model("openai-codex/gpt-5.4-mini"), "anthropic/claude-sonnet-5-5")
+        # gpt-5.4-mini is refused for a ChatGPT-account Codex login, so it never worked as a failover.
+        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5-5"), "openai-codex/gpt-5.6-terra")
+        self.assertEqual(plan.sibling_model("openai-codex/gpt-5.6-terra"), "anthropic/claude-sonnet-5-5")
+        self.assertEqual(plan.sibling_model("anthropic/claude-haiku-4-5"), "openai-codex/gpt-6-luna")
+        self.assertEqual(plan.sibling_model("openai-codex/gpt-6-luna"), "anthropic/claude-haiku-4-5")
+
+    def test_workers_fail_over_to_the_same_sibling_table(self):
+        import runner
+        for model in ("openai-codex/gpt-5.6-terra", "anthropic/claude-haiku-4-5"):
+            self.assertEqual(runner.Runner.worker_alternate(model), plan.sibling_model(model))
         self.assertIsNone(plan.sibling_model("something/unknown"))
 
     def test_provider_exhaustion_retries_on_the_other_vendor_and_records_it(self):

@@ -35,6 +35,15 @@ class PureTests(unittest.TestCase):
             s2 = plan._author_prompt("ZIP-1", tj, wt, "", wt / "planning/zip-1/plan-review.md", ["tasks[0]: missing slug"])
             self.assertIn("Critic review to address", s2); self.assertIn("missing slug", s2)
 
+    def test_planner_and_critic_are_told_what_workers_cannot_reach(self):
+        # 2026-10-06: ZIP-4281's plan made four tasks wait on the WORKER inspecting a Figma node; workers have
+        # file and shell tools only, so premium blocked/owner and the ticket stopped.
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d); tj = wt / "ticket.json"; tj.write_text("{}")
+            for s in (plan._author_prompt("ZIP-1", tj, wt, "", None, []), plan._critic_prompt("ZIP-1", tj, wt)):
+                self.assertIn("cannot inspect Figma", s)
+                self.assertIn("planning/zip-1/figma-", s)
+
 
 class LoopTests(unittest.TestCase):
     """Drive plan_ticket with a scripted fake agent. Shape: author → (critic → task-writer)×≤PLAN_ROUNDS."""

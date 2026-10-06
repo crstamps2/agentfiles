@@ -44,7 +44,7 @@ pi_thinking = "low"
 claude = "sonnet"                    # workers are pi-only; other tools get a sane default
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "anthropic/claude-sonnet-5"   # security: Ollama Cloud not allowed; 'cloud' arm = Sonnet 5 (cheap-1), see worker-local for cheap-2
+pi_model = "anthropic/claude-sonnet-5-5"   # security: Ollama Cloud not allowed; 'cloud' arm = Sonnet 5.5 (cheap-1), see worker-local for cheap-2
 pi_thinking = "low"
 
 [worker-local]
@@ -79,5 +79,5 @@ pi_thinking = "high"
 claude = "sonnet"
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "anthropic/claude-sonnet-5"    # field guide tier 2: turns a critic finding into a precise manifest edit; never a full re-plan
+pi_model = "anthropic/claude-sonnet-5-5"  # field guide tier 2: turns a critic finding into a precise manifest edit; never a full re-plan
 pi_thinking = "medium"

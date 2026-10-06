@@ -43,6 +43,8 @@ class PureTests(unittest.TestCase):
             for s in (plan._author_prompt("ZIP-1", tj, wt, "", None, []), plan._critic_prompt("ZIP-1", tj, wt)):
                 self.assertIn("cannot inspect Figma", s)
                 self.assertIn("planning/zip-1/figma-", s)
+                # ZIP-4281/010: a `figma connect publish --dry-run` gate needs FIGMA_ACCESS_TOKEN, which workers lack.
+                self.assertIn("no credentials or API tokens", s)
 
 
 class LoopTests(unittest.TestCase):

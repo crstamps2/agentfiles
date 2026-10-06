@@ -661,10 +661,10 @@ def reconcile(cfg, run_id, ticket: str | None = None) -> RunContext:
                         # unverifiable record under ANOTHER ticket used to abort every run in the
                         # fleet (ZIP-7875/901 froze ZIP-7874 for days, exit code 3 with no ticket of
                         # its own to blame). Fence that ticket, keep this one moving.
-                        owner = fence_owner(str(fe))
+                        owner = fence_owner(fe.reason)          # str(fe) is the exit code, "3"
                         if owner and ticket and owner.upper() != ticket.upper():
-                            _fence_ticket(cfg, owner, str(fe))
-                            print(f"reconcile: fenced {owner} ({str(fe)[:120]}); continuing with {ticket}", file=sys.stderr)
+                            _fence_ticket(cfg, owner, fe.reason)
+                            print(f"reconcile: fenced {owner} ({fe.reason[:120]}); continuing with {ticket}", file=sys.stderr)
                             _sweep(cfg, ticket)
                         else:
                             raise

@@ -58,6 +58,8 @@ def fetch_checks(pr_number: int, repo: str, cwd) -> list[Check]:
     r = subprocess.run(["gh", "pr", "checks", str(pr_number), "--repo", repo, "--json", "name,state,bucket,link,workflow"],
                        cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     # gh exits 8 when checks are pending and 1 when some fail; the JSON is still complete.
+    if not r.stdout.strip() and "no checks reported" in r.stderr:
+        return []                     # a just-opened PR before CI registers anything: pending, not an error
     if not r.stdout.strip():
         raise RuntimeError(f"gh pr checks produced no output rc={r.returncode}: {r.stderr.strip()[:300]}")
     out = []
@@ -83,6 +85,8 @@ def looks_flaky(text: str) -> bool:
 def classify(checks: list[Check], *, behind: int, attempts: int, failure_text: str = "",
              prior_actions: tuple = ()) -> Verdict:
     """Pure decision. `failure_text` is whatever log excerpt the caller could obtain (may be '')."""
+    if not checks:
+        return Verdict("wait", "no checks reported yet", [], [])
     failing = [c.name for c in checks if c.bucket in ("fail", "cancel")]
     pending = [c.name for c in checks if c.bucket == "pending"]
     if not failing and not pending:

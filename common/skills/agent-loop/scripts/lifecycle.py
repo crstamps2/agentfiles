@@ -430,7 +430,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
     if t.state == "bot-loop":
         cis = _load_json(_ci_state_path(cfg, key), {}); pr = cis.get("pr") or pr_number
         checks = ci.fetch_checks(pr, publish.REPO, wt)
-        if any(c.bucket == "pending" for c in checks):
+        if not checks or any(c.bucket == "pending" for c in checks):
             return Step(key, "bot-loop", "checks (incl. claude-review) still running", wait=True)
         ledger_p = _ledger_path(cfg, key); seen_comments = botreview.load_ledger(ledger_p)   # NOT `ledger`: shadows the ledger module for the whole function
         comments = botreview.fetch_bot_comments(pr, wt); todo = botreview.unhandled(comments, seen_comments)

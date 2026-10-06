@@ -133,6 +133,7 @@ class DripSpinupFailureTests(DripFixture):
         self.sh.transition_to_in_progress.assert_called_once()
         self.start.assert_called_once_with("ZIP-7874", str(self.wts / "zip-7874"), self.cfg.state_root)
         self.assertNotEqual(state.load(self.cfg.ticket_dir("ZIP-7874")).state, "blocked")
+        self.assertEqual((self.wts / "zip-7874" / ".cmux-setup-status").read_text().strip(), "EXIT:0")
 
     def test_retries_stop_at_the_limit_and_ask_for_the_operator(self):
         self.failed("ZIP-7874", attempts=2)

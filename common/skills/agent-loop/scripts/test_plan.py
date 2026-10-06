@@ -104,9 +104,30 @@ class LoopTests(unittest.TestCase):
         log = self.go()
         self.assertEqual(log["result"], "failed"); self.assertIn("after 2 rounds", log["reason"]); self.assertEqual(len(self.calls), 4)
 
-    def test_writer_leaving_invalid_manifest_fails(self):
-        self.script = [self.author_writes(self.GOOD), self.critic_says("revise"), self.writer_applies('[[tasks]]\nid = "001"\n')]
+    def test_writer_schema_violations_go_back_to_the_writer(self):
+        # 2026-10-06: one rejected command from the task-writer failed the whole plan; both Nav tickets
+        # spent all three replans that way. The author gets its violations back -- so does the writer.
+        self.script = [self.author_writes(self.GOOD), self.critic_says("revise"), self.writer_applies('[[tasks]]\nid = "001"\n'),
+                       self.writer_applies(self.GOOD), self.critic_says("approve")]
+        log = self.go()
+        self.assertEqual(log["result"], "approved")
+        self.assertEqual(self.calls, ["flagship-author", "flagship-critic", "task-writer", "task-writer", "flagship-critic"])
+        self.assertIn("Schema violations", (self.stage / "writer-1-fix-1" / "prompt.md").read_text())
+
+    def test_writer_leaving_invalid_manifest_after_its_fix_passes_fails(self):
+        bad = '[[tasks]]\nid = "001"\n'
+        self.script = [self.author_writes(self.GOOD), self.critic_says("revise")] + [self.writer_applies(bad)] * 3
         log = self.go(); self.assertEqual(log["result"], "failed"); self.assertIn("task-writer left", log["reason"])
+        self.assertEqual(self.calls.count("task-writer"), 3)
+
+    def test_repair_plan_bounces_writer_violations_to_the_writer(self):
+        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
+        (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(self.GOOD); (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
+        self.script = [self.writer_applies('[[tasks]]\nid = "001"\n'), self.writer_applies(self.GOOD), self.critic_says("approve")]
+        with patch.object(plan, "_run_agent", self.fake_run_agent), patch.object(plan, "export_ticket", lambda k, d: d), \
+             patch.object(plan, "assignment", lambda cfg, i: {"author_model": "A", "critic_model": "C"}):
+            log = plan.repair_plan(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
+        self.assertEqual(log["result"], "approved"); self.assertEqual(self.calls, ["task-writer", "task-writer", "flagship-critic"])
 
     def test_block_stops_immediately(self):
         self.script = [self.author_writes(self.GOOD), self.critic_says("block")]

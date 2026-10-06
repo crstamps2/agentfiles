@@ -207,18 +207,46 @@ RUBY_ESCAPE = re.compile(r"\b(system|exec|spawn)\b(?!/)|%x|Open3|Kernel\.|IO\.po
                          r"File\.(write|open|delete)|require\s+['\"](net/|open-uri|socket)|`", re.I)
 
 
+def _mask_single_quoted(cmd: str) -> str | None:
+    """`cmd` with the contents of each single-quoted span replaced by `_`, same length. /bin/sh
+    expands nothing inside single quotes, so only the unmasked text can contain shell syntax.
+    None when a single quote is unterminated."""
+    out, quote, i = [], None, 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None; out.append(ch)
+            else:
+                out.append("_")
+        elif ch == "\\" and i + 1 < len(cmd):
+            out.append(ch + cmd[i + 1]); i += 2; continue
+        elif ch == '"':
+            quote = None if quote == '"' else '"'; out.append(ch)
+        elif ch == "'" and quote is None:
+            quote = "'"; out.append(ch)
+        else:
+            out.append(ch)
+        i += 1
+    return None if quote == "'" else "".join(out)
+
+
 def validate_command(cmd: str) -> list[str]:
     """Errors for one verification command; empty list means it may be executed."""
     import shlex
     errs = []
     if not isinstance(cmd, str) or not cmd.strip():
         return ["empty command"]
+    masked = _mask_single_quoted(cmd)
+    if masked is None:
+        return [f"unterminated single quote in {cmd[:60]!r}"]
     for pat, what in SHELL_ESCAPES:
-        if re.search(pat, cmd):
+        if re.search(pat, masked):
             errs.append(f"{what} is not allowed in a verification command ({cmd[:60]!r})")
     if errs:
         return errs
-    for segment in cmd.split("&&"):
+    bounds = [0] + [b for m in re.finditer("&&", masked) for b in (m.start(), m.end())] + [len(cmd)]
+    for segment in (cmd[bounds[i]:bounds[i + 1]] for i in range(0, len(bounds), 2)):
         seg = segment.strip()
         if not seg:
             errs.append(f"empty segment in {cmd[:60]!r}")

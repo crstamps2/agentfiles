@@ -150,12 +150,31 @@ def _critic_prompt(key: str, ticket_json: pathlib.Path, wt: pathlib.Path, rnd: i
     return "\n".join(lines)
 
 
-def _writer_prompt(key: str, wt: pathlib.Path) -> str:
+WRITER_FIX_PASSES = 2
+
+
+def _run_writer(cfg, key: str, wt: pathlib.Path, stage_root: pathlib.Path, name: str, manifest: pathlib.Path) -> tuple[str, list[str]]:
+    """Task-writer applies the review; schema violations go back to it, like the author's do.
+    Returns (REVISION marker, remaining violations)."""
+    _run_agent(cfg, WRITER_DEF, _writer_prompt(key, wt), stage_root / name, wt, 900)
+    marker = _last_marker(stage_root / name, "REVISION")
+    violations = [] if marker.lower().startswith("blocked") else validate_manifest(manifest)
+    for n in range(1, WRITER_FIX_PASSES + 1):
+        if not violations:
+            break
+        _run_agent(cfg, WRITER_DEF, _writer_prompt(key, wt, violations), stage_root / f"{name}-fix-{n}", wt, 900)
+        violations = validate_manifest(manifest)
+    return marker, violations
+
+
+def _writer_prompt(key: str, wt: pathlib.Path, schema_violations=()) -> str:
     plan_dir = wt / "planning" / key.lower()
+    fix = ("\n## Schema violations in tasks.toml after your edit (fix all, change nothing else)\n"
+           + "\n".join(f"- {v}" for v in schema_violations)) if schema_violations else ""
     return "\n".join([
         f"# Apply the critic's blockers for {key}\n",
         f"Review: `{plan_dir}/plan-review.md`   Manifest: `{plan_dir}/tasks.toml`   Plan: `{plan_dir}/plan.md`   Worktree: `{wt}`",
-        "Apply each BLOCKER with the smallest edit that resolves it; leave CONCERNS alone. Use ABSOLUTE paths when writing.",
+        "Apply each BLOCKER with the smallest edit that resolves it; leave CONCERNS alone. Use ABSOLUTE paths when writing." + fix,
         "End your reply with `REVISION: applied <n> blockers` or `REVISION: blocked — <one line>`."])
 
 
@@ -290,11 +309,10 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
         if rnd >= PLAN_ROUNDS:
             break
         t2 = time.monotonic()
-        _run_agent(cfg, WRITER_DEF, _writer_prompt(key, wt), stage_root / f"writer-{rnd}", wt, 900)
-        wm = _last_marker(stage_root / f"writer-{rnd}", "REVISION"); entry["writer_s"] = round(time.monotonic() - t2); entry["writer_marker"] = wm
+        wm, violations = _run_writer(cfg, key, wt, stage_root, f"writer-{rnd}", manifest)
+        entry["writer_s"] = round(time.monotonic() - t2); entry["writer_marker"] = wm
         if wm.lower().startswith("blocked"):
             log["result"] = "blocked"; log["reason"] = f"task-writer: {wm}"; return log
-        violations = validate_manifest(manifest)
         if violations:
             log["result"] = "failed"; log["reason"] = f"task-writer left the manifest invalid: {violations[:3]}"; return log
     log["result"] = "failed"; log["reason"] = f"critic verdict {verdict!r} after {PLAN_ROUNDS} rounds"; return log
@@ -321,11 +339,9 @@ def repair_plan(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
         log["result"] = "failed"; log["reason"] = "nothing to repair: no plan + revise review on disk"; return log
     ticket_json = export_ticket(key, stage_root / "ticket.json")
     t2 = time.monotonic()
-    _run_agent(cfg, WRITER_DEF, _writer_prompt(key, wt), stage_root / "writer-1", wt, 900)
-    wm = _last_marker(stage_root / "writer-1", "REVISION")
+    wm, violations = _run_writer(cfg, key, wt, stage_root, "writer-1", manifest)
     if wm.lower().startswith("blocked"):
         log["result"] = "blocked"; log["reason"] = f"task-writer: {wm}"; return log
-    violations = validate_manifest(manifest)
     if violations:
         log["result"] = "failed"; log["reason"] = f"task-writer left the manifest invalid: {violations[:3]}"; return log
     t1 = time.monotonic()

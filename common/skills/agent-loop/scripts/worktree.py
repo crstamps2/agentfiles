@@ -149,7 +149,8 @@ def verify_restored(wt, tree: str) -> bool:
 # gitignored is still judged against the task's allowlist.
 BUILD_ARTIFACTS = ("tmp/**", "tmp", "node_modules/**", "**/node_modules/**", ".ruby-lsp/**",
                    "app/assets/builds/**", ".wt.d/**", "planning/**", ".pi/**", "**/.DS_Store",
-                   "log/**", "coverage/**", ".yarn/**", "public/assets/**", "public/packs/**")
+                   "log/**", "coverage/**", ".yarn/**", "public/assets/**", "public/packs/**",
+                   "**/*.tsbuildinfo", "**/.eslintcache", "**/.stylelintcache")   # lint/typecheck caches
 
 
 def _match(path: str, pattern: str) -> bool:

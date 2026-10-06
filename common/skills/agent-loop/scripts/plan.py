@@ -33,7 +33,7 @@ summary = "One sentence a worker can act on"
 allowed_files = ["app/views/components/zui/<name>/**", "test/views/components/zui/<name>/**"]
 may_edit_tests = true          # only when the task owns those tests
 visual = false                 # true iff judged by rendering (routes through the browser gate)
-size = "normal"                # "small" = edits <=2 existing files, no browser -> free local model first
+size = "normal"                # "small" = edits <=2 existing files, no browser -> small model (Haiku) first
 after = []                     # task ids that must land first (e.g. ["001"]); independent tasks run in parallel
 timeout_s = 2400
 verification_commands = ["bin/rails test test/views/components/zui/<name>/<name>_test.rb",
@@ -77,8 +77,15 @@ def sibling_model(model: str) -> str | None:
         if model in table.values():
             other = [m for v, m in table.items() if v != vendor_of(model)]
             return other[0] if other else None
-    return {"anthropic/claude-sonnet-5-5": "openai-codex/gpt-5.4-mini",
-            "openai-codex/gpt-5.4-mini": "anthropic/claude-sonnet-5-5"}.get(model)
+    return WORKER_SIBLINGS.get(model)
+
+
+# Same tier, other vendor, for worker and task-writer models. Only models a ChatGPT-account Codex
+# login accepts belong here: gpt-5.4-mini was listed for a month and every failover to it failed.
+WORKER_SIBLINGS = {"anthropic/claude-sonnet-5-5": "openai-codex/gpt-5.6-terra",
+                   "openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
+                   "anthropic/claude-haiku-4-5": "openai-codex/gpt-6-luna",
+                   "openai-codex/gpt-6-luna": "anthropic/claude-haiku-4-5"}
 
 
 def run_agent_with_failover(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt, timeout_s: int,

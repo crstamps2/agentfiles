@@ -44,12 +44,11 @@ class RunnerHarness(unittest.TestCase):
         git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "init")
         agents = root / "agents"; agents.mkdir()
         toml_source = (HERE.parent / "hopper.toml").read_text()
-        # local-worker's rendered model must match [local].model (the launch-model check,
-        # Task 7) -- read it straight out of the real hopper.toml rather than hard-coding a
-        # second copy that could silently drift from the production ctx32k pin.
-        local_model_match = re.search(r'model = "([^"]+)"', toml_source)
-        self.local_model_default = local_model_match.group(1)
-        for n, m in (("cloud-worker", "ollama-cloud/x"), ("local-worker", self.local_model_default), ("premium-worker", "openai-codex/x")):
+        # Production no longer configures a [local] model (retired 2026-10-06), but the opt-in [local]
+        # plumbing stays covered: the fixture supplies one, and local-worker must render it.
+        self.local_model_default = "ollama-local/gpt-oss-ctx32k:20b"
+        toml_source += f'\n[local]\nmodel = "{self.local_model_default}"\nunload_after_attempt = true\n'
+        for n, m in (("cloud-worker", "ollama-cloud/x"), ("small-worker", "anthropic/x"), ("local-worker", self.local_model_default), ("premium-worker", "openai-codex/x")):
             (agents / f"{n}.md").write_text(AGENT.format(name=n, model=m))
         toml = toml_source
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')

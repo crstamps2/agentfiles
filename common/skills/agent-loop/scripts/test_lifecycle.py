@@ -407,6 +407,22 @@ class LifecycleTests(unittest.TestCase):
         with patch.object(lifecycle, "_task_accepted", return_value=True):
             self.assertEqual(lifecycle._unmet_review_promises(self.cfg, "ZIP-7873", self.wt), {})
 
+    def test_prettier_fix_task_names_only_the_files_prettier_warned_about(self):
+        """ZIP-4281/901: prettier's non-TTY progress output glues checked file names together and the
+        command line lists every staged file; the allowlist got a concatenated non-path and the gate
+        exited 2 on every rung even after the real file was fixed."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        a, b, c = ("app/assets/stylesheets/x/_nav_base.scss", "app/assets/stylesheets/x/_nav_variables.scss",
+                   "app/views/components/zui/nav_tabs/nav_tabs.scss")
+        (tdir / "hook-reject.out").write_text(
+            f"$ node_modules/.bin/prettier --check {a} {b} {c}\nChecking formatting...\n"
+            f"{a}[warn] {a}\n{b}{c}[warn] Code style issues found in the above file. Run Prettier with --write to fix.\n")
+        tid = lifecycle._lint_fix_task(tdir, "gates failed: pre-commit lint rejected the commit", self.wt / "planning" / "zip-7873" / "tasks.toml")
+        import contracts
+        fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
+        self.assertEqual(fix.allowed_files, [a])
+        self.assertEqual(fix.verification_commands, [f"bin/agent_run yarn prettier --check {a}"])
+
     def test_a_jquery_hook_fix_task_explains_that_only_added_lines_are_checked(self):
         """ZIP-7874: a worker reformatted an EXISTING jQuery line and the hook counted it as new."""
         tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)

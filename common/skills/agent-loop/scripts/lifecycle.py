@@ -487,6 +487,24 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 decisions = botreview.parse_adjudication(stage / "adjudication.json")
             except RuntimeError as e:
                 return _pause_step(cfg, t, "bot-loop", f"adjudication unusable: {e}")
+            # Fix tasks must pass the manifest schema BEFORE any reply promises them. A rejected task used
+            # to surface after the replies, and every re-adjudication produced the same one (ZIP-4281).
+            for n in range(1, ADJUDICATION_FIX_PASSES + 1):
+                viol = _fix_task_violations(_manifest_path(wt, key), decisions)
+                if not viol:
+                    break
+                fix_prompt = prompt + ("\n\n## Schema violations in your fix tasks (rewrite the tasks, keep the decisions)\n"
+                                       + "\n".join(f"- {v}" for v in viol))
+                plan_mod.run_agent_with_failover(cfg, "review-adjudicator", fix_prompt, stage, wt, 1800,
+                                                 model=t.critic_vendor or None, log=lambda m: print(m, flush=True))
+                try:
+                    decisions = botreview.parse_adjudication(stage / "adjudication.json")
+                except RuntimeError as e:
+                    return _pause_step(cfg, t, "bot-loop", f"adjudication unusable: {e}")
+            else:
+                viol = _fix_task_violations(_manifest_path(wt, key), decisions)
+                if viol:
+                    return _pause_step(cfg, t, "bot-loop", f"adjudication unusable: fix tasks still violate the schema: {viol[:2]}")
         by_id = {c["id"]: c for c in todo}; fixes = []; questions = []
         model_short = (t.critic_vendor or "critic").split("/")[-1]
         for i, d in enumerate(decisions, 1):
@@ -817,6 +835,23 @@ def _ruling_baseline(cfg, key: str, wt) -> str:
         cur = {"hash": h, "ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
         marker.parent.mkdir(parents=True, exist_ok=True); marker.write_text(json.dumps(cur))
     return cur.get("ts", "")
+
+
+ADJUDICATION_FIX_PASSES = 2
+
+
+def _fix_task_violations(manifest: pathlib.Path, decisions: list) -> list:
+    """Schema violations the adjudicator's fix tasks would cause if appended to the manifest."""
+    import contracts as _contracts
+    base = tomllib.loads(manifest.read_text()) if manifest.exists() else {"tasks": []}
+    start = int(_next_runner_task_id(manifest)) - 900
+    tasks = [ft for i, d in enumerate([d for d in decisions if d.get("decision") == "fix"])
+             if (ft := botreview.fix_task_from(d, start + i))]
+    if not tasks:
+        return []
+    errs = _contracts.validate_tasks({"tasks": list(base.get("tasks", [])) + tasks})
+    n = len(base.get("tasks", []))
+    return [e for e in errs if any(e.startswith(f"tasks[{i}]") for i in range(n, n + len(tasks)))]
 
 
 def _validate_or_revert(manifest: pathlib.Path, before: str) -> None:

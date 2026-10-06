@@ -191,6 +191,22 @@ class IgnoredPathExemptionTests(unittest.TestCase):
             wt = self._wt(d, "tmp/\nnode_modules/\n")
             self.assertEqual(worktree.check_allowlist(["tmp/cache/bootsnap"], self.T, [], [], wt=wt), [])
 
+    def test_lint_tool_caches_written_by_verification_are_exempt(self):
+        # 2026-10-06: `yarn lint:typecheck` writes tsconfig.tsbuildinfo; ZIP-4281/003 was rejected on
+        # all four rungs, premium included, for an artifact of its own verification command.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            wt = self._wt(d, "tsconfig.tsbuildinfo\n*.tsbuildinfo\n.eslintcache\n.stylelintcache\n")
+            for p in ("tsconfig.tsbuildinfo", "lib/engines/x/tsconfig.tsbuildinfo", ".eslintcache", ".stylelintcache"):
+                with self.subTest(p=p):
+                    self.assertEqual(worktree.check_allowlist([p], self.T, [], [], wt=wt), [])
+
+    def test_a_cache_file_name_that_is_not_ignored_is_still_judged(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            wt = self._wt(d, "tmp/\n")
+            self.assertTrue(worktree.check_allowlist(["tsconfig.tsbuildinfo"], self.T, [], [], wt=wt))
+
     def test_an_ignored_secret_is_still_an_allowlist_violation(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

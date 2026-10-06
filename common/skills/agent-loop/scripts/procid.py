@@ -2,6 +2,7 @@
 from __future__ import annotations
 import dataclasses
 import os
+import re
 import subprocess
 import locks
 
@@ -39,6 +40,10 @@ class ProcId:
         return ProcId(**kwargs)
 
 
+def _is_boot_uuid(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}", value or ""))
+
+
 def _ps(pid: int) -> tuple[str, str] | None:
     r = subprocess.run(["ps", "-o", "lstart=,comm=", "-p", str(pid)], capture_output=True, text=True)
     line = r.stdout.strip("\n")
@@ -57,8 +62,11 @@ def capture(pid: int) -> ProcId:
 def classify(rec: ProcId | None) -> str:
     if rec is None:
         return "dead"
-    if rec.boot_id != locks.boot_id():
-        return "unknown"
+    current = locks.boot_id()
+    if rec.boot_id != current:
+        # A process from an earlier boot cannot be running. Only conclude that when both ids are
+        # real boot-session UUIDs; an unreadable or placeholder id stays unknown (fail closed).
+        return "dead" if _is_boot_uuid(rec.boot_id) and _is_boot_uuid(current) else "unknown"
     try:
         os.killpg(rec.pgid, 0)
     except ProcessLookupError:

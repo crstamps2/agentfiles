@@ -63,8 +63,23 @@ def history(tdir: pathlib.Path) -> list[dict]:
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
 
 
+OPERATOR_RESUME = "operator-resume"
+
+
+def mark_operator_resume(tdir: pathlib.Path, note: str = "") -> None:
+    """An operator put the ticket back in motion (usually after fixing the runner): budgets restart."""
+    record(tdir, OPERATOR_RESUME, "", "", note)
+
+
+def active_history(tdir: pathlib.Path) -> list[dict]:
+    """Heals since the last operator resume. Budgets count these; history() keeps the full trail."""
+    hist = history(tdir)
+    last = max((i for i, h in enumerate(hist) if h.get("action") == OPERATOR_RESUME), default=-1)
+    return hist[last + 1:]
+
+
 def count_for(tdir: pathlib.Path, action: str, reason_key: str) -> int:
-    return sum(1 for h in history(tdir) if h.get("action") == action and h.get("reason_key") == reason_key)
+    return sum(1 for h in active_history(tdir) if h.get("action") == action and h.get("reason_key") == reason_key)
 
 
 def reason_key(reason: str) -> str:
@@ -91,7 +106,7 @@ def cooling_off(tdir: pathlib.Path, reason: str) -> int:
     import time as _t
     if not re.search(r"provider unavailable|usage limit|rate.?limit", reason or "", re.I):
         return 0
-    hist = [h for h in history(tdir) if h.get("reason_key") == reason_key(reason)]
+    hist = [h for h in active_history(tdir) if h.get("reason_key") == reason_key(reason)]
     if not hist:
         return 0
     last = hist[-1].get("ts", "")
@@ -123,7 +138,7 @@ def decide(tdir: pathlib.Path, reason: str) -> tuple[str, str]:
     # Per-reason budgets are not a ticket ceiling: the same root defect can present under several
     # reasons (and heal actions rewrite reason text), so a ticket could heal indefinitely. Two global
     # stops, both owner decisions (branch review 2026-09-23).
-    hist = history(tdir)
+    hist = active_history(tdir)
     if len(hist) >= MAX_HEALS_PER_TICKET:
         return "human", f"ticket has self-healed {len(hist)} times; that is a defect, not a transient"
     sig = signature(reason)

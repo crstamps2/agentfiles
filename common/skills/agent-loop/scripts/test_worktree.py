@@ -5,6 +5,16 @@ from contracts import Task
 def git(wt, *a):
     return subprocess.run(["git", "-C", str(wt), *a], capture_output=True, text=True, check=True).stdout
 
+class UnlinkRaceTests(unittest.TestCase):
+    def test_a_file_removed_between_lstat_and_unlink_is_not_an_error(self):
+        # Two runners recovering the same orphaned attempt both restore the same worktree.
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d); (root / "gone.rb").write_text("x")
+            with patch.object(worktree.os, "unlink", side_effect=FileNotFoundError):
+                worktree._unlink_nofollow(root, "gone.rb")
+
+
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.wt = pathlib.Path(self.tmp.name)

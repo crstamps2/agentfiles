@@ -45,6 +45,7 @@ class Ticket:
     attempts: dict = dataclasses.field(default_factory=dict)
     decisions: list = dataclasses.field(default_factory=list)
     reason: str = ""
+    spinup_failures: int = 0
     updated_utc: str = ""
 
 

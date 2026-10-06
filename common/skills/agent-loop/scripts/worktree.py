@@ -120,7 +120,10 @@ def _unlink_nofollow(root: pathlib.Path, rel: str) -> None:
         return
     if stat.S_ISDIR(st.st_mode):
         return                          # directories are handled by git clean -fd
-    os.unlink(target)                   # unlink() never follows the final component
+    try:
+        os.unlink(target)               # unlink() never follows the final component
+    except FileNotFoundError:
+        pass                            # another runner restoring the same tree got there first
 
 
 def verify_restored(wt, tree: str) -> bool:

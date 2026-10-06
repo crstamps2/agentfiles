@@ -103,7 +103,7 @@ class DripSpinupFailureTests(DripFixture):
 
     def failed(self, key, attempts):
         state.save(self.cfg.ticket_dir(key), state.Ticket(key=key, state="blocked", worktree=str(self.worktree(key)),
-                   attempts={"spinup": attempts}, reason=f"spinup failed (setup-failed), attempt {attempts}/3"))
+                   spinup_failures=attempts, reason=f"spinup failed (setup-failed), attempt {attempts}/3"))
 
     def test_a_failed_setup_leaves_jira_alone_and_is_recorded_for_retry(self):
         self.cfg.drip["max_in_flight"] = 3
@@ -113,7 +113,8 @@ class DripSpinupFailureTests(DripFixture):
         self.start.assert_not_called()
         self.assertEqual(self.cc.run_chain.call_count, 1)                           # the pass stops after a failure
         t = state.load(self.cfg.ticket_dir("ZIP-7874"))
-        self.assertEqual((t.state, t.attempts, t.worktree), ("blocked", {"spinup": 1}, str(self.wts / "zip-7874")))
+        self.assertEqual((t.state, t.spinup_failures, t.worktree), ("blocked", 1, str(self.wts / "zip-7874")))
+        self.assertEqual(t.attempts, {})                                             # runner-owned: per-task attempt lists
         self.assertTrue(t.reason.startswith("spinup failed"), t.reason)
 
     def test_jira_is_claimed_after_a_successful_setup(self):
@@ -132,7 +133,8 @@ class DripSpinupFailureTests(DripFixture):
         self.assertEqual(self.cc.finish_chain.call_args.args[:3], ("zip-7874", "workspace:19", str(self.wts / "zip-7874")))
         self.sh.transition_to_in_progress.assert_called_once()
         self.start.assert_called_once_with("ZIP-7874", str(self.wts / "zip-7874"), self.cfg.state_root)
-        self.assertNotEqual(state.load(self.cfg.ticket_dir("ZIP-7874")).state, "blocked")
+        t = state.load(self.cfg.ticket_dir("ZIP-7874"))
+        self.assertNotEqual(t.state, "blocked"); state.transition(t, "spinup")
         self.assertEqual((self.wts / "zip-7874" / ".cmux-setup-status").read_text().strip(), "EXIT:0")
 
     def test_retries_stop_at_the_limit_and_ask_for_the_operator(self):
@@ -141,7 +143,7 @@ class DripSpinupFailureTests(DripFixture):
         self.assertEqual(drip.tick(self.cfg, log=lambda m: None), [])
         self.cc.finish_chain.assert_not_called(); self.sh.transition_to_in_progress.assert_not_called()
         t = state.load(self.cfg.ticket_dir("ZIP-7874"))
-        self.assertEqual((t.state, t.attempts), ("blocked", {"spinup": 3}))
+        self.assertEqual((t.state, t.spinup_failures), ("blocked", 3))
         self.assertIn("needs operator", t.reason)
         self.rerun.reset_mock(); drip.tick(self.cfg, log=lambda m: None)
         self.rerun.assert_not_called()

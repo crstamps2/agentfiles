@@ -523,6 +523,10 @@ def _check_global_fence(cfg) -> None:
         rec = attempt_mod.load(adir)
     except attempt_mod.UnreadableRecord as e:
         raise FenceExit(f"corrupt fence: unreadable referenced attempt: {e}")
+    if rec.status == "FENCING":
+        # fence()'s torn window (fence file written, ORPHANED not yet). The group is dead,
+        # so nothing can still be writing: finish the transition and recover normally.
+        rec = attempt_mod.transition(rec, "ORPHANED")
     if rec.status == "ORPHANED":
         interrupt(cfg, rec)
     elif rec.status == "INTERRUPTED":

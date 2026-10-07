@@ -36,7 +36,7 @@ For one ticket, or each ticket `--all` listed under `needs_operator`:
     question) → read plan-review.md / plan.md and report the question; do not resume blindly.
   - `gates failed` → `--from gates`; `publish failed`/`reply failed`/`mark ready failed` → `--from ready`
     (or `--from bot-loop` if a PR is already ready).
-  - a traceback / "Runner defect" → do NOT resume; report it (the operator session fixes the runner).
+  - a traceback / "Runner defect" → do NOT resume; the repair agent fixes it (`runner.py report-defect` if not queued).
 - any other state: `python3 runner.py resume --ticket X` just (re)starts the supervisor.
 Then make sure each workspace has its coordinator pane: `cmux tree --workspace <ws>`; if there is no
 terminal titled `pi '/loop-watch X'`, open one (new terminal surface → `cd <worktree>` →
@@ -85,5 +85,8 @@ table (`key`, optional `deps`, `pin_arm = "cloud"`) and commit on `agentfiles` b
 - Draft-PR creation, pushes to the loop's own branch, marking ready, and bot-comment replies are
   the runner's (allowlisted). Never do them from here. Never merge, never assign reviewers.
 - Never delete `~/.local/state/agent-loop/attempts/*` or `planning/`; they are the audit trail.
-- If a runner shows a traceback, that is code to fix in the operator session with a test -- not a
-  ticket to resume.
+- A runner traceback is code to fix, not a ticket to resume. The repair agent (`com.cody.agent-loop.repair`,
+  every 5 min) fixes it test-first, gets an opposite-vendor review and fast-forwards the live branch;
+  queue: `~/.local/state/agent-loop/defects/{open,landed,failed,needs-approval}/`. Protected safety files
+  (contracts, publish, agentdef, worktree, repair) are never changed automatically: those land as a
+  patch in `needs-approval/` for Cody.

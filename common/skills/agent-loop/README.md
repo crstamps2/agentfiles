@@ -98,6 +98,17 @@ is green. Run `/agent-loop resume all` (`runner.py resume --all`) to restart any
 Kill switch: `touch ~/.local/state/agent-loop/PAUSE`. Take a ticket over by hand: `touch
 ~/.local/state/agent-loop/tickets/ZIP-X/HUMAN`.
 
+## Automatic runner repair (repair.py)
+
+A supervised crash, a heal give-up on a recurring failure, or a pane's `runner.py report-defect` queues a
+defect under `~/.local/state/agent-loop/defects/open/`. Every 5 minutes `com.cody.agent-loop.repair`
+(`runner.py repair`) takes one: `repair-agent` (Terra, max) fixes it test-first in a throwaway worktree;
+gates require a new test that fails on the base, no removed test or assertion, only runner code
+changed, and the full suite passing; `repair-reviewer` (Opus 5.5) approves; the live branch
+fast-forwards and the ticket's heal budgets reset. Two failed attempts notify Cody. Protected safety
+files (contracts, publish, agentdef, worktree, repair) never land automatically; their patches wait in
+`defects/needs-approval/`.
+
 ## Hard rules the loop enforces
 
 Draft PRs only until CI is green and bots have run; never assign reviewers; never merge; never a bare

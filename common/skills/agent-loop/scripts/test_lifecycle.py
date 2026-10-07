@@ -594,6 +594,40 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("repaired", step.action); self.assertEqual(state.load(tdir).state, "implement")
         self.assertFalse((tdir / "bad-guards.md").exists())
 
+    def test_bad_guard_repair_from_plan_rechecks_plan_approval(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        paused = state.Ticket(key="ZIP-7873", state="plan", previous="spinup", worktree=str(self.wt))
+        paused = state.transition(paused, "paused", reason="guard failed on the BASE tree too (independent of the work): sort -c config/en.yml")
+        state.save(tdir, paused)
+        (tdir / "bad-guards.md").write_text("## task 001\n```\nsort -c config/en.yml\n```\n")
+        def writer(cfg, agent, prompt, stage, wt, timeout, model=None):
+            self.assertEqual(agent, "task-writer")
+        with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=writer):
+            repaired = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(repaired.stage, "plan")
+        self.assertEqual(state.load(tdir).state, "plan")
+        (self.wt / "planning" / "zip-7873" / "plan-review.md").write_text("VERDICT: approve\n")
+        with patch.object(lifecycle.guards, "precheck", return_value=["task 001: guard is still unrunnable"]):
+            approval = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertTrue(approval.wait)
+        self.assertEqual(state.load(tdir).state, "paused")
+        self.assertIn("unrunnable guard", state.load(tdir).reason)
+
+    def test_bad_guard_repair_fallthrough_keeps_plan_review_stage(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        manifest = self.wt / "planning" / "zip-7873" / "tasks.toml"
+        manifest.write_text("not valid TOML")
+        paused = state.Ticket(key="ZIP-7873", state="plan-review", previous="plan", worktree=str(self.wt))
+        paused = state.transition(paused, "paused", reason="guard repair left the manifest invalid: ['tasks.toml is not valid TOML']")
+        state.save(tdir, paused)
+        (tdir / "bad-guards.md").write_text("## task 001\n```\nsort -c config/en.yml\n```\n")
+        def writer(cfg, agent, prompt, stage, wt, timeout, model=None):
+            manifest.write_text(MANIFEST)
+        with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=writer):
+            repaired = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(repaired.stage, "plan-review")
+        self.assertEqual(state.load(tdir).state, "plan-review")
+
     def test_behind_main_rebases_before_each_task(self):
         rebased = []
         def sh(cmd, cwd, timeout):

@@ -117,6 +117,22 @@ class PassTests(Fixture):
         self.assertEqual(state.load(tdir).needs_operator, "")
         self.assertEqual(git(self.live, "worktree", "list").count("\n"), 0)              # repair worktrees cleaned up
 
+    def test_harness_artifacts_never_enter_the_change(self):
+        """Real smoke run, 2026-10-07: `git add -A` swept pi-lens probe logs (local paths, session ids),
+        .pi/loops state and __pycache__ into the repair; the reviewer's own session then grew those logs
+        and the gate read that as the reviewer modifying the change."""
+        def noisy(cfg, name, prompt, stage, cwd, timeout):
+            for junk in (".pi-lens-probe-home/cascade.log", ".pi/loops/loops-1.json", "__pycache__/calc.cpython-314.pyc"):
+                f = pathlib.Path(cwd) / junk; f.parent.mkdir(parents=True, exist_ok=True)
+                with open(f, "ab") as fh: fh.write(f"{name}\n".encode())
+            self.fake_agent(cfg, name, prompt, stage, cwd, timeout)
+        repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
+        out = repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=noisy, run_tests=self.run_tests,
+                              notify=lambda t, b: self.notified.append(t), log=lambda m: None)
+        self.assertEqual(out, "landed")
+        files = git(self.live, "show", "--name-only", "--format=", "HEAD").splitlines()
+        self.assertEqual(sorted(files), [f"common/skills/agent-loop/scripts/{n}" for n in ("calc.py", "test_calc.py")])
+
     def test_a_rejected_fix_does_not_land_and_two_failures_notify(self):
         repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
         self.review_verdict = "reject"

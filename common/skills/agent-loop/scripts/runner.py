@@ -741,7 +741,10 @@ def main(argv=None) -> int:
     ro.add_argument("--max-steps", type=int, default=12); ro.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES")
     ro.add_argument("--supervised", action="store_true", help="launchd mode: exit 0 only at human-gate-1/done; exit 1 on any wait so KeepAlive restarts us")
     sv = sub.add_parser("supervise", help="start/stop/status launchd agents that keep run-once alive per ticket")
-    sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
+    sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop", "repair-start", "repair-stop"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
+    rd = sub.add_parser("report-defect", help="coordinator pane: queue a runner defect for automatic repair")
+    rd.add_argument("--ticket", default=None); rd.add_argument("--reason", required=True); rd.add_argument("--evidence-file", default=None)
+    sub.add_parser("repair", help="repair at most one queued runner defect (test-first fix, review, fast-forward the live branch)")
     rs = sub.add_parser("resume", help="operator: put a paused/blocked ticket back in motion (default: re-plan) and (re)start its supervisor")
     target = rs.add_mutually_exclusive_group(required=True)
     target.add_argument("--ticket"); target.add_argument("--all", action="store_true", help="restart supervisors for every in-flight ticket; ticket state is not changed")
@@ -799,6 +802,13 @@ def main(argv=None) -> int:
             # A live runner will pick up the state change on its own loop; bouncing it kills the attempt in flight.
             print(f"supervisor already running ({st}); not restarting"); return 0
         print("supervisor", supervise.start(a.ticket, wt, cfg.state_root)); return 0
+    if a.cmd == "report-defect":
+        import repair
+        ev = pathlib.Path(a.evidence_file).read_text(errors="replace") if a.evidence_file else ""
+        print("queued", repair.record_defect(cfg, a.ticket, "pane", a.reason, ev)); return 0
+    if a.cmd == "repair":
+        import repair
+        print("repair:", repair.run_pass(cfg, log=lambda m: print(m, flush=True))); return 0
     if a.cmd == "watch":
         import watch
         return watch.run(cfg, a.ticket, once=a.once, interval=a.interval)
@@ -831,6 +841,10 @@ def main(argv=None) -> int:
             print("started", supervise.start_drip(cfg.state_root)); return 0
         if a.action == "drip-stop":
             supervise.stop_drip(); print("drip stopped"); return 0
+        if a.action == "repair-start":
+            print("started", supervise.start_periodic(cfg.state_root, "repair", 300)); return 0
+        if a.action == "repair-stop":
+            supervise.stop_periodic("repair"); print("repair stopped"); return 0
         if a.action == "stop":
             supervise.stop(a.ticket); print("stopped", a.ticket); return 0
         wt = a.worktree or str(pathlib.Path("~/workspace/zipline-worktrees").expanduser() / a.ticket.lower())
@@ -880,7 +894,12 @@ def main(argv=None) -> int:
             keys = list(cfg.tickets); idx = keys.index(a.ticket) + 1 if a.ticket in keys else 1
             deadline = _time.monotonic() + 60 * a.wait_on_resource
             while True:
-                steps = lifecycle.run_once(cfg, r, ctx, a.ticket, a.worktree, hopper_index=idx, max_steps=a.max_steps)
+                try:
+                    steps = lifecycle.run_once(cfg, r, ctx, a.ticket, a.worktree, hopper_index=idx, max_steps=a.max_steps)
+                except Exception as e:  # noqa: BLE001
+                    import repair
+                    repair.record_crash(cfg, a.ticket, e)                # queue it for automatic repair, then crash as before
+                    raise
                 last = steps[-1] if steps else None
                 t = state.load(cfg.ticket_dir(a.ticket))
                 transient = (t.state == "paused" and (t.reason.startswith("resource:") or t.reason.startswith("heavy lane"))) \

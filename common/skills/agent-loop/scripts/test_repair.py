@@ -141,6 +141,22 @@ class PassTests(Fixture):
         self.assertEqual(self.run_pass(), "rejected")
         self.assertEqual(repair.open_defects(self.cfg), []); self.assertEqual(len(self.notified), 1)
 
+    def test_the_second_attempt_is_told_why_the_first_was_rejected(self):
+        # Real smoke run 2: the fix was right but the agent also reordered imports; the reviewer rejected it
+        # and attempt 2 started blind, free to make the same unrelated change again.
+        prompts = []
+        def agent(cfg, name, prompt, stage, cwd, timeout):
+            if name == "repair-agent": prompts.append(prompt)
+            self.fake_agent(cfg, name, prompt, stage, cwd, timeout)
+        repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
+        self.review_verdict = "reject"
+        run = lambda: repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=agent, run_tests=self.run_tests,
+                                      notify=lambda t, b: None, log=lambda m: None)
+        run(); run()
+        self.assertEqual(len(prompts), 2)
+        self.assertNotIn("Earlier attempts", prompts[0])
+        self.assertIn("Earlier attempts", prompts[1]); self.assertIn("reviewer: reject", prompts[1])
+
     def test_a_test_that_passes_on_base_proves_nothing(self):
         repair.record_defect(self.cfg, None, "traceback", "x", "trace")
         self.edits = {"calc.py": SRC.replace("a - b", "a + b"), "test_calc.py": TEST + "\n    def test_one(self):\n        self.assertEqual(calc.add(1, 0), 1)\n"}

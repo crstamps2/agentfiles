@@ -146,6 +146,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         # a human is consulted only when the policy says so or the budget is spent.
         import heal
         action, why = heal.decide(tdir, t.reason)
+        import repair
+        repair.on_heal_verdict(cfg, key, t.reason, action, why)
         if action == "human":
             waited = _waiting_since(tdir, t)
             _notify_once(tdir, key, f"{key} needs an operator{waited}", f"{why}: {t.reason[:120]}")

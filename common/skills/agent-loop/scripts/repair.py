@@ -50,6 +50,29 @@ def _dir(cfg, sub: str) -> pathlib.Path:
     return p
 
 
+ARTIFACT_DIRS = {"__pycache__", ".ruby-lsp", ".claude", ".codex"}
+
+
+def _is_artifact(path: str) -> bool:
+    """Tool and harness output an agent session leaves in its cwd (pi-lens probe logs with local paths,
+    .pi loop state, bytecode). Never part of a repair."""
+    parts = pathlib.PurePosixPath(path).parts
+    return (any(x in ARTIFACT_DIRS or x.startswith(".pi") for x in parts)
+            or path.endswith((".pyc", ".DS_Store")))
+
+
+def _changed(wt, base: str) -> list:
+    """Paths that differ from `base` in the working tree (staged or not, incl. deletions) plus untracked files."""
+    out = _git(wt, "diff", "--name-only", base) + "\n" + _git(wt, "ls-files", "--others", "--exclude-standard")
+    return sorted({p for p in out.splitlines() if p and not _is_artifact(p)})
+
+
+def _stage(wt, paths) -> None:
+    _git(wt, "reset", "-q")
+    if paths:
+        _git(wt, "add", "-A", "--", *paths)
+
+
 def _git(cwd, *args, check=True) -> str:
     r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
     if check and r.returncode:
@@ -290,7 +313,7 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
             notify("Automatic runner repair touched the live checkout", rec["summary"][:120])
             return _fail(cfg, rec, "rejected", "the live checkout changed during the repair", notify)
         marker = _marker(stage, "REPAIR")
-        changed = sorted(set(_git(wt, "ls-files", "--modified", "--deleted", "--others", "--exclude-standard").splitlines()) - {""})
+        changed = _changed(wt, base)
         if marker.lower().startswith("not-needed") and not changed:
             (_dir(cfg, "landed") / f"{rec['id']}-{int(time.time())}.json").write_text(json.dumps({**rec, "resolution": marker}, indent=2))
             (_dir(cfg, "open") / f"{rec['id']}.json").unlink(missing_ok=True)
@@ -305,7 +328,7 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
         viol = check_diff(changes, rel)
         if any("protected safety file" in v for v in viol):
             patch = _dir(cfg, "needs-approval") / f"{rec['id']}.patch"
-            _git(wt, "add", "-A"); patch.write_text(_git(wt, "diff", "--cached", base))
+            _stage(wt, changed); patch.write_text(_git(wt, "diff", "--cached", base))
             (_dir(cfg, "needs-approval") / f"{rec['id']}.json").write_text(json.dumps({**rec, "violations": viol}, indent=2))
             (_dir(cfg, "open") / f"{rec['id']}.json").unlink(missing_ok=True)
             notify("Runner repair needs your approval", f"{rec['summary'][:100]} -- touches a protected safety file; patch at {patch}")
@@ -325,13 +348,14 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
             return _fail(cfg, rec, "rejected", f"the new tests {ids} pass on the unrepaired code, so they do not reproduce the defect", notify)
         if run_tests(wt_scripts, None) != 0:
             return _fail(cfg, rec, "rejected", "the full suite fails with the repair applied", notify)
-        _git(wt, "add", "-A")
+        _stage(wt, changed)
         before = _git(wt, "diff", "--cached", base)
         review = work / "review"; review.mkdir()
         run_agent(cfg, "repair-reviewer", REVIEW_PROMPT.format(evidence=work / "evidence.md", scripts=wt_scripts, base=base,
                                                                review=review / "review.md"), review, wt_scripts, 1800)
-        _git(wt, "add", "-A")
-        if _git(wt, "diff", "--cached", base) != before:
+        after = _changed(wt, base)
+        _stage(wt, after)
+        if after != changed or _git(wt, "diff", "--cached", base) != before:
             return _fail(cfg, rec, "rejected", "the reviewer modified the change", notify)
         verdict = re.search(r"^VERDICT:\s*(approve|reject)", (review / "review.md").read_text() if (review / "review.md").exists() else "", re.M | re.I)
         if not verdict or verdict.group(1).lower() != "approve":

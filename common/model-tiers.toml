@@ -81,3 +81,17 @@ codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
 pi_model = "anthropic/claude-sonnet-5-5"  # field guide tier 2: turns a critic finding into a precise manifest edit; never a full re-plan
 pi_thinking = "medium"
+
+[repair-agent]
+claude = "opus"
+codex_model = "gpt-5.5"
+codex_effort = "high"
+pi_model = "openai-codex/gpt-5.6-terra"   # fixes runner defects test-first in a throwaway worktree (repair.py)
+pi_thinking = "max"
+
+[repair-reviewer]
+claude = "opus"
+codex_model = "gpt-5.5"
+codex_effort = "high"
+pi_model = "anthropic/claude-opus-5-5"    # opposite vendor to repair-agent; approves or rejects before a repair lands
+pi_thinking = "high"

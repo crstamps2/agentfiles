@@ -61,9 +61,12 @@ budget is spent) or `blocked`. Then read the reason line and classify:
   allowed_files = branch's changed files, may_edit_tests true, verification = the failing command),
   `resume --from implement`; environmental → `resume --from gates`.
 - `publish failed` / `reply failed` / traceback / `adjudication unusable` / `verification ... passes
-  on re-run` → **runner defect**. Print `RUNNER DEFECT: <reason>`, append to transcript, do NOT patch
-  `$R`, and **re-enter the foreground `watch`** -- never stop the loop. The operator fixes the runner
-  and runs `runner.py resume`; `watch` will print the state change and you continue from there.
+  on re-run` → **runner defect**. Print `RUNNER DEFECT: <reason>`, append to transcript, and queue it for the automatic
+  repair agent: `python3 runner.py report-defect --ticket <KEY> --reason "<reason>"` (it fixes the runner test-first,
+  lands the fix and resets the ticket's heal budgets; watch for `automatic runner repair` in the transcript). Do NOT patch
+  `$R`, and **re-enter the foreground `watch`** -- never stop the loop. Crashes and heal give-ups are
+  queued automatically; a defect the repair agent cannot fix (or that touches a protected safety file)
+  notifies Cody. `watch` will print the state change and you continue from there.
   A pane that stops "pending operator repair" goes stale the moment the operator resumes the ticket
   from elsewhere (ZIP-7872 showed a 7-hour-old pause while the runner shipped three tasks).
 

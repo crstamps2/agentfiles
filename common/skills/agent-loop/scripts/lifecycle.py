@@ -139,8 +139,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if viol:
             return _pause_step(cfg, t, "implement", f"guard repair left the manifest invalid: {viol[:2]}")
         bad.rename(bad.with_name(f"bad-guards.repaired-{time.strftime('%Y%m%dT%H%M%S')}.md"))
-        t = state.transition(t, "implement", reason="guards repaired by task-writer"); _save(cfg, t)
-        return Step(key, "implement", "bad verification guard repaired; resuming")
+        t = state.transition(t, t.previous, reason="guards repaired by task-writer"); _save(cfg, t)
+        return Step(key, t.state, "bad verification guard repaired; resuming")
     if t.state == "paused":
         # SELF-HEALING. Every pause reason has a recovery policy with a per-reason budget (heal.py);
         # a human is consulted only when the policy says so or the budget is spent.
@@ -165,7 +165,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if action == "wait":
             return Step(key, "paused", why, detail=t.reason, wait=True)          # no state change, no notification
         heal.record(tdir, action, t.reason, t.previous or "?", why)
-        back = t.previous if t.previous in ("plan", "implement", "gates", "draft-pr", "ready", "bot-loop") else "implement"
+        back = t.previous if t.previous in ("plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop") else "implement"
         if action == "prepare-retry":
             _sh(["bash", "-lc", "bin/wt prepare --for rails"], wt, 900)
         if action == "repair" and (tdir / "bad-guards.md").exists():

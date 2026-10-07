@@ -96,10 +96,11 @@ def start(key: str, worktree: str, state_root: pathlib.Path) -> str:
 
 
 def stop(key: str) -> None:
-    _launchctl("bootout", f"gui/{os.getuid()}/{label(key)}")
+    # Remove the plist BEFORE bootout: when a runner stops its own agent, bootout kills it.
     p = plist_path(key)
     if p.exists():
         p.unlink()
+    _launchctl("bootout", f"gui/{os.getuid()}/{label(key)}")
 
 
 def status(key: str) -> str:
@@ -157,3 +158,31 @@ def stop_drip() -> None:
     if p.exists():
         p.unlink()
 
+
+
+def start_periodic(state_root: pathlib.Path, verb: str, interval_s: int) -> str:
+    """A LaunchAgent that runs `runner.py <verb>` every `interval_s`, the same way the drip runs."""
+    label = f"{LABEL_PREFIX}.{verb}"
+    logs = state_root / "launchd"; logs.mkdir(parents=True, exist_ok=True)
+    plist = {"Label": label, "ProgramArguments": [ensure_launcher(), str(SCRIPTS / "runner.py"), verb],
+             "WorkingDirectory": str(SCRIPTS),
+             "EnvironmentVariables": {"PATH": os.path.expanduser("~/.local/share/mise/shims") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                                      "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8", "MISE_YES": "1"},
+             "RunAtLoad": True, "StartInterval": interval_s, "ProcessType": "Background", "Nice": 5,
+             "StandardOutPath": str(logs / f"{verb}.out.log"), "StandardErrorPath": str(logs / f"{verb}.err.log")}
+    AGENTS_DIR.mkdir(parents=True, exist_ok=True); p = AGENTS_DIR / f"{label}.plist"
+    with open(p, "wb") as f:
+        plistlib.dump(plist, f)
+    uid = os.getuid(); _launchctl("bootout", f"gui/{uid}/{label}")
+    r = _launchctl("bootstrap", f"gui/{uid}", str(p))
+    if r.returncode:
+        raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip()}")
+    return label
+
+
+def stop_periodic(verb: str) -> None:
+    label = f"{LABEL_PREFIX}.{verb}"
+    _launchctl("bootout", f"gui/{os.getuid()}/{label}")
+    p = AGENTS_DIR / f"{label}.plist"
+    if p.exists():
+        p.unlink()

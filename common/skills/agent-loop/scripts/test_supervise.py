@@ -30,6 +30,17 @@ class PlistTests(unittest.TestCase):
         self.assertTrue(d["RunAtLoad"]); self.assertGreaterEqual(d["ThrottleInterval"], 60)
         self.assertTrue(d["StandardErrorPath"].endswith("zip-7872.err.log"))
 
+    def test_a_runner_stopping_its_own_agent_still_removes_the_plist(self):
+        # bootout of our own label kills the calling runner; the plist must already be gone, or the
+        # supervisor reloads at the next login (ZIP-4281/4282 left stale plists at Human Gate 1).
+        supervise.AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+        plist = supervise.plist_path("ZIP-1"); plist.write_text("x")
+        def killed(*args):
+            raise SystemExit(143)
+        with patch.object(supervise, "_launchctl", side_effect=killed), self.assertRaises(SystemExit):
+            supervise.stop("ZIP-1")
+        self.assertFalse(plist.exists())
+
     def test_label_and_active_roundtrip(self):
         supervise.write_plist("ZIP-1", "/wt/a", self.state_root); supervise.write_plist("ZIP-2", "/wt/b", self.state_root)
         self.assertEqual(supervise.active(), ["ZIP-1", "ZIP-2"])

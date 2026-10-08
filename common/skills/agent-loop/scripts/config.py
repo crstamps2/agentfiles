@@ -109,6 +109,8 @@ def load(path: pathlib.Path | None = None) -> Config:
             raise ConfigError(f"local model must be a ctx-pinned derived model (…-ctx32k:…); Ollama's default 4K context truncates pi's system prompt")
         local_unload_after_attempt = bool(local_table.get("unload_after_attempt", True))
     drip = dict(raw.get("drip", {}))
+    if int(drip.get("max_in_flight", 3)) > 7:
+        raise ConfigError(f"{path}: [drip].max_in_flight {drip['max_in_flight']} exceeds the hard cap of 7 tickets")
     owned = list(h.get("owned_epics", [h["epic"]]))
     unowned = [e for e in drip.get("epics", []) if e not in owned]
     if unowned:

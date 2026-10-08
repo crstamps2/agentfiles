@@ -63,3 +63,14 @@ class LoadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoExtensionsTests(unittest.TestCase):
+    def test_loop_agents_run_without_extensions(self):
+        # 2026-10-08: every loop agent started the user's MCP servers and pi-lens language servers through
+        # extension discovery; with seven tickets that drove load past 30 on 10 cores. Loop agents use
+        # pi's built-in tools only.
+        import pathlib as _p
+        a = agentdef.AgentDef(name="w", model="m", thinking="low", tools=["read", "bash"], body="b", fallback_models=[])
+        self.assertIn("--no-extensions", agentdef.pi_argv(a, _p.Path("p"), _p.Path("s"), _p.Path("b")))
+

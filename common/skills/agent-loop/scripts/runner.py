@@ -416,7 +416,13 @@ class Runner:
         return plan.sibling_model(model)
 
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
+        import providers
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
+        resolved = providers.resolve(self.cfg.state_root, agent.model)
+        if resolved != agent.model:
+            import dataclasses as _dc
+            print(f"{t.key}/{task.id}: {providers.provider_of(agent.model)} exhausted; attempt {n} runs on {resolved}", file=sys.stderr, flush=True)
+            agent = _dc.replace(agent, model=resolved)
         # If the PREVIOUS attempt on this lineage died because this vendor is out of quota, run the same
         # rung on the other vendor rather than waiting for the limit to reset (2026-09-18).
         prior = [e for e in t.attempts.get(f"{t.key}/{task.id}", []) if e.get("outcome") == "environment"]
@@ -525,6 +531,8 @@ class Runner:
             outcome, reason = "protocol", "worker replaced stderr.log"
         else:
             outcome, reason = _classify(res, stage, violations, stderr)
+            if outcome == "environment" and "provider unavailable" in reason:
+                providers.note_run(self.cfg.state_root, agent.model, rec.path)   # every later launch switches vendor up front
             if res is not None and res.status == "blocked" and res.reason not in ("owner", "environment") and rung.tier == "premium":
                 # Premium workers' contract complaints are trusted enough to trigger a manifest repair.
                 self._flag_contract_complaint(t, task, res)

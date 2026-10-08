@@ -95,9 +95,11 @@ def run_agent_with_failover(cfg, agent_name: str, prompt: str, stage_dir: pathli
     matters is author-vs-critic within a plan; a provider outage must not stop the loop (2026-09-18,
     Codex usage limit stalled ZIP-7875's bot review with a green PR waiting)."""
     res = _run_agent(cfg, agent_name, prompt, stage_dir, wt, timeout_s, model=model)
+    ran = (stage_dir / "model.txt").read_text().strip() if (stage_dir / "model.txt").exists() else model
     out = provider_exhausted(stage_dir)
     if not out:
-        return res, model, ""
+        return res, ran, ""
+    model = ran
     alt = sibling_model(model) if model else None
     if not alt:
         return res, model, out
@@ -201,14 +203,16 @@ def _writer_prompt(key: str, wt: pathlib.Path, schema_violations=()) -> str:
 
 def _run_agent(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt: pathlib.Path, timeout_s: int,
                model: str | None = None) -> procs.StageResult:
+    import dataclasses, providers
     a = agentdef.load(cfg.pi_agents_dir, agent_name)
-    if model:
-        import dataclasses
-        a = dataclasses.replace(a, model=model)
+    a = dataclasses.replace(a, model=providers.resolve(cfg.state_root, model or a.model))
     stage_dir.mkdir(parents=True, exist_ok=True)
     (stage_dir / "prompt.md").write_text(prompt); (stage_dir / "body.md").write_text(a.body)
+    (stage_dir / "model.txt").write_text(a.model + "\n")
     argv = agentdef.pi_argv(a, stage_dir / "prompt.md", stage_dir / "session", stage_dir / "body.md")
-    return procs.run_stage(argv, wt, timeout_s, None, stage_dir / "stdout.log", stage_dir / "stderr.log")
+    res = procs.run_stage(argv, wt, timeout_s, None, stage_dir / "stdout.log", stage_dir / "stderr.log")
+    providers.note_run(cfg.state_root, a.model, stage_dir)
+    return res
 
 
 PROVIDER_OUT = (r"usage limit has been reached", r"\b429\b", r"quota", r"rate.?limit", r"insufficient_quota",

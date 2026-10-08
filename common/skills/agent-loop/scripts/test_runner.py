@@ -1092,6 +1092,30 @@ class FenceBlastRadiusTests(unittest.TestCase):
             self.assertIn("ZIP-4281/003a", state.load(other).reason)
 
 
+class LiveAttemptCreationTests(unittest.TestCase):
+    def test_a_live_tickets_attempt_being_created_is_not_fenced_by_another_runner(self):
+        """2026-10-08: ZIP-8257's runner made attempt dir 001/8 and was writing its record when another
+        ticket's global sweep found the dir without attempt.json, and paused ZIP-8257 mid-attempt."""
+        import reconcile, state, config, tempfile, os, locks
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
+            toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
+            (root / "hopper.toml").write_text(toml)
+            cfg = config.load(root / "hopper.toml"); cfg.ensure_dirs()
+            busy = cfg.ticket_dir("ZIP-8257"); state.save(busy, state.Ticket(key="ZIP-8257", state="implement", previous="plan"))
+            os.makedirs(cfg.state_root / "attempts" / "ZIP-8257" / "001" / "8")              # mkdir done, record not yet written
+            live = locks.Lease(cfg.state_root / "locks" / "runner-zip-8257", "runner-zip-8257")
+            self.assertTrue(live.acquire(hold=True))
+            try:
+                ctx = reconcile.reconcile(cfg, "test", ticket="ZIP-4275")
+                ctx.close()
+            finally:
+                live.release()
+            self.assertEqual(state.load(busy).state, "implement")
+
+
 class SnapshotExcludesCoordinationStateTests(unittest.TestCase):
     """ZIP-7874: attempt restore reverted planning/tasks.toml to the attempt's base tree, so no manifest
     repair could ever persist while an attempt was in flight."""

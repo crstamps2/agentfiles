@@ -180,6 +180,19 @@ class PassTests(Fixture):
         self.assertEqual(self.run_pass(), "skipped")
         self.assertEqual(repair.open_defects(self.cfg)[0]["attempts"], 0); self.assertEqual(self.agent_calls, [])
 
+    def test_a_commit_landing_during_the_repair_is_a_retry_not_a_failure(self):
+        # 2026-10-08: operator commits moved the live branch during two repairs; both counted as failed
+        # attempts, the defect was abandoned and Cody was notified.
+        repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
+        def agent(cfg, name, prompt, stage, cwd, timeout):
+            self.fake_agent(cfg, name, prompt, stage, cwd, timeout)
+            if name == "repair-agent":
+                (self.scripts / "other.py").write_text("x = 1\n"); git(self.live, "add", "-A"); git(self.live, "commit", "-qm", "unrelated")
+        out = repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=agent, run_tests=self.run_tests,
+                              notify=lambda t, b: self.notified.append(t), log=lambda m: None)
+        self.assertEqual(out, "skipped")
+        self.assertEqual(repair.open_defects(self.cfg)[0]["attempts"], 0); self.assertEqual(self.notified, [])
+
     def test_pause_file_stops_repair(self):
         repair.record_defect(self.cfg, None, "traceback", "x", "trace")
         (self.cfg.state_root / "PAUSE").touch()

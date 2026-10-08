@@ -328,9 +328,12 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
             ticket_dir=cfg.ticket_dir(rec["key"]) if rec.get("key") else "none",
             protected=", ".join(PROTECTED), commit_msg=stage / "commit-message.txt",
             earlier=_earlier(rec, work.parent)), stage, wt_scripts, AGENT_TIMEOUT_S)
-        if _git(live, "rev-parse", "HEAD") != base or _git(live, "status", "--porcelain", "--untracked-files=no"):
+        if _git(live, "status", "--porcelain", "--untracked-files=no"):
             notify("Automatic runner repair touched the live checkout", rec["summary"][:120])
-            return _fail(cfg, rec, "rejected", "the live checkout changed during the repair", notify)
+            return _fail(cfg, rec, "rejected", "the live checkout has uncommitted changes after the repair", notify)
+        if _git(live, "rev-parse", "HEAD") != base:
+            log("repair: the live branch moved during the repair; retrying on the new code next pass")
+            return "skipped"                       # someone else landed a commit: not this attempt's fault
         marker = _marker(stage, "REPAIR")
         changed = _changed(wt, base)
         if marker.lower().startswith("not-needed") and not changed:

@@ -122,6 +122,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         return Step(key, t.state, "operator PAUSE", wait=True)
     if (tdir / "HUMAN").exists():
         return Step(key, t.state, "HUMAN takeover file present", wait=True)
+    if (tdir / "PARKED").exists():
+        return Step(key, t.state, "parked: waiting for a slot", wait=True)
     if t.state == "paused" and (tdir / "bad-guards.md").exists() and (t.reason.startswith("guard failed on the BASE tree") or "contract complaint" in t.reason):
         # Self-repair: the runner proved a verification command fails before the task's work exists,
         # so the manifest -- not the worker -- is wrong. The task-writer rewrites/drops the guard;

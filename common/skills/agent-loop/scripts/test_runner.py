@@ -1141,3 +1141,17 @@ class SourceHygieneTests(unittest.TestCase):
                 except SyntaxWarning as e:
                     self.fail(f"{f.name}: {e}")
 
+
+
+class HookLintPathTests(unittest.TestCase):
+    """ZIP-8257/001: a task that moves a Ruby file passed every check, then the runner's pre-commit lint
+    was handed the deleted source path and rubocop exited 2 on a file that no longer exists."""
+
+    def test_deleted_files_are_not_linted(self):
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d); (wt / "app").mkdir(); (wt / "app" / "new.rb").write_text("x\n")
+            self.assertEqual(runner._hook_lint_paths(["app/old.rb", "app/new.rb", "app/view.slim", "tmp/x.rb"], wt), ["app/new.rb"])
+
+    def test_the_acceptance_lint_uses_the_filtered_paths(self):
+        import inspect
+        self.assertIn("_hook_lint_paths(changed, wt)", inspect.getsource(runner.Runner._attempt))

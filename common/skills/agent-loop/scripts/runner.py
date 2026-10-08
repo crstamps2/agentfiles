@@ -570,7 +570,7 @@ class Runner:
             # verification but fails the hook cannot be published (ZIP-4294 modal.rb, 2 reek warnings).
             cmds = [_harden_lint_cmd(c) for c in task.verification_commands] if heavy.held else []
             if heavy.held:
-                rb = [p for p in changed if p.endswith(".rb") and not p.startswith(("tmp/", ".pi/"))]
+                rb = _hook_lint_paths(changed, wt)
                 if rb and (pathlib.Path(wt) / "bin" / "agent_run").exists() and (pathlib.Path(wt) / ".reek.yml").exists():
                     cmds.append("bin/agent_run rubocop --cache false --force-exclusion " + " ".join(__import__("shlex").quote(p) for p in rb))
                     cmds.append("bin/agent_run bundle exec reek --force-exclusion " + " ".join(__import__("shlex").quote(p) for p in rb))
@@ -689,6 +689,13 @@ class Runner:
             t = state.load(tickets_dir / key); human = " HUMAN" if state.human_owned(tickets_dir / key) else ""
             print(f"  {key:<10} {t.state:<14} {t.reason}{human}")
         return 0
+
+
+def _hook_lint_paths(changed: list, wt) -> list:
+    """Ruby files the pre-commit hook would lint: changed, still present (a moved file's old path is
+    gone; rubocop exits 2 on it), and not tool output."""
+    return [p for p in changed if p.endswith(".rb") and not p.startswith(("tmp/", ".pi/"))
+            and (pathlib.Path(wt) / p).is_file()]
 
 
 def retry_task(cfg, key: str, task_id: str, note: str = "") -> None:

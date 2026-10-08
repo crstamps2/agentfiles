@@ -822,7 +822,10 @@ def main(argv=None) -> int:
         rows = ledger.collect(cfg.state_root); spend = {}
         for row in rows: spend[row["ticket"]] = spend.get(row["ticket"], 0.0) + row["billed_usd"]
         loaded = set(supervise.active())
-        for key, spec in cfg.tickets.items():
+        root = cfg.state_root / "tickets"
+        drip_keys = sorted(d.name for d in root.iterdir() if (d / "state.json").exists() and d.name not in cfg.tickets) if root.exists() else []
+        for key in [*cfg.tickets, *drip_keys]:                 # hopper tickets, then ones the drip pulled from later epics
+            spec = cfg.tickets.get(key) or config.TicketSpec(key=key)
             tdir = cfg.ticket_dir(key); t = state.load(tdir) if (tdir / "state.json").exists() else None
             pr = "-"
             cij = tdir / "ci.json"
@@ -863,7 +866,7 @@ def main(argv=None) -> int:
     if a.cmd == "plan":
         import plan as plan_mod
         keys = list(cfg.tickets)
-        idx = keys.index(a.ticket) + 1 if a.ticket in keys else 1
+        idx = cfg.ticket_index(a.ticket)
         stage_root = cfg.state_root / "plans" / a.ticket / _now().replace(":", "").replace("-", "")[:15]
         log = plan_mod.plan_ticket(cfg, a.ticket, a.worktree, idx, stage_root)
         (stage_root / "plan-log.json").write_text(json.dumps(log, indent=2))
@@ -891,7 +894,7 @@ def main(argv=None) -> int:
         if a.cmd == "run-once":
             import lifecycle
             import time as _time
-            keys = list(cfg.tickets); idx = keys.index(a.ticket) + 1 if a.ticket in keys else 1
+            keys = list(cfg.tickets); idx = cfg.ticket_index(a.ticket)
             deadline = _time.monotonic() + 60 * a.wait_on_resource
             while True:
                 try:

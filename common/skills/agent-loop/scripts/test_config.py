@@ -57,6 +57,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(c.tickets["ZIP-11"].pin_arm, "cloud")
         self.assertIsNone(c.tickets["ZIP-10"].pin_arm)
 
+    def test_every_drip_epic_must_be_runner_owned(self):
+        # The spinup work-listener skips only owned epics; a drip epic it does not skip gets spun up twice.
+        self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[drip]\nepics = ["ZIP-1", "ZIP-2"]\n')
+        with self.assertRaises(config.ConfigError):
+            config.load(self.path)
+
+    def test_the_real_hopper_drips_phase_3_first_and_owns_every_drip_epic(self):
+        cfg = config.load()
+        epics = cfg.drip["epics"]
+        self.assertEqual(epics[0], "ZIP-6774")
+        self.assertTrue(set(epics) <= set(cfg.owned_epics))
+
+    def test_ticket_index_alternates_for_tickets_outside_the_hopper_list(self):
+        cfg = config.load(self.path)
+        self.assertEqual(cfg.ticket_index("ZIP-10"), 1); self.assertEqual(cfg.ticket_index("ZIP-11"), 2)
+        self.assertNotEqual(cfg.ticket_index("ZIP-4275") % 2, cfg.ticket_index("ZIP-4284") % 2)
+
     def test_paths_expand_user_and_ticket_dir(self):
         c = config.load(self.path)
         self.assertTrue(c.state_root.is_absolute())

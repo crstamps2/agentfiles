@@ -42,18 +42,25 @@ def _acli_json(args: list[str]):
 
 
 def board(cfg) -> list[dict]:
-    """Epic children not Done, in board Rank order."""
-    d = cfg.drip; epic = d.get("epic", cfg.epic)
+    """Children not Done of each `[drip].epics` entry, epic by epic in that order, each in board Rank order."""
+    d = cfg.drip
+    epics = d.get("epics") or [d.get("epic", cfg.epic)]
     types = d.get("issue_types") or []
-    jql = f"parent = {epic} AND statusCategory != Done"
-    if types:
-        jql += " AND issuetype in (" + ",".join(f'"{t}"' for t in types) + ")"
-    if d.get("jql_extra"):
-        jql += f" AND ({d['jql_extra']})"
-    jql += " ORDER BY Rank ASC"
-    rows = _acli_json(["jira", "workitem", "search", "--jql", jql, "--fields", "key,summary,status,assignee,issuetype"])
-    return [{"key": r["key"], "summary": r["fields"]["summary"], "status": r["fields"]["status"]["name"],
-             "assignee": ((r["fields"].get("assignee") or {}).get("emailAddress") or (r["fields"].get("assignee") or {}).get("displayName") or None)} for r in rows]
+    out, seen = [], set()
+    for epic in epics:
+        jql = f"parent = {epic} AND statusCategory != Done"
+        if types:
+            jql += " AND issuetype in (" + ",".join(f'"{t}"' for t in types) + ")"
+        if d.get("jql_extra"):
+            jql += f" AND ({d['jql_extra']})"
+        jql += " ORDER BY Rank ASC"
+        for r in _acli_json(["jira", "workitem", "search", "--jql", jql, "--fields", "key,summary,status,assignee,issuetype"]):
+            if r["key"] in seen:
+                continue
+            seen.add(r["key"])
+            out.append({"key": r["key"], "summary": r["fields"]["summary"], "status": r["fields"]["status"]["name"],
+                        "assignee": ((r["fields"].get("assignee") or {}).get("emailAddress") or (r["fields"].get("assignee") or {}).get("displayName") or None)})
+    return out
 
 
 def done_in_jira(keys: list[str]) -> set[str]:

@@ -87,6 +87,13 @@ class ResumeAllTests(unittest.TestCase):
         self.assertEqual(retry.call_args.args[1:3], ("ZIP-1", "003"))
         self.assertEqual(self.started_keys(), ["ZIP-1"])
 
+    def test_overview_lists_drip_tickets_outside_the_hopper_list(self):
+        self.ticket("ZIP-4275", "implement")
+        out = io.StringIO()
+        with patch.object(supervise, "active", return_value=[]), contextlib.redirect_stdout(out):
+            runner.main(["--config", str(self.config_path), "overview"])
+        self.assertIn("ZIP-4275", out.getvalue())
+
     def test_cli_accepts_all_and_rejects_ambiguous_forms(self):
         self.ticket("ZIP-1", "implement")
         with contextlib.redirect_stdout(io.StringIO()):

@@ -149,6 +149,24 @@ class DripSpinupFailureTests(DripFixture):
         self.rerun.assert_not_called()
 
 
+class MultiEpicTests(DripFixture):
+    """Cody, 2026-10-07: Phase 3 still comes first, then the later phase epics in order."""
+
+    def test_board_walks_epics_in_order(self):
+        self.patches[1].stop()                                       # the real board(), not the fixture's
+        self.cfg.drip["epics"] = ["ZIP-6774", "ZIP-6775"]
+        rows = {"ZIP-6774": [{"key": "ZIP-1", "fields": {"summary": "a", "status": {"name": "Selected for Work"}, "assignee": None}}],
+                "ZIP-6775": [{"key": "ZIP-2", "fields": {"summary": "b", "status": {"name": "Selected for Work"}, "assignee": None}},
+                             {"key": "ZIP-1", "fields": {"summary": "a", "status": {"name": "Selected for Work"}, "assignee": None}}]}
+        seen = []
+        def acli(args):
+            jql = args[args.index("--jql") + 1]; epic = jql.split()[2]; seen.append(epic); return rows[epic]
+        with patch.object(drip, "_acli_json", side_effect=acli):
+            self.assertEqual([r["key"] for r in drip.board(self.cfg)], ["ZIP-1", "ZIP-2"])   # epic order, no duplicates
+        self.assertEqual(seen, ["ZIP-6774", "ZIP-6775"])
+        self.patches[1].start()
+
+
 class DoneInJiraTests(unittest.TestCase):
     def test_reads_keys_of_done_dependencies_from_acli(self):
         def acli(argv, **kw):

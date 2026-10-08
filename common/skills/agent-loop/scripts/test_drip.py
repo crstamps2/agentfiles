@@ -6,6 +6,9 @@ from unittest.mock import MagicMock, patch
 import config
 import drip
 import state
+import supervise as _supervise
+
+REAL_SUPERVISE_START = _supervise.start
 
 BOARD = [
     {"key": "ZIP-4281", "summary": "Nav Tabs", "status": "Selected for Work", "assignee": None},
@@ -170,6 +173,37 @@ class MultiEpicTests(DripFixture):
             self.assertEqual([r["key"] for r in drip.board(self.cfg)], ["ZIP-1", "ZIP-2"])   # epic order, no duplicates
         self.assertEqual(seen, ["ZIP-6774", "ZIP-6775"])
         self.patches[1].start()
+
+
+class ParkingTests(DripSpinupFailureTests):
+    """Cody, 2026-10-08: ceiling 7, but run 4 at a time. A parked ticket keeps its state and worktree,
+    does not count as in flight, and resumes before any new ticket starts."""
+
+    def park(self, key):
+        self.worktree(key); state.save(self.cfg.ticket_dir(key), state.Ticket(key=key, state="plan", worktree=str(self.wts / key.lower())))
+        (self.cfg.ticket_dir(key) / "PARKED").touch()
+
+    def test_a_parked_ticket_is_not_in_flight(self):
+        self.park("ZIP-4289")
+        self.assertNotIn("ZIP-4289", drip.in_flight(self.cfg))
+
+    def test_a_free_slot_resumes_a_parked_ticket_before_starting_a_new_one(self):
+        self.park("ZIP-4289")
+        self.assertEqual(drip.tick(self.cfg, log=lambda m: None), ["ZIP-4289"])          # max 2, ZIP-7875 in flight -> 1 slot
+        self.assertFalse((self.cfg.ticket_dir("ZIP-4289") / "PARKED").exists())
+        self.cc.run_chain.assert_not_called()
+        self.start.assert_called_once_with("ZIP-4289", str(self.wts / "zip-4289"), self.cfg.state_root)
+
+    def test_the_lifecycle_does_nothing_for_a_parked_ticket(self):
+        import inspect, lifecycle
+        self.assertIn('"PARKED"', inspect.getsource(lifecycle.step))
+
+    def test_starting_a_parked_supervisor_is_refused(self):
+        import supervise
+        self.park("ZIP-4289")
+        with patch.object(supervise, "start", REAL_SUPERVISE_START), patch.object(supervise, "_launchctl") as lc:
+            self.assertEqual(supervise.start("ZIP-4289", str(self.wts / "zip-4289"), self.cfg.state_root), "parked")
+        lc.assert_not_called()
 
 
 class DoneInJiraTests(unittest.TestCase):

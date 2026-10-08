@@ -77,6 +77,20 @@ def done_in_jira(keys: list[str]) -> set[str]:
     return {r["key"] for r in rows}
 
 
+def parked(cfg) -> list[str]:
+    """Parked tickets, oldest first."""
+    root = cfg.state_root / "tickets"
+    marks = sorted(root.glob("*/PARKED"), key=lambda p: p.stat().st_mtime) if root.exists() else []
+    return [m.parent.name for m in marks if (m.parent / "state.json").exists()]
+
+
+def park(cfg, key: str) -> None:
+    """Hold a ticket back without losing its state: stop its supervisor; the drip resumes it later."""
+    import supervise
+    (cfg.ticket_dir(key) / "PARKED").touch()
+    supervise.stop(key)
+
+
 def in_flight(cfg) -> list[str]:
     out = []
     tdir_root = cfg.state_root / "tickets"
@@ -86,6 +100,8 @@ def in_flight(cfg) -> list[str]:
         if not (td / "state.json").exists():
             continue
         t = state.load(td)
+        if (td / "PARKED").exists():
+            continue                              # held back by the 4-at-a-time throttle; resumed first when a slot frees
         if t.state in IN_FLIGHT_STATES and (WORKTREES / t.key.lower()).exists():
             out.append(t.key)
     return sorted(out)
@@ -271,6 +287,15 @@ def _tick_locked(cfg, log=print, dry_run: bool = False) -> list[str]:
         log("drip: shared services are not ready; skipping this tick")
         return []
     started = []
+    for key in parked(cfg)[:free]:
+        log(f"drip: resuming parked {key}")
+        if not dry_run:
+            (cfg.ticket_dir(key) / "PARKED").unlink(missing_ok=True)
+            supervise.start(key, state.load(cfg.ticket_dir(key)).worktree, cfg.state_root)
+        started.append(key)
+    free -= len(started)
+    if free <= 0:
+        return started
     work = [(t.key, lambda t=t: retry_spinup(cfg, t, log), "retry setup") for t in spinup_retries(cfg)]
     work += [(r["key"], lambda r=r: spinup_with_panes(r["key"], log), r["summary"][:60]) for r in candidates(cfg, log)]
     for key, spin, what in work[:free]:

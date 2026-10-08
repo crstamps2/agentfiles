@@ -30,6 +30,13 @@ WORKTREES = pathlib.Path("~/workspace/zipline-worktrees").expanduser()
 SPINUP_SCRIPTS = pathlib.Path("~/.claude/skills/spinup/scripts").expanduser()
 ZIPLINE_APP = pathlib.Path("~/workspace/zipline-app").expanduser()
 ME = "cody@zipline.inc"
+HARD_MAX_IN_FLIGHT = 7             # Cody, 2026-10-08: never more than 7 tickets processing
+
+
+def limit(cfg) -> int:
+    return min(int(cfg.drip.get("max_in_flight", 3)), HARD_MAX_IN_FLIGHT)
+
+
 READY_STATUSES = {"Selected for Work", "To Do", "Ready", "Ready for Development"}
 
 
@@ -254,10 +261,10 @@ def tick(cfg, log=print, dry_run: bool = False) -> list[str]:
 
 def _tick_locked(cfg, log=print, dry_run: bool = False) -> list[str]:
     import supervise
-    limit = int(cfg.drip.get("max_in_flight", 3))
+    cap = limit(cfg)
     flight = in_flight(cfg)
-    free = limit - len(flight)
-    log(f"drip: in flight {flight} ({len(flight)}/{limit})")
+    free = cap - len(flight)
+    log(f"drip: in flight {flight} ({len(flight)}/{cap})")
     if free <= 0:
         return []
     if not dry_run and not shared_services_ready(log):

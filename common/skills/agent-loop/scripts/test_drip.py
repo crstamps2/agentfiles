@@ -58,6 +58,11 @@ class DripTests(DripFixture):
         self.cfg.drip["max_in_flight"] = 1
         self.assertEqual(drip.tick(self.cfg, log=lambda m: None, dry_run=True), [])
 
+    def test_an_override_cannot_raise_the_cap_past_seven(self):
+        self.cfg.drip["max_in_flight"] = 50
+        self.assertEqual(drip.tick(self.cfg, log=lambda m: None, dry_run=True), ["ZIP-7874", "ZIP-9001"])
+        self.assertEqual(drip.limit(self.cfg), drip.HARD_MAX_IN_FLIGHT)
+
     def test_tick_waits_for_shared_services_before_spinup(self):
         msgs = []
         not_ready = drip.subprocess.CompletedProcess(["bin/dev-services"], 1, "", "elasticsearch not ready")

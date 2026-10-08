@@ -585,6 +585,15 @@ def _sweep(cfg, ticket: str | None = None) -> None:
         if not attempts_root.exists():
             return
     leaves = _leaf_dirs(attempts_root)
+    all_root = pathlib.Path(cfg.state_root) / "attempts"
+    live_other = set()
+    for leaf in list(leaves):
+        # A dir without a record may be another live runner between mkdir and its first write
+        # (ZIP-8257, 2026-10-08): the same multi-runner rule as for records below.
+        key = leaf.relative_to(all_root).parts[0]
+        if (ticket is None or key != ticket) and key not in live_other and _ticket_runner_live(cfg, key):
+            live_other.add(key)
+    leaves = [l for l in leaves if l.relative_to(all_root).parts[0] not in live_other]
     for leaf in leaves:
         record_path = leaf / "attempt.json"
         try:

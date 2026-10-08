@@ -751,6 +751,8 @@ def main(argv=None) -> int:
     sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop", "repair-start", "repair-stop"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
     rd = sub.add_parser("report-defect", help="coordinator pane: queue a runner defect for automatic repair")
     rd.add_argument("--ticket", default=None); rd.add_argument("--reason", required=True); rd.add_argument("--evidence-file", default=None)
+    pk = sub.add_parser("park", help="hold a ticket back (supervisor stopped, state kept); the drip resumes it first when a slot frees")
+    pk.add_argument("--ticket", required=True)
     sub.add_parser("repair", help="repair at most one queued runner defect (test-first fix, review, fast-forward the live branch)")
     rs = sub.add_parser("resume", help="operator: put a paused/blocked ticket back in motion (default: re-plan) and (re)start its supervisor")
     target = rs.add_mutually_exclusive_group(required=True)
@@ -813,6 +815,9 @@ def main(argv=None) -> int:
         import repair
         ev = pathlib.Path(a.evidence_file).read_text(errors="replace") if a.evidence_file else ""
         print("queued", repair.record_defect(cfg, a.ticket, "pane", a.reason, ev)); return 0
+    if a.cmd == "park":
+        import drip
+        drip.park(cfg, a.ticket); print("parked", a.ticket); return 0
     if a.cmd == "repair":
         import repair
         print("repair:", repair.run_pass(cfg, log=lambda m: print(m, flush=True))); return 0

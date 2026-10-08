@@ -53,8 +53,8 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tdir = _p.Path(d)
             for i in range(heal.MAX_HEALS_PER_TICKET):
-                heal.record(tdir, "retry", f"resource: transient number {i}", "implement")
-            action, why = heal.decide(tdir, "resource: yet another transient")
+                heal.record(tdir, "prepare-retry", f"gates failed: distinct failure {i}", "gates")
+            action, why = heal.decide(tdir, "gates failed: yet another distinct failure")
             self.assertEqual(action, "human")
             self.assertIn("self-healed", why)
 
@@ -79,6 +79,16 @@ class PolicyTests(unittest.TestCase):
             heal.mark_operator_resume(tdir, "runner defect fixed")
             self.assertEqual(heal.decide(tdir, "plan failed: critic verdict 'revise' after repair"), ("replan", "replan (1/3)"))
             self.assertEqual(len(heal.history(tdir)), 4)                     # the audit trail is kept
+
+    def test_resource_pauses_are_not_a_recurring_defect(self):
+        # 2026-10-08: sustained memory pressure produced the same "resource: load N" pause again and again;
+        # the recurrence cap escalated it to an operator and queued it for code repair.
+        with tempfile.TemporaryDirectory() as d:
+            tdir = pathlib.Path(d)
+            for i in range(heal.MAX_SAME_SIGNATURE + 3):
+                heal.record(tdir, "retry", f"resource: load {20 + i}.5 on 10 cores > 2.0/core", "implement")
+            self.assertEqual(heal.decide(tdir, "resource: load 31.2 on 10 cores > 2.0/core")[0], "retry")
+            self.assertEqual(heal.decide(tdir, "heavy lane held by a live owner")[0], "retry")
 
     def test_distinct_failures_still_heal(self):
         import tempfile, pathlib as _p

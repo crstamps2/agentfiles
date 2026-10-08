@@ -63,6 +63,15 @@ class Config:
     workers_parallel: int = 1        # concurrent worker (light) stages; verification stays serialised on the heavy lane
     drip: dict = dataclasses.field(default_factory=dict)
 
+    def ticket_index(self, key: str) -> int:
+        """1-based hopper position, else the ticket number: drives author/critic vendor alternation, so
+        tickets the drip pulls from outside the hopper list must not all get the same index."""
+        keys = list(self.tickets)
+        if key in keys:
+            return keys.index(key) + 1
+        m = re.search(r"-(\d+)$", key)
+        return int(m.group(1)) if m else 1
+
     def ticket_dir(self, key: str) -> pathlib.Path:
         return self.state_root / "tickets" / key
 
@@ -99,9 +108,15 @@ def load(path: pathlib.Path | None = None) -> Config:
         if not re.search(r"-ctx32k:", local_model):
             raise ConfigError(f"local model must be a ctx-pinned derived model (…-ctx32k:…); Ollama's default 4K context truncates pi's system prompt")
         local_unload_after_attempt = bool(local_table.get("unload_after_attempt", True))
+    drip = dict(raw.get("drip", {}))
+    owned = list(h.get("owned_epics", [h["epic"]]))
+    unowned = [e for e in drip.get("epics", []) if e not in owned]
+    if unowned:
+        raise ConfigError(f"{path}: [drip].epics {unowned} are not in [hopper].owned_epics; the spinup "
+                          "work-listener would spin their tickets up as well")
     return Config(
         epic=h["epic"],
-        owned_epics=list(h.get("owned_epics", [h["epic"]])),
+        owned_epics=owned,
         tickets=tickets,
         state_root=_p(p["state_root"]),
         cmux_chain_dir=_p(p["cmux_chain_dir"]),
@@ -113,7 +128,7 @@ def load(path: pathlib.Path | None = None) -> Config:
         protected_paths=list(pr["protected_paths"]),
         test_path_globs=list(pr["test_path_globs"]),
         harness_artifact_globs=list(pr.get("harness_artifact_globs", [])),
-        arms_alternate=list(arms["alternate"]), workers_parallel=int(arms.get("workers_parallel", 1)), drip=dict(raw.get("drip", {})),
+        arms_alternate=list(arms["alternate"]), workers_parallel=int(arms.get("workers_parallel", 1)), drip=drip,
         outcomes=dict(oc),
         local_model=local_model,
         local_unload_after_attempt=local_unload_after_attempt,

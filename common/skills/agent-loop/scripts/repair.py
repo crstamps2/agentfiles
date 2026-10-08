@@ -115,6 +115,8 @@ def on_heal_verdict(cfg, key, reason: str, action: str, why: str) -> None:
     """Heal giving up on a failure that keeps recurring is a runner defect; an owner question is not."""
     if action != "human" or not ("recurred" in why or "self-healed" in why):
         return
+    if heal.TRANSIENT.search(reason or ""):
+        return                                    # a busy machine or provider limit is not a code defect
     tail = "\n".join(json.dumps(h) for h in heal.history(cfg.ticket_dir(key))[-8:])
     record_defect(cfg, key, "heal", reason, f"heal verdict: {why}\npause reason: {reason}\nrecent heals:\n{tail}")
 

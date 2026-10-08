@@ -73,6 +73,10 @@ class RecordTests(Fixture):
         repair.on_heal_verdict(self.cfg, "ZIP-1", "guard failed on the BASE tree too: x", *heal.decide(tdir, "guard failed on the BASE tree too: x"))
         self.assertEqual([r["source"] for r in repair.open_defects(self.cfg)], ["heal"])
 
+    def test_a_resource_pause_is_not_a_runner_defect(self):
+        repair.on_heal_verdict(self.cfg, "ZIP-1", "resource: load 35.49 on 10 cores > 2.0/core", "human", "the same failure has recurred 4 times (x)")
+        self.assertEqual(repair.open_defects(self.cfg), [])
+
     def test_an_owner_question_is_not_a_runner_defect(self):
         repair.on_heal_verdict(self.cfg, "ZIP-1", "reviewer questions need Cody: x", "human", "policy: needs an owner")
         self.assertEqual(repair.open_defects(self.cfg), [])

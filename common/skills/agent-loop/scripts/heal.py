@@ -130,6 +130,9 @@ def signature(reason: str) -> str:
     return hashlib.sha256(norm.encode()).hexdigest()[:12]
 
 
+TRANSIENT = re.compile(r"^resource:|^heavy lane|heavy lane busy|provider unavailable|usage limit|rate.?limit", re.I)
+
+
 def decide(tdir: pathlib.Path, reason: str) -> tuple[str, str]:
     """(action, explanation). 'human' when the policy says so OR the budget for this reason is spent."""
     action, budget = policy(reason)
@@ -138,12 +141,13 @@ def decide(tdir: pathlib.Path, reason: str) -> tuple[str, str]:
     # Per-reason budgets are not a ticket ceiling: the same root defect can present under several
     # reasons (and heal actions rewrite reason text), so a ticket could heal indefinitely. Two global
     # stops, both owner decisions (branch review 2026-09-23).
-    hist = active_history(tdir)
+    hist = [h for h in active_history(tdir) if not TRANSIENT.search(h.get("reason") or "")]
     if len(hist) >= MAX_HEALS_PER_TICKET:
         return "human", f"ticket has self-healed {len(hist)} times; that is a defect, not a transient"
     sig = signature(reason)
     same = [h for h in hist if h.get("signature") == sig]
-    if len(same) >= MAX_SAME_SIGNATURE:
+    # A machine that is busy or a provider at its limit recurs by nature; its own retry budget bounds it.
+    if len(same) >= MAX_SAME_SIGNATURE and not TRANSIENT.search(reason or ""):
         return "human", f"the same failure has recurred {len(same)} times ({sig}); healing is not fixing it"
     wait = cooling_off(tdir, reason)
     if wait:

@@ -51,7 +51,7 @@ load_per_core_max = 2.0     # SECONDARY. macOS runs mediaanalysisd/Spotlight whe
                             # first overnight run saw load 9-14 on 10 cores from the OS alone with memory_pressure
                             # 'normal'. 1.0 would have waited until dawn. pressure_level is the primary gate.
 disk_free_gb_min = 20.0
-require_ac_power = true
+require_ac_power = false   # Cody, 2026-10-08: keep running on battery
 defer_max_s = 1800
 
 [budgets]                    # USD; premium + total ENFORCE, others alert (Plan 2 wires alerts)

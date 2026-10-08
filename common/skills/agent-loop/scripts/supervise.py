@@ -81,6 +81,8 @@ def _launchctl(*args) -> subprocess.CompletedProcess:
 
 
 def start(key: str, worktree: str, state_root: pathlib.Path) -> str:
+    if (pathlib.Path(state_root) / "tickets" / key / "PARKED").exists():
+        return "parked"                        # the drip resumes parked tickets when a slot frees
     p = write_plist(key, worktree, state_root)
     uid = os.getuid()
     _launchctl("bootout", f"gui/{uid}/{label(key)}")            # idempotent: ignore "not found"

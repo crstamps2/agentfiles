@@ -74,4 +74,5 @@ def pi_argv(a: AgentDef, prompt_file, session_dir, body_file) -> list:
             "--append-system-prompt", str(body_file),
             "--session-dir", str(session_dir),
             "--no-prompt-templates",
+            "--no-extensions",          # built-in tools only: no MCP servers or language servers per agent
             f"@{prompt_file}"]

@@ -28,6 +28,16 @@ class PolicyTests(unittest.TestCase):
             action, why = heal.decide(tdir, r)                      # immediately after: cool off, do not burn budget
             self.assertEqual(action, "wait"); self.assertIn("cooling off", why)
 
+    def test_no_cool_off_once_the_registry_will_switch_vendors(self):
+        import providers
+        with tempfile.TemporaryDirectory() as d:
+            state_root = pathlib.Path(d); tdir = state_root / "tickets" / "ZIP-1"; tdir.mkdir(parents=True)
+            r = "provider unavailable: Codex error: The usage limit has been reached"
+            heal.record(tdir, "retry", r, "implement")
+            self.assertEqual(heal.decide(tdir, r)[0], "wait")                       # nothing recorded yet: cool off
+            providers.mark_exhausted(state_root, "openai-codex", "Try again in ~8405 min")
+            self.assertEqual(heal.decide(tdir, r)[0], "retry")                      # the next launch runs on Anthropic
+
     def test_unknown_reason_gets_one_careful_retry(self):
         self.assertEqual(heal.policy("something new"), ("retry", 2))
 

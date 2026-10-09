@@ -69,7 +69,8 @@ test_path_globs = ["test/**", "spec/**", "**/fixtures/**", "**/__snapshots__/**"
 # Written by the agent harness / editor tooling INTO the worktree, never by a worker as code.
 # Exempt from the allowlist exactly like gitignored build artifacts (protected paths still win).
 # First real run (2026-09-11): pi wrote .pi/loops/*.json; ruby-lsp wrote .ruby-lsp/*.
-harness_artifact_globs = [".pi/**", ".ruby-lsp/**", ".claude/**", ".codex/**", ".pi-subagents/**"]
+# Superpowers plans and specs are local working documents and are never committed (Cody, 2026-10-09).
+harness_artifact_globs = [".pi/**", ".ruby-lsp/**", ".claude/**", ".codex/**", ".pi-subagents/**", "docs/superpowers/**"]
 
 [arms]
 workers_parallel = 4        # MACHINE-WIDE worker slots (light: remote inference + edits). One per in-flight ticket; verification is still one-at-a-time on the heavy lane.

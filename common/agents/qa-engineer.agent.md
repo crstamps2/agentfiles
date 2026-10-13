@@ -1,7 +1,7 @@
 ---
 name: qa-engineer
 description: QA Engineer that writes and runs tests, performs manual testing with screenshots, and verifies behavior. Use after implementation to validate features work correctly, write missing tests, do visual verification, or investigate test failures.
-tier: specialist
+tier: specialist-execution
 permissionMode: default
 memory: user
 ---

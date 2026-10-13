@@ -1,7 +1,7 @@
 ---
 name: android-qa-engineer
 description: Specialized QA engineer for testing Android WebView apps on a connected physical device or emulator. Use when you need to reproduce a bug in the actual Android app, verify a CSS/JS fix before deploy, inspect a live WebView via Chrome DevTools Protocol, or drive UI via scripted adb input. Not for iOS, pure browser QA, or native Kotlin/Compose bugs.
-tier: specialist
+tier: specialist-execution
 permissionMode: default
 memory: user
 ---

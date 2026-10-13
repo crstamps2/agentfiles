@@ -4,8 +4,8 @@
  * Registers virtual models that run on their primary model and switch to the other vendor's
  * equivalent while the primary's provider is out of quota:
  *
- *   failover/sol   -> openai-codex/gpt-5.6-sol, else anthropic/claude-opus-5-5
- *   failover/opus  -> anthropic/claude-opus-5-5, else openai-codex/gpt-5.6-sol
+ *   failover/sol   -> openai/gpt-5.6-sol, else anthropic/claude-opus-5-5
+ *   failover/opus  -> anthropic/claude-opus-5-5, else openai/gpt-5.6-sol
  *
  * Provider health is shared with the agent loop through ~/.local/state/agent-loop/providers.json:
  * a usage-limit error in any session marks the provider until the reset time in the message
@@ -61,8 +61,8 @@ interface Pair {
 }
 
 const PAIRS: Pair[] = [
-	{ id: "sol", name: "Sol, Opus on Codex limit", primary: ["openai-codex", "gpt-5.6-sol"], backup: ["anthropic", "claude-opus-5-5"] },
-	{ id: "opus", name: "Opus, Sol on Anthropic limit", primary: ["anthropic", "claude-opus-5-5"], backup: ["openai-codex", "gpt-5.6-sol"] },
+	{ id: "sol", name: "Sol, Opus on OpenAI limit", primary: ["openai", "gpt-5.6-sol"], backup: ["anthropic", "claude-opus-5-5"] },
+	{ id: "opus", name: "Opus, Sol on Anthropic limit", primary: ["anthropic", "claude-opus-5-5"], backup: ["openai", "gpt-5.6-sol"] },
 ];
 
 function find(ctx: ExtensionContext, [provider, id]: [string, string]) {
@@ -79,7 +79,7 @@ export default function (pi: ExtensionAPI) {
 		const msg = [...msgs].reverse().find((m) => m.role === "assistant");
 		if (msg?.role !== "assistant" || msg.stopReason !== "error" || !LIMIT.test(msg.errorMessage ?? "") || !msg.provider) return;
 		mark(msg.provider, msg.errorMessage ?? "");
-		const backup = msg.provider === "openai-codex" ? "anthropic" : "openai-codex";
+		const backup = msg.provider === "openai" ? "anthropic" : "openai";
 		if (exhausted(backup)) return; // both vendors out: stop rather than loop
 		// The failed message is not runnable context; a short note after it is, and tells the model why.
 		return {

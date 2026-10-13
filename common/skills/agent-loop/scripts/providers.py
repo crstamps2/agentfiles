@@ -16,14 +16,19 @@ import time
 
 # Equivalent model on the other vendor, per direction. Only models a ChatGPT-account Codex login accepts.
 EQUIVALENT = {
+    "openai/gpt-5.6-sol": "anthropic/claude-opus-5-5",
+    "openai/gpt-6-astra": "anthropic/claude-fable-5-1",
+    "openai/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
+    "openai/gpt-6-luna": "anthropic/claude-haiku-4-5",
+    "anthropic/claude-opus-5-5": "openai/gpt-5.6-sol",
+    "anthropic/claude-fable-5-1": "openai/gpt-6-astra",
+    "anthropic/claude-sonnet-5-5": "openai/gpt-5.6-terra",
+    "anthropic/claude-haiku-4-5": "openai/gpt-6-luna",
+    # Existing processes can still hold pre-upgrade model IDs during this rollout.
     "openai-codex/gpt-5.6-sol": "anthropic/claude-opus-5-5",
     "openai-codex/gpt-6-astra": "anthropic/claude-fable-5-1",
-    "openai-codex/gpt-5.6-terra": "anthropic/claude-opus-5-5",
+    "openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
     "openai-codex/gpt-6-luna": "anthropic/claude-haiku-4-5",
-    "anthropic/claude-opus-5-5": "openai-codex/gpt-5.6-sol",
-    "anthropic/claude-fable-5-1": "openai-codex/gpt-6-astra",
-    "anthropic/claude-sonnet-5-5": "openai-codex/gpt-5.6-terra",
-    "anthropic/claude-haiku-4-5": "openai-codex/gpt-6-luna",
 }
 DEFAULT_COOL_OFF_S = 30 * 60
 LIMIT = re.compile(r"usage limit|insufficient_quota|rate_limit_error|quota exceeded|\b429\b", re.I)
@@ -64,6 +69,22 @@ def mark_exhausted(state_root, provider: str, message: str, now: float | None = 
     p = _file(state_root); p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp"); tmp.write_text(json.dumps(data, indent=2)); os.replace(tmp, p)
     return until
+
+
+def mark_healthy(state_root, provider: str) -> bool:
+    """Forget a stale exhaustion mark after credentials or account capacity change."""
+    data = _load(state_root)
+    aliases = {provider}
+    if provider in {"openai", "openai-codex"}:
+        aliases |= {"openai", "openai-codex"}
+    removed = aliases & data.keys()
+    if not removed:
+        return False
+    for name in removed:
+        del data[name]
+    p = _file(state_root); p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp"); tmp.write_text(json.dumps(data, indent=2)); os.replace(tmp, p)
+    return True
 
 
 def is_exhausted(state_root, provider: str, now: float | None = None) -> bool:

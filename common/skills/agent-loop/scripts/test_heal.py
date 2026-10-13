@@ -35,7 +35,7 @@ class PolicyTests(unittest.TestCase):
             r = "provider unavailable: Codex error: The usage limit has been reached"
             heal.record(tdir, "retry", r, "implement")
             self.assertEqual(heal.decide(tdir, r)[0], "wait")                       # nothing recorded yet: cool off
-            providers.mark_exhausted(state_root, "openai-codex", "Try again in ~8405 min")
+            providers.mark_exhausted(state_root, "openai", "Try again in ~8405 min")
             self.assertEqual(heal.decide(tdir, r)[0], "retry")                      # the next launch runs on Anthropic
 
     def test_unknown_reason_gets_one_careful_retry(self):

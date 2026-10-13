@@ -14,28 +14,35 @@
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "opus"
-pi_thinking = "medium"
+pi_model = "failover/sol"              # Codex-first interactive default; Claude Opus 5.5 only on provider outage
+pi_thinking = "high"
 
 [specialist]
 claude = "sonnet"
 codex_model = "gpt-5.4"
 codex_effort = "medium"
-pi_model = "sonnet"
-pi_thinking = "medium"
+pi_model = "openai/gpt-5.6-terra"
+pi_thinking = "xhigh"
+
+[specialist-execution]
+claude = "sonnet"
+codex_model = "gpt-5.4"
+codex_effort = "high"
+pi_model = "openai/gpt-5.6-terra"
+pi_thinking = "max"
 
 [specialist-fast]
 claude = "sonnet"
 codex_model = "gpt-5.4-mini"
 codex_effort = "high"
-pi_model = "sonnet"
+pi_model = "openai/gpt-6-luna"
 pi_thinking = "medium"
 
 [data-fetch]
 claude = "haiku"
 codex_model = "gpt-5.4-mini"
 codex_effort = "low"
-pi_model = "haiku"
+pi_model = "openai/gpt-6-luna"
 pi_thinking = "low"
 
 # --- Agent-loop tiers (ZIP-6774 pilot). Worker model IDs are verified in slice 1
@@ -44,54 +51,54 @@ pi_thinking = "low"
 claude = "sonnet"                    # workers are pi-only; other tools get a sane default
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "anthropic/claude-sonnet-5-5"   # security: Ollama Cloud not allowed; 'cloud' arm = Sonnet 5.5; size = "small" tasks start on worker-small
+pi_model = "openai/gpt-5.6-terra"   # Codex-first cloud worker; Claude Sonnet 5.5 is its provider-outage fallback
 pi_thinking = "low"
 
 [worker-small]
 claude = "haiku"
 codex_model = "gpt-6-luna"
 codex_effort = "low"
-pi_model = "anthropic/claude-haiku-4-5"   # truly small tasks (size = "small"); openai-codex/gpt-6-luna on Anthropic outage
+pi_model = "openai/gpt-6-luna"   # truly small tasks (size = "small"); Claude Haiku 4.5 on Codex outage
 pi_thinking = "low"
 
 [worker-premium]
 claude = "sonnet"
 codex_model = "gpt-5.4"
 codex_effort = "high"
-pi_model = "openai-codex/gpt-5.6-terra"
+pi_model = "openai/gpt-5.6-terra"
 pi_thinking = "max"
 
 [flagship-author]
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "anthropic/claude-opus-5-5"   # author tier: Opus 5.5 (2026-09-22); alternates with openai-codex/gpt-5.6-sol per ticket (Cody 2026-09-15: bring cost down)
+pi_model = "openai/gpt-5.6-sol"   # Codex-first plan author; Claude Opus 5.5 is its provider-outage fallback
 pi_thinking = "medium"
 
 [flagship-critic]
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "openai-codex/gpt-6-astra"
+pi_model = "anthropic/claude-fable-5-1"   # opposite-vendor plan critic; Astra is its provider-outage fallback
 pi_thinking = "high"
 
 [task-writer]
 claude = "sonnet"
 codex_model = "gpt-5.4-mini"
 codex_effort = "medium"
-pi_model = "anthropic/claude-sonnet-5-5"  # field guide tier 2: turns a critic finding into a precise manifest edit; never a full re-plan
+pi_model = "openai/gpt-5.6-terra"  # field guide tier 2: turns a critic finding into a precise manifest edit; never a full re-plan
 pi_thinking = "medium"
 
 [repair-agent]
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "openai-codex/gpt-5.6-terra"   # fixes runner defects test-first in a throwaway worktree (repair.py)
+pi_model = "openai/gpt-5.6-terra"   # fixes runner defects test-first in a throwaway worktree (repair.py)
 pi_thinking = "max"
 
 [repair-reviewer]
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "anthropic/claude-opus-5-5"    # opposite vendor to repair-agent; approves or rejects before a repair lands
+pi_model = "anthropic/claude-opus-5-5"    # opposite-vendor reviewer for unattended Terra repairs
 pi_thinking = "high"

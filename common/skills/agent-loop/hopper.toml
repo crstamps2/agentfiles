@@ -75,7 +75,7 @@ harness_artifact_globs = [".pi/**", ".ruby-lsp/**", ".claude/**", ".codex/**", "
 [arms]
 workers_parallel = 4        # MACHINE-WIDE worker slots (light: remote inference + edits). One per in-flight ticket; verification is still one-at-a-time on the heavy lane.
 # Cheap arms alternate by task index unless a ticket pins one.
-alternate = ["cloud", "cloud"]   # "cloud" arm = anthropic/claude-sonnet-5-5 (Ollama Cloud disallowed by security). size = "small" tasks start on small-worker (Haiku), see ladder.
+alternate = ["cloud", "cloud"]   # "cloud" arm = gpt-5.6-terra. size = "small" starts on gpt-6-luna; Claude is outage fallback only.
 
 [outcomes]
 # Pre-registered before the first real run; the dashboard shows these verbatim.

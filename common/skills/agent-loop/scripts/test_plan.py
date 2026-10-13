@@ -8,10 +8,11 @@ import procs
 
 
 class PureTests(unittest.TestCase):
-    def test_assignment_alternates_vendors_author_below_flagship(self):
+    def test_assignment_uses_codex_author_and_opposite_vendor_critic(self):
         cfg = type("Cfg", (), {"pi_agents_dir": "x"})()
-        self.assertEqual(plan.assignment(cfg, 1), {"author_model": "anthropic/claude-opus-5-5", "critic_model": "openai-codex/gpt-6-astra"})
-        self.assertEqual(plan.assignment(cfg, 2), {"author_model": "openai-codex/gpt-5.6-sol", "critic_model": "anthropic/claude-fable-5-1"})
+        expected = {"author_model": "openai/gpt-5.6-sol", "critic_model": "anthropic/claude-fable-5-1"}
+        self.assertEqual(plan.assignment(cfg, 1), expected)
+        self.assertEqual(plan.assignment(cfg, 2), expected)
 
     def test_review_verdict_parsing(self):
         with tempfile.TemporaryDirectory() as d:
@@ -191,17 +192,16 @@ if __name__ == "__main__":
 
 class FailoverTests(unittest.TestCase):
     def test_sibling_model_is_the_other_vendor_same_tier(self):
-        self.assertEqual(plan.sibling_model("openai-codex/gpt-6-astra"), "anthropic/claude-fable-5-1")
-        self.assertEqual(plan.sibling_model("anthropic/claude-opus-5-5"), "openai-codex/gpt-5.6-sol")
-        # gpt-5.4-mini is refused for a ChatGPT-account Codex login, so it never worked as a failover.
-        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5-5"), "openai-codex/gpt-5.6-terra")
-        self.assertEqual(plan.sibling_model("openai-codex/gpt-5.6-terra"), "anthropic/claude-sonnet-5-5")
-        self.assertEqual(plan.sibling_model("anthropic/claude-haiku-4-5"), "openai-codex/gpt-6-luna")
-        self.assertEqual(plan.sibling_model("openai-codex/gpt-6-luna"), "anthropic/claude-haiku-4-5")
+        self.assertEqual(plan.sibling_model("openai/gpt-6-astra"), "anthropic/claude-fable-5-1")
+        self.assertEqual(plan.sibling_model("anthropic/claude-opus-5-5"), "openai/gpt-5.6-sol")
+        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5-5"), "openai/gpt-5.6-terra")
+        self.assertEqual(plan.sibling_model("openai/gpt-5.6-terra"), "anthropic/claude-sonnet-5-5")
+        self.assertEqual(plan.sibling_model("anthropic/claude-haiku-4-5"), "openai/gpt-6-luna")
+        self.assertEqual(plan.sibling_model("openai/gpt-6-luna"), "anthropic/claude-haiku-4-5")
 
     def test_workers_fail_over_to_the_same_sibling_table(self):
         import runner
-        for model in ("openai-codex/gpt-5.6-terra", "anthropic/claude-haiku-4-5"):
+        for model in ("openai/gpt-5.6-terra", "anthropic/claude-haiku-4-5"):
             self.assertEqual(runner.Runner.worker_alternate(model), plan.sibling_model(model))
         self.assertIsNone(plan.sibling_model("something/unknown"))
 
@@ -211,14 +211,14 @@ class FailoverTests(unittest.TestCase):
             root = pathlib.Path(d); calls = []
             def fake(cfg, agent, prompt, stage, wt, timeout, model=None):
                 calls.append(model); stage.mkdir(parents=True, exist_ok=True)
-                if model == "openai-codex/gpt-6-astra":
+                if model == "openai/gpt-6-astra":
                     (stage / "stderr.log").write_text("Codex error: The usage limit has been reached\n")
                 else:
                     (stage / "stdout.log").write_text("ADJUDICATION: written\n")
             with patch.object(plan, "_run_agent", side_effect=fake):
                 res, used, out = plan.run_agent_with_failover(None, "review-adjudicator", "p", root / "s", root, 60,
-                                                              model="openai-codex/gpt-6-astra", log=lambda m: None)
-            self.assertEqual(calls, ["openai-codex/gpt-6-astra", "anthropic/claude-fable-5-1"])
+                                                              model="openai/gpt-6-astra", log=lambda m: None)
+            self.assertEqual(calls, ["openai/gpt-6-astra", "anthropic/claude-fable-5-1"])
             self.assertEqual(used, "anthropic/claude-fable-5-1"); self.assertEqual(out, "")
             self.assertIn("gpt-6-astra", (root / "s" / "failover.json").read_text())
             self.assertIn("ADJUDICATION: written", (root / "s" / "stdout.log").read_text())   # artifacts copied back

@@ -1,7 +1,7 @@
 ---
 name: rails-engineer
 description: Senior Ruby on Rails engineer for backend implementation. Use for building features, fixing bugs, writing migrations, creating models/controllers/jobs, and any backend Ruby work. Executes tasks from approved plans.
-tier: specialist
+tier: specialist-execution
 permissionMode: default
 memory: user
 ---

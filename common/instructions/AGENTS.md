@@ -137,11 +137,12 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 
 ## Dispatch Model Hygiene
 
+- Prefer ChatGPT/Codex models for work-producing agents. Keep designated opposite-vendor review gates on Claude; otherwise Claude models are cross-vendor fallbacks when Codex is unavailable.
 - Every specialist subagent launch MUST use the single model declared in its `.md` frontmatter. When a launch supplies an explicit `model:`, it must match that declaration; otherwise let pi-subagents resolve the declaration.
-- Default subagent route: `openai-codex/gpt-5.6-terra` at `xhigh`.
+- Default subagent route: `openai/gpt-5.6-terra` at `xhigh`.
 - Execution specialists use Terra at `max`: `android-qa-engineer`, `frontend-engineer`, `qa-engineer`, `rails-engineer`, and `technical-writer`. Builtin `delegate` and `worker` also use Terra at `max`.
 - Other specialists and builtin support/review agents use Terra at `xhigh`.
-- The `writing-plans` skill is a parent-session workflow. Keep the parent on `openai-codex/gpt-5.6-sol:high`; do not raise its effort and do not route it through `technical-writer` solely for model selection.
+- The `writing-plans` skill is a parent-session workflow. Keep the parent on `openai/gpt-5.6-sol:high`; do not raise its effort and do not route it through `technical-writer` solely for model selection.
 - Do not declare `fallbackModels`; pi-subagents supports one resolved model per launch. If a provider/model failure blocks a launch before useful work, retry through a later explicit launch using `anthropic/claude-sonnet-5-5`.
 - Before submitting a launch with an explicit `model:`, verify the model and thinking level against the agent definition. A deliberate post-failure Claude retry is a separate launch, not an in-launch provider switch.
 

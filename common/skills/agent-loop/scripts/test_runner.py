@@ -48,7 +48,7 @@ class RunnerHarness(unittest.TestCase):
         # plumbing stays covered: the fixture supplies one, and local-worker must render it.
         self.local_model_default = "ollama-local/gpt-oss-ctx32k:20b"
         toml_source += f'\n[local]\nmodel = "{self.local_model_default}"\nunload_after_attempt = true\n'
-        for n, m in (("cloud-worker", "ollama-cloud/x"), ("small-worker", "anthropic/x"), ("local-worker", self.local_model_default), ("premium-worker", "openai-codex/x")):
+        for n, m in (("cloud-worker", "ollama-cloud/x"), ("small-worker", "anthropic/x"), ("local-worker", self.local_model_default), ("premium-worker", "openai/x")):
             (agents / f"{n}.md").write_text(AGENT.format(name=n, model=m))
         toml = toml_source
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')

@@ -1,7 +1,7 @@
 ---
 name: frontend-engineer
 description: Senior Front End engineer for JavaScript, TypeScript, Stimulus controllers, Turbo Frames/Streams, SCSS, and React components. Use for frontend implementation, CSS fixes, and client-side behavior. Executes tasks from approved plans.
-tier: specialist
+tier: specialist-execution
 permissionMode: default
 memory: user
 ---

@@ -34,14 +34,14 @@ Progress, launchd supervisor. Runs every 15 min as `com.cody.agent-loop.drip`.
 spinup → plan → plan-review → implement → gates → draft-pr → ready → bot-loop → human-gate-1
 ```
 
-- **plan**: author (Opus 5 / Sol, alternating per ticket) writes `plan.md` + `tasks.toml` from the Jira
-  ticket and the repo's skills (`.agents/skills/zui-component-creation` is the definition of done).
-  Schema check bounces violations to the author. Critic (Fable / Astra — always the *other* vendor)
-  reviews; a `revise` is applied by the **task-writer** (Sonnet), never a second author round; critic
-  round 2 is approve-with-concerns unless it names a wrong-code blocker. $25 cap per planning run.
+- **plan**: the Codex-first author (Sol) writes `plan.md` + `tasks.toml` from the Jira ticket and the
+  repo's skills (`.agents/skills/zui-component-creation` is the definition of done). Schema check
+  bounces violations to the author. The opposite-vendor critic (Claude Fable) reviews; a `revise` is
+  applied by the **task-writer** (Terra), never a second author round; critic round 2 is
+  approve-with-concerns unless it names a wrong-code blocker. $25 cap.
 - **implement**: tasks in manifest order; before each, rebase onto `origin/main` (generated-file
-  conflicts regenerate themselves). Ladder per task: cheap ×2 (Sonnet) → Terra ×2 → blocked. `size =
-  "small"` tasks start on the small worker (Haiku 4.5; `gpt-6-luna` if Anthropic is out of quota). Worker stages are light (N slots); verification
+  conflicts regenerate themselves). Ladder per task: cheap ×2 (Terra) → premium Terra ×2 → blocked.
+  `size = "small"` tasks start on Luna (Haiku 4.5 on a Codex outage). Worker stages are light (N slots); verification
   (Rails/browser) is one-at-a-time on the heavy lane. Every acceptance also runs the repo's rubocop +
   reek (+ i18n normalization when `en.yml` changed), then commits exactly the task's paths and pushes.
 - **guard soundness**: a verification command that rejects an attempt is re-run on the pre-work base
@@ -104,7 +104,7 @@ A supervised crash, a heal give-up on a recurring failure, or a pane's `runner.p
 defect under `~/.local/state/agent-loop/defects/open/`. Every 5 minutes `com.cody.agent-loop.repair`
 (`runner.py repair`) takes one: `repair-agent` (Terra, max) fixes it test-first in a throwaway worktree;
 gates require a new test that fails on the base, no removed test or assertion, only runner code
-changed, and the full suite passing; `repair-reviewer` (Opus 5.5) approves; the live branch
+changed, and the full suite passing; the opposite-vendor `repair-reviewer` (Opus 5.5) approves; the live branch
 fast-forwards and the ticket's heal budgets reset. Two failed attempts notify Cody. Protected safety
 files (contracts, publish, agentdef, worktree, repair) never land automatically; their patches wait in
 `defects/needs-approval/`.
@@ -119,7 +119,7 @@ commands use repo tools only (schema rejects `planning/` probes and >3 bespoke c
 ## Costs seen (2026-09-12 → 16)
 
 Well (first PR): $69. Planning is the dominant cost when it loops (one bad night: $154 for zero PRs);
-under the current shape planning is ~$6–20/ticket. Terra ~$15–25/ticket; Sonnet cheap arm ~$3–8.
+under the current shape planning is ~$6–20/ticket. Current model pricing may change these historical figures.
 `runner.py ledger` is the source of truth.
 
 ## Known gaps

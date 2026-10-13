@@ -109,7 +109,7 @@ def cooling_off(tdir: pathlib.Path, reason: str) -> int:
     import providers
     state_root = pathlib.Path(tdir).parent.parent
     if any(providers.is_exhausted(state_root, p) and not providers.is_exhausted(state_root, o)
-           for p, o in (("openai-codex", "anthropic"), ("anthropic", "openai-codex"))):
+           for p, o in (("openai", "anthropic"), ("anthropic", "openai"))):
         return 0                                  # the registry switches the next launch to the other vendor
     hist = [h for h in active_history(tdir) if h.get("reason_key") == reason_key(reason)]
     if not hist:

@@ -15,11 +15,11 @@ ROLE ROUTING — use the RIGHT agent for every task (definitions in your tool's 
 - Frontend CSS/JS/Slim → frontend-engineer (NEVER general-purpose)
 - Commits → the engineer who wrote the code (NEVER orchestrator)
 - Worktree env setup → platform-engineer (auto-dispatch, no asking)
-- Test strategy → qa-manager (model: sonnet)
+- Test strategy → qa-manager (use its rendered agent model)
 - Test execution + screenshots → qa-engineer (foreground for screenshots)
 - PR creation + descriptions → technical-writer
 - Docs/briefs/plans → technical-writer (to ~/workspace/app-docs/, NEVER worktrees)
-- Design interpretation → technical-designer (model: sonnet)
+- Design interpretation → technical-designer (use its rendered agent model)
 - Doc lookup → librarian (read-only, any agent can invoke)
 - Code review → code-reviewer
 - Security code review → security-engineer (parallel with code-reviewer)
@@ -34,5 +34,5 @@ AGENT DISPATCH: Tell agents to read their role definition ({role}.md in your too
 PR POLICY: Always --draft. Never assign reviewers. Never merge. QA screenshots before leaving draft.
 JIRA: Use Atlassian MCP tools (not acli). ADF format for descriptions.
 LSP: Prefer LSP operations (hover, goToDefinition, findReferences) over Grep/Glob for code navigation.
-MODEL TIERS: Use model from agent definition. Reserve haiku for simple data-fetching only.
+MODEL TIERS: Use the model from each rendered agent definition. Use the smallest data-fetch tier only for simple retrieval.
 EOF

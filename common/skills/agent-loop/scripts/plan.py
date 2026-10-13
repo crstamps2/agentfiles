@@ -63,8 +63,8 @@ def export_ticket(key: str, dest: pathlib.Path) -> pathlib.Path:
 AUTHOR_DEF, CRITIC_DEF, WRITER_DEF = "flagship-author", "flagship-critic", "task-writer"
 
 
-AUTHOR_MODELS = {"anthropic": "anthropic/claude-opus-5-5", "openai-codex": "openai-codex/gpt-5.6-sol"}
-CRITIC_MODELS = {"anthropic": "anthropic/claude-fable-5-1", "openai-codex": "openai-codex/gpt-6-astra"}
+AUTHOR_MODELS = {"anthropic": "anthropic/claude-opus-5-5", "openai": "openai/gpt-5.6-sol"}
+CRITIC_MODELS = {"anthropic": "anthropic/claude-fable-5-1", "openai": "openai/gpt-6-astra"}
 
 
 def vendor_of(model: str) -> str:
@@ -82,18 +82,20 @@ def sibling_model(model: str) -> str | None:
 
 # Same tier, other vendor, for worker and task-writer models. Only models a ChatGPT-account Codex
 # login accepts belong here: gpt-5.4-mini was listed for a month and every failover to it failed.
-WORKER_SIBLINGS = {"anthropic/claude-sonnet-5-5": "openai-codex/gpt-5.6-terra",
+WORKER_SIBLINGS = {"anthropic/claude-sonnet-5-5": "openai/gpt-5.6-terra",
+                   "openai/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
+                   "anthropic/claude-haiku-4-5": "openai/gpt-6-luna",
+                   "openai/gpt-6-luna": "anthropic/claude-haiku-4-5",
+                   # Existing processes can still hold pre-upgrade model IDs during this rollout.
                    "openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
-                   "anthropic/claude-haiku-4-5": "openai-codex/gpt-6-luna",
                    "openai-codex/gpt-6-luna": "anthropic/claude-haiku-4-5"}
 
 
 def run_agent_with_failover(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt, timeout_s: int,
                             model: str | None = None, log=print):
     """Run a flagship/mid-tier stage; if the PROVIDER refuses (usage limit, 429, overload), run the same
-    role once on the other vendor's model of the same tier and record the swap. Vendor independence that
-    matters is author-vs-critic within a plan; a provider outage must not stop the loop (2026-09-18,
-    Codex usage limit stalled ZIP-7875's bot review with a green PR waiting)."""
+    role once on the other vendor's model of the same tier and record the swap. A provider outage must
+    not stop the loop (2026-09-18, Codex usage limit stalled ZIP-7875's bot review with a green PR waiting)."""
     res = _run_agent(cfg, agent_name, prompt, stage_dir, wt, timeout_s, model=model)
     ran = (stage_dir / "model.txt").read_text().strip() if (stage_dir / "model.txt").exists() else model
     out = provider_exhausted(stage_dir)
@@ -117,12 +119,8 @@ def run_agent_with_failover(cfg, agent_name: str, prompt: str, stage_dir: pathli
 
 
 def assignment(cfg, hopper_index: int) -> dict:
-    """Vendor assignment for this ticket. Roles are fixed definitions; the MODEL alternates per ticket
-    so the critic is always the vendor that did not write the plan. Author tier is one step below
-    flagship (Opus 5 / Sol); the critic stays flagship (Fable / Astra). Odd hopper index -> Anthropic
-    authors, OpenAI critiques; even -> the reverse."""
-    a_vendor, c_vendor = ("anthropic", "openai-codex") if hopper_index % 2 == 1 else ("openai-codex", "anthropic")
-    return {"author_model": AUTHOR_MODELS[a_vendor], "critic_model": CRITIC_MODELS[c_vendor]}
+    """Codex does the plan-authoring work; Claude supplies its independent opposite-vendor review."""
+    return {"author_model": AUTHOR_MODELS["openai"], "critic_model": CRITIC_MODELS["anthropic"]}
 
 
 def _reach_note(plan_dir: pathlib.Path) -> str:

@@ -2,7 +2,7 @@
 name: technical-writer
 description: Technical Writer and Scribe responsible for keeping documentation current. Updates CLAUDE.md, app docs, plan documents, and writes Jira tickets from PM specs. Use when docs need updating, when new features need documentation, or when Jira tickets need to be created from requirements.
 access: Read, Grep, Glob, Write, Edit, Bash
-tier: specialist
+tier: specialist-execution
 permissionMode: default
 memory: user
 mcpServers:

@@ -19,20 +19,39 @@ class WorkerSourceTests(unittest.TestCase):
             self.assertEqual(f["tier"].strip(), f"worker-{w.split('-')[0]}")
             self.assertEqual(f["access"].strip(), "Read, Grep, Glob, Bash, Write, Edit")
             self.assertNotIn("fallbackModels", f)
-    def test_tiers_define_all_five_new_tables_with_all_keys(self):
+    def test_work_tiers_prefer_codex_and_review_gates_use_claude(self):
         t = tomllib.loads(TIERS.read_text())
-        for name in ("worker-cloud", "worker-small", "worker-premium", "flagship-author", "flagship-critic", "task-writer"):
+        expected = {
+            "orchestrator": "failover/sol",
+            "specialist": "openai/gpt-5.6-terra",
+            "specialist-execution": "openai/gpt-5.6-terra",
+            "specialist-fast": "openai/gpt-6-luna",
+            "data-fetch": "openai/gpt-6-luna",
+            "worker-cloud": "openai/gpt-5.6-terra",
+            "worker-small": "openai/gpt-6-luna",
+            "worker-premium": "openai/gpt-5.6-terra",
+            "flagship-author": "openai/gpt-5.6-sol",
+            "flagship-critic": "anthropic/claude-fable-5-1",
+            "task-writer": "openai/gpt-5.6-terra",
+            "repair-agent": "openai/gpt-5.6-terra",
+            "repair-reviewer": "anthropic/claude-opus-5-5",
+        }
+        for name, model in expected.items():
             self.assertIn(name, t, name)
-            for k in ("claude", "codex_model", "codex_effort", "pi_model", "pi_thinking"):
-                self.assertIn(k, t[name], f"{name}.{k}")
-        self.assertTrue(t["worker-cloud"]["pi_model"].startswith("anthropic/"))   # Ollama Cloud disallowed (security)
-        self.assertEqual(t["worker-small"]["pi_model"], "anthropic/claude-haiku-4-5")   # truly small tasks (Cody 2026-10-06)
-        self.assertNotIn("worker-local", t)                                              # local-first retired: 0/12 accepted
-        self.assertEqual(t["flagship-author"]["pi_model"], "anthropic/claude-opus-5-5")   # author tier one below flagship (2026-09-15)
-        self.assertEqual(t["flagship-critic"]["pi_model"], "openai-codex/gpt-6-astra")
-        # Anthropic tiers use the 5.5 family (Cody 2026-10-06).
-        self.assertEqual(t["worker-cloud"]["pi_model"], "anthropic/claude-sonnet-5-5")
-        self.assertEqual(t["task-writer"]["pi_model"], "anthropic/claude-sonnet-5-5")
+            for key in ("claude", "codex_model", "codex_effort", "pi_model", "pi_thinking"):
+                self.assertIn(key, t[name], f"{name}.{key}")
+            self.assertEqual(t[name]["pi_model"], model, name)
+            if name not in ("orchestrator", "flagship-critic", "repair-reviewer"):
+                self.assertTrue(model.startswith("openai/"), name)
+        self.assertEqual(t["orchestrator"]["pi_thinking"], "high")
+        self.assertEqual(t["specialist"]["pi_thinking"], "xhigh")
+        self.assertEqual(t["specialist-execution"]["pi_thinking"], "max")
+        self.assertNotIn("worker-local", t)   # local-first retired: 0/12 accepted
+
+    def test_execution_specialists_use_the_execution_tier(self):
+        execution = {"android-qa-engineer", "frontend-engineer", "qa-engineer", "rails-engineer", "technical-writer"}
+        for name in execution:
+            self.assertEqual(fm(AGENTS / f"{name}.agent.md")["tier"].strip(), "specialist-execution", name)
     def test_worker_bodies_carry_the_contract(self):
         for w in WORKERS:
             body = (AGENTS / f"{w}.agent.md").read_text()

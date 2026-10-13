@@ -139,8 +139,8 @@ memory: user
 
 ```toml
 [specialist]
-pi_model = "sonnet"
-pi_thinking = "medium"
+pi_model = "openai/gpt-5.6-terra"
+pi_thinking = "xhigh"
 ```
 
 Rendered output, `$PI_DIR/agents/code-reviewer.md` frontmatter (body unchanged below the
@@ -151,12 +151,12 @@ second `---`):
 name: code-reviewer
 description: Expert code reviewer. Use proactively after code changes to review for quality, security, performance, and adherence to project conventions. Read-only -- never modifies code.
 tools: read, grep, find, bash
-model: sonnet
-thinking: medium
+model: openai/gpt-5.6-terra
+thinking: xhigh
 ---
 ```
 
-Note `tier: specialist` became `model: sonnet` + `thinking: medium`; `access: Read, Grep, Glob, Bash` mapped
+Note `tier: specialist` became `model: openai/gpt-5.6-terra` + `thinking: xhigh`; `access: Read, Grep, Glob, Bash` mapped
 to `tools: read, grep, find, bash` (no write-capable tool); `permissionMode`/`memory` were
 dropped.
 
@@ -168,7 +168,7 @@ Input, `$AF_REPO/common/agents/rails-engineer.agent.md` frontmatter (abridged):
 ---
 name: rails-engineer
 description: Senior Ruby on Rails engineer for backend implementation.
-tier: specialist
+tier: specialist-execution
 ---
 ```
 
@@ -179,8 +179,8 @@ No `access:` key -> no `tools:` key rendered (full default tool set). Rendered o
 ---
 name: rails-engineer
 description: Senior Ruby on Rails engineer for backend implementation.
-model: sonnet
-thinking: medium
+model: openai/gpt-5.6-terra
+thinking: max
 ---
 ```
 
@@ -192,12 +192,14 @@ JSON.
 Set the interactive (top-level orchestrator) model from the `orchestrator` tier in
 `$AF_REPO/common/model-tiers.toml`:
 
-- `defaultModel` = that table's `pi_model` value.
+- When `pi_model` is `provider/model`, split it at the first slash: set `defaultProvider` to
+  `provider` and `defaultModel` to `model`. Never write the full `provider/model` string into
+  `defaultModel` while also retaining `defaultProvider`; that constructs an invalid doubled model.
+- When `pi_model` has no slash, set only `defaultModel` and retain the existing `defaultProvider`.
 - `defaultThinkingLevel` = that table's `pi_thinking` value.
 
-Do not overwrite any other existing keys in `settings.json`. If the user already set
-`defaultModel`/`defaultThinkingLevel` to different values, update them to the tier values (these
-are generated, tier-driven settings) but leave everything else untouched.
+Do not overwrite any other existing keys in `settings.json`. If the user already set these generated
+model defaults to different values, update them to the tier values but leave everything else untouched.
 
 ## 5. Subagent package + hooks extension
 

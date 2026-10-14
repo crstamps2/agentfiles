@@ -193,6 +193,23 @@ class RunnerHarness(unittest.TestCase):
         outcome, rows = self.run_task("transport_429", "transport_429")
         self.assertEqual([r["outcome"] for r in rows], ["environment", "environment"]); self.assertEqual(outcome, "paused")
 
+    def test_provider_registry_fallback_wins_over_prior_attempt_failover(self):
+        """ZIP-4275: an exhausted Codex provider must not be selected again after registry failover."""
+        import providers
+        (self.cfg.pi_agents_dir / "premium-worker.md").write_text(AGENT.format(name="premium-worker", model="openai-codex/gpt-5.6-sol"))
+        providers.mark_exhausted(self.cfg.state_root, "openai-codex", "Try again in ~8405 min")
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        t.attempts["ZIP-7873/001"] = [
+            {"n": 1, "rung": {"agent": "cloud-worker", "tier": "cheap", "n": 1}, "outcome": "rejected", "reason": "failed", "arm": "cloud"},
+            {"n": 2, "rung": {"agent": "cloud-worker", "tier": "cheap", "n": 2}, "outcome": "protocol", "reason": "failed", "arm": "cloud"},
+            {"n": 3, "rung": {"agent": "premium-worker", "tier": "premium", "n": 1}, "outcome": "environment", "reason": "provider unavailable: usage limit", "arm": "cloud"},
+        ]
+        state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        outcome, _ = self.run_task("pass")
+        rec = json.loads((self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "attempt.json").read_text())
+        self.assertEqual(outcome, "accepted")
+        self.assertEqual(rec["model"], "anthropic/claude-opus-5-5")
+
     def test_cheap_owner_claim_does_not_block_the_ticket(self):
         """Changed 2026-09-14: a cheap worker's blocked/owner is a claim that escalates; only premium blocks."""
         outcome, rows = self.run_task("owner", "pass")

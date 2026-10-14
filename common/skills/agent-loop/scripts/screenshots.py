@@ -44,7 +44,7 @@ def _get(url: str, timeout=20) -> tuple[int, str]:
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
     try:
         with urllib.request.urlopen(url, timeout=timeout, context=ctx) as r:
-            return r.status, r.read(200_000).decode("utf-8", "replace")
+            return r.status, r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read(20_000).decode("utf-8", "replace")
     except Exception as e:  # noqa: BLE001

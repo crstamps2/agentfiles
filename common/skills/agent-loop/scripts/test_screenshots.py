@@ -1,3 +1,4 @@
+import io
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,29 @@ NAV = """
 <a href="/lookbook/inspect/zui/nav/nav_link/states">s</a><a href="/lookbook/inspect/zui/nav/nav_link/variants">v</a>
 <a href="/lookbook/inspect/zui/well/playground">p</a>
 """
+
+
+class GetTests(unittest.TestCase):
+    def test_preview_path_reads_a_link_after_the_previous_success_limit(self):
+        page = b"x" * 206_208 + b'<a href="/lookbook/inspect/zui/tophat/variants">v</a>'
+
+        class Response:
+            status = 200
+
+            def __init__(self):
+                self.body = io.BytesIO(page)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size=-1):
+                return self.body.read(size)
+
+        with patch.object(screenshots.urllib.request, "urlopen", return_value=Response()):
+            self.assertEqual(screenshots.preview_path("https://x", "tophat"), "zui/tophat")
 
 
 class PreviewPathTests(unittest.TestCase):

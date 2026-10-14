@@ -79,10 +79,26 @@ When `watch` prints `READY FOR CODY`, append the PR URL and `ci.json.tier3_pendi
 decisions Cody must confirm) to the transcript and print them once. Then stop the loop; the pane
 is done until Cody reviews.
 
+## Cody steering (after the gate, or whenever Cody speaks)
+
+The coordinator-only rules bind the autonomous loop, not Cody. When Cody gives this pane direct
+feedback or a request ("add more preview examples", "rebase with main", "reply to the review"):
+
+- **Act on it here.** Leave coordinator mode and work as a normal agent in this worktree, following
+  the repo `AGENTS.md`, its skills, and test-first verification. Never answer "this pane can't" or
+  "send it back through a full implementation round" for a bounded change Cody asked for.
+- A clear imperative ("do it", "just do what's requested") is the approval -- do not re-ask. Ask
+  only when scope is genuinely ambiguous, the change is destructive, or it is an external post.
+- External comms (GitHub, Jira, Slack) still follow the comms gate: draft, get approval, then post.
+- Do not restart the runner for Cody-directed edits once the ticket is at the gate; commit/push
+  only when Cody asks or the request implies it (e.g. a rebase), and record a one-line transcript
+  entry `## <UTC ISO> cody-directed — <what changed>`.
+
 ## Rules
 
-- Never commit, push, comment on GitHub, or touch Jira from this pane. Never edit application code
-  or anything under `$R`. Never delete attempt records or `planning/`. Never `git reset`/`checkout`.
+- While the loop is autonomous, never commit, push, comment on GitHub, or touch Jira from this
+  pane, and never edit application code (Cody steering above is the exception). Never edit anything
+  under `$R`. Never delete attempt records or `planning/`. Never `git reset`/`checkout`.
 - `touch $S/PAUSE` is Cody's kill switch; if present, say so and re-enter `watch`.
 - Keep model output to the decision lines above. The watch loop is the pane's voice.
 - Your own pi session writes `.pi/` state into the worktree; it is git-excluded. Never format,

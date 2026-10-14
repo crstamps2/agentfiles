@@ -777,7 +777,7 @@ class LifecycleTests(unittest.TestCase):
         (self.wt / "app").mkdir(exist_ok=True); (self.wt / "app" / "a.rb").write_text("accepted but never committed\n")
         published = []
         with patch("runner.publish_accepted", side_effect=lambda cfg, key, wt, tk, ensure_pr=True: published.append(tk.id)), \
-             patch("runner._uncommitted_allowlisted", side_effect=lambda wt, tk: ["app/a.rb"] if tk.id == "001" else []):
+             patch("runner._uncommitted_allowlisted", side_effect=lambda wt, tk, harness_globs=(): ["app/a.rb"] if tk.id == "001" else []):
             step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
         self.assertEqual(published, ["001"]); self.assertIn("published previously accepted work", step.action)
 

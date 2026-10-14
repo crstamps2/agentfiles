@@ -85,12 +85,15 @@ def vs_out_tail(attempt_dir, idx: int, n: int = 1200) -> str:
     return out
 
 
-def _uncommitted_allowlisted(wt, task) -> list[str]:
+def _uncommitted_allowlisted(wt, task, harness_globs=()) -> list[str]:
     st = subprocess.run(["git", "-C", str(wt), "status", "--porcelain", "--untracked-files=all"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    entries = [(line[:2], line[3:].strip()) for line in st.stdout.splitlines()]
+    ignored = worktree.ignored_paths(wt, [p for code, p in entries if code == "??"])
     out = []
-    for line in st.stdout.splitlines():
-        p = line[3:].strip()
+    for code, p in entries:
         if p.startswith(("tmp/", ".pi/", "node_modules/", "planning/")):
+            continue
+        if (code == "??" and p in ignored) or any(worktree._match(p, g) for g in harness_globs):
             continue
         if any(worktree._match(p, g) for g in task.allowed_files):
             out.append(p)
@@ -149,7 +152,7 @@ def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> 
         # Completeness: after the commit, NOTHING matching this task's allowlist may remain uncommitted.
         # (2026-09-15/16: three tickets carried accepted-but-uncommitted files -- a component without
         # its test, tests without their SCSS -- and CI/bots reviewed incoherent branches.)
-        leftover = _uncommitted_allowlisted(wt, task)
+        leftover = _uncommitted_allowlisted(wt, task, getattr(cfg, "harness_artifact_globs", ()))
         if leftover:
             raise publish.PublishError(f"accepted task {task.id} left allowlisted paths uncommitted: {leftover[:6]}")
         pushed = publish.push(wt, branch)

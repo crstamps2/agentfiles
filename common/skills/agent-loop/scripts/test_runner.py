@@ -696,6 +696,20 @@ after = ["001"]
             paths = runner._accepted_source_paths(self.cfg, "ZIP-7873", "001", self.wt)
         self.assertIn("app/components/old.rb", paths)
 
+    def test_publish_includes_modified_tracked_path_that_matches_gitignore(self):
+        """ZIP-8257: a force-added source file remains publishable after its directory is ignored."""
+        source = self.wt / "docs" / "tracked.md"
+        source.parent.mkdir(parents=True); (self.wt / ".gitignore").write_text("/docs\n")
+        source.write_text("before\n")
+        git(self.wt, "add", ".gitignore"); git(self.wt, "add", "-f", str(source.relative_to(self.wt)))
+        git(self.wt, "commit", "-qm", "track ignored source")
+        source.write_text("after\n")
+        adir = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; adir.mkdir(parents=True)
+        accepted = type("R", (), {"outcome": "accepted", "changed_paths": [str(source.relative_to(self.wt))]})()
+        with patch.object(runner.attempt, "load", return_value=accepted):
+            paths = runner._accepted_source_paths(self.cfg, "ZIP-7873", "001", self.wt)
+        self.assertIn("docs/tracked.md", paths)
+
     def test_stray_tracked_edit_from_an_earlier_attempt_is_reverted_before_the_next(self):
         """ZIP-7875/005 x3: a repo-wide normalize left config/locales/am.yml modified; every later attempt was
         rejected for a file it never touched, until the ticket blocked. Tracked strays outside every task's

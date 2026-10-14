@@ -111,7 +111,10 @@ def finalize(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     observed = rec.observed_tree
 
     if rec.outcome in RESTORE_OUTCOMES:
-        worktree_mod.restore(wt, rec.base_tree)
+        try:
+            worktree_mod.restore(wt, rec.base_tree)
+        except RuntimeError as e:
+            raise FinalizeFailed(f"{rec.attempt_id}: worktree restore failed: {e}") from e
         if not worktree_mod.verify_restored(wt, rec.base_tree):
             raise FinalizeFailed(
                 f"{rec.attempt_id}: worktree did not converge to base_tree after restore")

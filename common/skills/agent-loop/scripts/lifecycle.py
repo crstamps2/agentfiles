@@ -182,6 +182,9 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             back = "plan"                                  # plan stage repairs from the existing revise review, else re-plans
         if action == "republish":
             back = "implement"                             # implement re-runs publish for the accepted task before moving on
+        if back != t.previous:
+            t = state.transition(t, t.previous, reason=f"self-heal: {action} — {why}")
+            t = state.transition(t, "blocked", reason=t.reason)
         t = state.transition(t, back, reason=f"self-heal: {action} — {why}"); _save(cfg, t)
         print(f"{key}: self-heal {action} ({why}) -> {back}", flush=True)
         return Step(key, back, f"self-heal: {action}", detail=why)

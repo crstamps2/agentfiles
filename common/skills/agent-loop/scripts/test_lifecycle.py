@@ -786,6 +786,16 @@ class LifecycleTests(unittest.TestCase):
             steps = lifecycle.run_once(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2, max_steps=2)
         self.assertEqual(steps[0].action, "self-heal: replan"); self.assertIn("approved", steps[1].action)
 
+    def test_contract_complaint_from_implement_replans_without_an_illegal_transition(self):
+        """ZIP-4285: a contract complaint pauses implement, but repair must re-enter plan."""
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        tt = state.load(tdir)
+        tt = state.transition(tt, "paused", reason="contract complaint (dependency): task 001 must be repaired")
+        state.save(tdir, tt)
+        step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(step.action, "self-heal: repair")
+        self.assertEqual(state.load(tdir).state, "plan")
+
     def test_planning_ceiling_stops_a_ticket_that_never_produced_code(self):
         """ZIP-7874: $55 across 7 plan runs and 3 heal replans, no accepted task, nobody notified."""
         tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))

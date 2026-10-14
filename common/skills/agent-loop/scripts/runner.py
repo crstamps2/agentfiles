@@ -462,7 +462,8 @@ class Runner:
         import providers
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
         resolved = providers.resolve(self.cfg.state_root, agent.model)
-        if resolved != agent.model:
+        registry_failover = resolved != agent.model
+        if registry_failover:
             import dataclasses as _dc
             print(f"{t.key}/{task.id}: {providers.provider_of(agent.model)} exhausted; attempt {n} runs on {resolved}", file=sys.stderr, flush=True)
             agent = _dc.replace(agent, model=resolved)
@@ -470,7 +471,7 @@ class Runner:
         # rung on the other vendor rather than waiting for the limit to reset (2026-09-18).
         prior = [e for e in t.attempts.get(f"{t.key}/{task.id}", []) if e.get("outcome") == "environment"]
         alt = self.worker_alternate(agent.model) if rung.agent in self.FAILOVER_WORKERS else None
-        if prior and "provider unavailable" in (prior[-1].get("reason") or "") and alt:
+        if not registry_failover and prior and "provider unavailable" in (prior[-1].get("reason") or "") and alt:
             import dataclasses as _dc
             print(f"{t.key}/{task.id}: {agent.model} is out of quota; attempt {n} runs on {alt}", file=sys.stderr, flush=True)
             agent = _dc.replace(agent, model=alt)

@@ -285,7 +285,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         for tk in tasks:
             if pending_lint_fix:
                 break
-            if _task_accepted(cfg, key, tk) and runner_mod._uncommitted_allowlisted(wt, tk):
+            if _task_accepted(cfg, key, tk) and runner_mod._uncommitted_allowlisted(wt, tk, getattr(cfg, "harness_artifact_globs", ())):
                 runner_mod.publish_accepted(cfg, key, str(wt), tk, ensure_pr=False)
                 t = state.load(tdir)
                 if t.state == "paused":

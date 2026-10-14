@@ -98,7 +98,7 @@ def _uncommitted_allowlisted(wt, task) -> list[str]:
 
 
 def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
-    """Source paths from the most recent ACCEPTED attempt of this task (ignored + harness paths dropped)."""
+    """Source paths from the most recent ACCEPTED attempt of this task (untracked ignored + harness paths dropped)."""
     root = cfg.state_root / "attempts" / ticket_key / task_id
     recs = []
     for d in sorted((p for p in root.iterdir() if p.name.isdigit()), key=lambda p: int(p.name)):
@@ -133,7 +133,7 @@ def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
     # A DELETED tracked file is a change to commit (a style migration removes the old partial --
     # ZIP-7875/002); only drop paths that neither exist nor are tracked.
     tracked = set(subprocess.run(["git", "-C", str(wt), "ls-files", "--", *changed], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()) if changed else set()
-    return [p for p in changed if p not in ignored and not any(worktree._match(p, g) for g in globs)
+    return [p for p in changed if (p not in ignored or p in tracked) and not any(worktree._match(p, g) for g in globs)
             and ((pathlib.Path(wt) / p).exists() or p in tracked)]
 
 

@@ -2,13 +2,13 @@
 
 The principles in this file -- role separation, parallelism, dispatch/model hygiene, the three-lane review pipeline, PR policy, the comms gate, and agent-failure recovery -- are stack-agnostic. They apply to any software project.
 
-The specific specialist roles named in the routing rules below (`rails-engineer`, `frontend-engineer`, `android-qa-engineer`) and the tool defaults (`acli` for Jira, `gh` for GitHub, Rails lint commands, Turbo/Hotwire frontend rules) are an example instantiation built for a Rails/Hotwire/mobile team. When adopting this framework for a different stack, adapt the roster and tool names; keep the orchestration principles as-is.
+The specific specialist roles named in the routing rules below (`rails-engineer`, `frontend-engineer`, `android-qa-engineer`) and the tool defaults (`twg` for Jira, `gh` for GitHub, Rails lint commands, Turbo/Hotwire frontend rules) are an example instantiation built for a Rails/Hotwire/mobile team. When adopting this framework for a different stack, adapt the roster and tool names; keep the orchestration principles as-is.
 
 ---
 
 # Session Startup Checks
 
-- Use acli for all Jira operations. Atlassian MCP tools are fallback only (for when acli auth expires).
+- Use `twg` first for Jira reads and writes, including transition discovery and required transition fields. Use `acli` only when TWG is unavailable or lacks the needed operation. If a fallback cannot represent a required field, report the gap rather than guessing or silently switching tools.
 
 # Frontend Guidelines
 
@@ -101,6 +101,7 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 - Atlas is a legacy worktree tool. Use it only when explicitly requested. Atlas workspaces live at `~/.atlas/workspaces/your-app/` (bare repo at `~/.atlas/repos/your-app/`).
 - Worktrees (whether Atlas-managed or native git worktrees) may be shallow clones. Before any history-comparison operation -- rebase, range diff, or CI-style changed-files check -- run `git fetch --unshallow` (or `git fetch origin main` if already complete). Without it, `git merge-base HEAD origin/main` returns a heuristic ancestor; rebases replay unrelated commits and CI's changed-files action lists files you never touched. Canary symptom: a rebase trying to replay an "Initial commit."
 - Always reference `origin/main` (not local `main`) in diff commands -- e.g. `git diff origin/main...HEAD`, never `git diff main...HEAD`. Local `main` in a worktree is often stale and produces a large phantom diff that wastes context.
+- Review cleanliness gates evaluate tracked changes and the index. Untracked `.pi/` harness state and ticket-scoped `planning/` artifacts are expected local evidence: never stage or commit them, and do not treat their presence as a review blocker. Other untracked files still require review.
 - Never track, commit, or publish plans or design specs. This covers ticket `planning/` artifacts and everything under `docs/superpowers/` (`plans/` and `specs/`), the default output paths of the superpowers brainstorming and `writing-plans` skills. Write them there, but leave them untracked; never use `git add -f` on them. Put durable design decisions in the PR description, the component docs, and the tests. If a plan or spec reaches a pushed branch, remove its commit from history and force-push with an exact lease. A follow-up commit that deletes the file is not enough.
 
 ## Codex Review Pipeline
@@ -169,6 +170,7 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 - Do NOT assign reviewers when creating a PR. Wait until the user explicitly says it's ready.
 - QA verification with screenshots must happen BEFORE a PR leaves draft state.
 - Compare the drafted PR body against the create-pull-request skill template before posting. Reject silent substitutions for the prescribed structure. Drafter agents drift; the orchestrator catches it.
+- Before resuming, polishing, or reflecting on a PR that has sat for days, refresh its live state and human comments (`gh pr view <n> --json state,comments,reviews`). It may be closed or superseded by a teammate's PR, which changes what work and lessons apply.
 
 ## PR Review Replies
 

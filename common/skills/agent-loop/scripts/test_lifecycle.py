@@ -809,6 +809,28 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(step.action, "self-heal: repair")
         self.assertEqual(state.load(tdir).state, "plan")
 
+    def test_contract_complaint_with_evidence_replans_instead_of_repairing_guards(self):
+        """ZIP-4285: a complaint file is evidence about a task contract, not a failed guard."""
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        review = self.wt / "planning" / "zip-7873" / "plan-review.md"
+        (review.with_name("plan.md")).write_text("# plan\n")
+        tt = state.load(tdir)
+        tt = state.transition(tt, "paused", reason="contract complaint (dependency): restore task 001 before task 002")
+        state.save(tdir, tt)
+        evidence = tdir / "bad-guards.md"
+        evidence.write_text("## task 002 -- worker contract complaint (dependency)\n")
+        with patch.object(lifecycle.plan_mod, "_run_agent") as writer:
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(step.action, "self-heal: repair")
+        self.assertEqual(state.load(tdir).state, "plan")
+        writer.assert_not_called()
+        self.assertIn("VERDICT: revise", review.read_text())
+        self.assertIn(str(evidence), review.read_text())
+        with patch.object(lifecycle.plan_mod, "repair_plan", return_value={"result": "approved", "rounds": [], "author_model": "A", "critic_model": "C"}) as repair_plan:
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        repair_plan.assert_called_once()
+        self.assertEqual(step.action, "approved")
+
     def test_planning_ceiling_stops_a_ticket_that_never_produced_code(self):
         """ZIP-7874: $55 across 7 plan runs and 3 heal replans, no accepted task, nobody notified."""
         tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))

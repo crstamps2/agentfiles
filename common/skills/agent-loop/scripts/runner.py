@@ -11,6 +11,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import stat
 import uuid
 
 import admission
@@ -140,6 +141,44 @@ def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
             and ((pathlib.Path(wt) / p).exists() or p in tracked)]
 
 
+STALE_INDEX_LOCK_S = 24 * 60 * 60
+
+
+def _clear_stale_index_lock(wt) -> None:
+    """Remove an abandoned Git index lock, but never one a process still holds."""
+    r = subprocess.run(["git", "-C", str(wt), "rev-parse", "--git-path", "index.lock"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode:
+        return
+    lock = pathlib.Path(r.stdout.strip())
+    if not lock.is_absolute():
+        lock = pathlib.Path(wt) / lock
+    try:
+        before = lock.lstat()
+    except OSError:
+        return
+    if (not stat.S_ISREG(before.st_mode) or before.st_size
+            or dt.datetime.now(dt.timezone.utc).timestamp() - before.st_mtime < STALE_INDEX_LOCK_S):
+        return
+    try:
+        holder = subprocess.run(["lsof", "-t", "--", str(lock)], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if holder.returncode != 1 or holder.stdout.strip() or holder.stderr.strip():
+        return
+    try:
+        after = lock.lstat()
+    except OSError:
+        return
+    if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or after.st_size:
+        return
+    try:
+        lock.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> None:
     """Commit + push the accepted task's paths and make sure the loop's DRAFT PR exists.
     Failures here pause the ticket (the code is safe on disk; publishing can be retried) and
@@ -148,6 +187,7 @@ def publish_accepted(cfg, ticket_key: str, wt, task, ensure_pr: bool = True) -> 
     try:
         branch = publish.guard_branch(wt, ticket_key)
         paths = _accepted_source_paths(cfg, ticket_key, task.id, wt)
+        _clear_stale_index_lock(wt)
         sha = publish.commit_paths(wt, paths, publish.commit_message(ticket_key, task))
         # Completeness: after the commit, NOTHING matching this task's allowlist may remain uncommitted.
         # (2026-09-15/16: three tickets carried accepted-but-uncommitted files -- a component without

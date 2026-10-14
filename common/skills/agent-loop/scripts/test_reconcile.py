@@ -147,6 +147,14 @@ class FinalizeTests(ReconcileTestCase):
             with self.assertRaises(reconcile.FinalizeFailed):
                 reconcile.finalize(self.cfg, rec)
 
+    def test_finalize_raises_finalize_failed_when_restore_git_operation_fails(self):
+        rec = self._to_classified("rejected")
+        with mock.patch.object(worktree, "restore", side_effect=RuntimeError(
+                "git read-tree --reset -u base failed: index.lock: File exists")):
+            with self.assertRaisesRegex(reconcile.FinalizeFailed, "index.lock"):
+                reconcile.finalize(self.cfg, rec)
+        self.assertEqual(attempt.load(rec.path).status, "CLASSIFIED")
+
     def test_finalize_requires_observed_tree(self):
         rec = self._to_classified("accepted")
         rec = attempt.set_flags(rec, observed_tree=None)

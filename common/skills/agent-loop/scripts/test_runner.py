@@ -651,6 +651,22 @@ after = ["001"]
         push.assert_not_called()
         t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.assertEqual(t.state, "paused"); self.assertIn("left allowlisted paths uncommitted", t.reason)
 
+    def test_publish_ignores_tracked_harness_artifact_after_commit(self):
+        """ZIP-8257: never-commit harness artifacts must not fail publish completeness."""
+        import publish as pub
+        artifact = self.wt / "docs" / "superpowers" / "plan.md"
+        artifact.parent.mkdir(parents=True); artifact.write_text("before\n")
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "track harness artifact")
+        artifact.write_text("after\n")
+        task = self.tasks_with(allowed_files=["docs/superpowers/**"])[0]
+        (self.cfg.state_root / "attempts" / "ZIP-7873" / task.id).mkdir(parents=True)
+        with patch.object(pub, "guard_branch", return_value="internal/zip-7873-x"), \
+             patch.object(pub, "commit_paths", return_value=None), patch.object(pub, "push", return_value=True) as push, \
+             patch.object(pub, "existing_pr", return_value=None):
+            runner.publish_accepted(self.cfg, "ZIP-7873", self.wt, task, ensure_pr=False)
+        push.assert_called_once_with(self.wt, "internal/zip-7873-x")
+        self.assertNotEqual(state.load(self.cfg.ticket_dir("ZIP-7873")).state, "paused")
+
     def test_acceptance_appends_repo_hook_lint_when_repo_has_them(self):
         """9141b0d: rubocop + reek on changed Ruby run at every acceptance so publish cannot fail a hook the worker
         never saw. Only when the worktree actually has bin/agent_run and .reek.yml (real repo), never in bare fixtures."""

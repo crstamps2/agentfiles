@@ -522,6 +522,20 @@ class RunnerHarness(unittest.TestCase):
         t = state.load(self.cfg.ticket_dir("ZIP-7873"))
         self.assertEqual(t.state, "paused"); self.assertIn("publish failed", t.reason)
 
+    def test_publish_clears_an_empty_stale_index_lock_before_staging(self):
+        """ZIP-4285: a killed Git process left a 24-hour-old zero-byte index lock, so every republish failed."""
+        import publish
+        source = self.wt / "app" / "components" / "stale_lock.rb"; source.write_text("stale lock\n")
+        lock = self.wt / ".git" / "index.lock"; lock.write_bytes(b"")
+        then = time.time() - 24 * 60 * 60 - 1; os.utime(lock, (then, then))
+        task = contracts.load_tasks(self.cfg.state_root.parent / "tasks.toml")[0]
+        with patch.object(publish, "guard_branch", return_value="internal/zip-7873-x"), \
+             patch("runner._accepted_source_paths", return_value=["app/components/stale_lock.rb"]), \
+             patch.object(publish, "push", return_value=False), patch.object(publish, "existing_pr", return_value=None):
+            runner.publish_accepted(self.cfg, "ZIP-7873", self.wt, task, ensure_pr=False)
+        self.assertFalse(lock.exists())
+        self.assertEqual(git(self.wt, "show", "--name-only", "--format=", "HEAD").split(), ["app/components/stale_lock.rb"])
+
     def test_environment_only_history_does_not_pin_the_arm(self):
         """ZIP-7873/001: three local attempts died on the context window (environment); a later pin_arm
         must take effect. Only ADVANCING/accepted outcomes make the arm sticky."""

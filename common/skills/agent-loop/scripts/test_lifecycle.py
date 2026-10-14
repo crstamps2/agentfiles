@@ -320,6 +320,19 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(any("--force-exclusion" in c for c in fix.verification_commands))
         self.assertTrue(any("Rails/FindEach" in i for i in fix.invariants))
 
+    def test_lint_fix_task_permits_the_offending_test_file(self):
+        """ZIP-4275: generated lint fixes for test paths must clear the worker allowlist gate."""
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        reason = ("gates failed: pre-commit lint rejected the commit: "
+                  "test/system/components/zui/tophat_test.rb:12:3: C: Style/Foo: fix it.")
+        tid = lifecycle._lint_fix_task(tdir, reason, self.wt / "planning" / "zip-7873" / "tasks.toml",
+                                       cfg=self.cfg, key="ZIP-7873")
+        import contracts, worktree
+        fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
+        self.assertEqual(worktree.check_allowlist(
+            ["test/system/components/zui/tophat_test.rb"], fix,
+            self.cfg.protected_paths, self.cfg.test_path_globs), [])
+
     def test_waiting_duration_is_reported_in_the_reminder(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
         state.save(tdir, state.Ticket(key="ZIP-7873", state="paused", previous="plan", reason="x"))

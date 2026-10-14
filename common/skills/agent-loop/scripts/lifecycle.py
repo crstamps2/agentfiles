@@ -943,6 +943,7 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=
         raise ValueError("no offending file could be parsed from the hook output")
     offenses = "\n".join(f"  {ln.strip()}" for ln in reason.splitlines() if _re.search(r":\d+:\d+:", ln))[:1500]
     import contracts as _contracts
+    import worktree as _worktree
     existing = _contracts.load_tasks(manifest) if manifest.exists() else []
     for tk in existing:
         if tk.slug.startswith("lint-fix-") and tk.allowed_files == files and not (cfg and _task_accepted(cfg, key, tk)):
@@ -955,7 +956,9 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=
     _append_task(manifest, {
         "id": tid, "slug": f"lint-fix-{tid}", "size": "small",
         "summary": "Fix the lint offenses the pre-commit hook rejected",
-        "allowed_files": files, "verification_commands": [cmd],
+        "allowed_files": files,
+        "may_edit_tests": bool(cfg and any(_worktree._match(f, g) for f in files for g in cfg.test_path_globs)),
+        "verification_commands": [cmd],
         "acceptance": [f"AC-1: `{cmd}` reports no offenses"],
         "invariants": [
             "The pre-commit hook rejected the commit with these offenses:\n" + offenses,

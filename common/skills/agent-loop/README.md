@@ -24,9 +24,46 @@ branch `agent-loop-1` (unmerged, never pushed). Spinup changes live on the dotfi
 
 `drip.py`: children of the epic, board Rank order, only the ready column (`Selected for Work`), any
 assignee, minus `exclude`d tickets and tickets whose `deps` are not Done in Jira (no autonomous PR
-stacks). Keeps `max_in_flight` (3) tickets between spinup and Human Gate 1; gated tickets do not
-occupy a slot. Each pick: full cmux spinup (agent tab runs `/loop-watch`), assign to Cody, In
-Progress, launchd supervisor. Runs every 15 min as `com.cody.agent-loop.drip`.
+stacks). Each pick: full cmux spinup (agent tab runs `/loop-watch`), assign to Cody, In Progress,
+launchd supervisor. Runs every 15 min as `com.cody.agent-loop.drip` for board discovery.
+
+## The cohort (four durable slots)
+
+`cohort.json` is the only source of capacity truth once migration has created it; before that, the
+drip uses the legacy `max_in_flight` count.
+
+- **Four slots, seven hard ceiling.** A ticket owns its slot from reservation until **verified Human
+  Gate 1**: state `human-gate-1`, a recorded PR that GitHub reports open and ready, evidence SHA equal
+  to the worktree HEAD, no active recovery, no open decision. A draft PR, a GitHub error, or a stale
+  SHA releases nothing. Any override above seven is rejected before state changes.
+- **Waiting keeps the slot.** `paused`, `blocked`, repairing, retrying, provider-waiting, rebase
+  repair, `decision-required`, and `HUMAN` takeovers all retain their slot. Repair work runs outside
+  the cohort and never admits a fifth ticket.
+- **Refill order.** A released slot goes to the oldest parked ticket (by original admission
+  sequence), then a reserved spinup retry, then the next board candidate. A failed spinup keeps its
+  reservation and retries the same ticket.
+- **Reconciler.** `runner.py cohort-reconcile` (launchd, every 60 s via
+  `supervise cohort-start`; `cohort-shadow-start` installs it with `--dry-run`) consumes repair
+  events, resumes ready recoveries and provider waits, releases verified gates, ensures each member
+  has a supervisor or a durable wait, and refills empty slots. No model is involved.
+- **Recovery contracts.** Every failure boundary records its defect first, then activates a
+  structured contract on the ticket: `retry-task` (exact id + slug), `resume-stage`, `republish`,
+  `replan`, `retry-spinup`, or `wait-provider`. One repair landing wakes every ticket linked to that
+  defect, exactly once per contract. A rejected repair becomes a diagnostic retry, never an
+  abandoned ticket. Nothing parses `state.reason` to decide what to resume.
+- **Product decisions.** Only a complete, validated ambiguity (sources, why unresolved, two or more
+  different options with consequences, a reasoned recommendation, one question, a checkpoint) enters
+  `decision-required`; everything else is repair work. Cody answers with
+  `runner.py decision-answer --ticket X --guidance "..."`; the guidance is recorded, appended to
+  `plan.md`/`transcript.md`, and the ticket resumes its saved stage (or re-plans) automatically.
+- **Migration.** `runner.py cohort-migrate --dry-run` prints chronology (with its evidence source),
+  the proposed four members, tickets to park, excluded review-ready tickets, and evidence-backed
+  recovery contracts. `--apply` snapshots metadata to `cohort-migrations/`, writes `cohort.json`,
+  then parks the rest and stops only their supervisors. `--rollback <snapshot>` restores metadata
+  only, and refuses after later admissions or applied events unless `--force` (which snapshots
+  first).
+- **Park.** `runner.py park --ticket X` writes `PARKED` first, then releases the slot to the oldest
+  waiting ticket; the parked ticket resumes first when a slot frees.
 
 ## Lifecycle (one ticket)
 
@@ -59,10 +96,11 @@ spinup → plan → plan-review → implement → gates → draft-pr → ready �
 
 ## Self-healing (heal.py)
 
-Every `paused` reason has a policy and a per-reason budget; a human is consulted only when the policy
-says so (hand-written merge conflict, design question) or the budget is spent. Recoveries are logged
-to `tickets/<K>/heal.jsonl`. Notifications (cmux + macOS) fire once per ticket at Human Gate 1, on an
-operator-needed pause, or on block.
+Every `paused` reason has a policy and a per-reason budget. When the policy says `human` or a budget
+is spent, the ticket gets a structured recovery contract and a queued runner defect (it keeps its
+cohort slot); only a validated product/API decision request waits on Cody. Recoveries are logged to
+`tickets/<K>/heal.jsonl`. Notifications (cmux + macOS) fire at Human Gate 1 and for open product
+decisions, re-raised every six hours while a decision stands.
 
 | pause reason | action | budget |
 |---|---|---|
@@ -72,7 +110,9 @@ operator-needed pause, or on block.
 | `guard failed on the BASE tree` / contract complaint / guard disagreement | task-writer repairs the manifest (bad-guards.md) | 4 |
 | `plan failed` / budget exceeded / writer left manifest invalid | back to `plan`: repair from the revise review (≤2), then full re-plan | 3 |
 | `publish failed` / `finalize failed` / mark-ready / reply / adjudication | republish (after the runner fix that caused it) | 3 |
-| rebase conflict in hand-written files / design question / `HUMAN` file | **human** | — |
+| rebase conflict in hand-written files / spent budget / bare `blocked: owner` | structured recovery + repair (slot kept) | — |
+| validated product/API ambiguity | **decision-required** (Cody answers via `decision-answer`) | — |
+| `HUMAN` file | **human** takeover (slot kept) | — |
 
 Other invariants the runner enforces so these do not recur: clean base before each attempt (stray
 tracked edits reverted + logged), pre-task rebase (generated-file conflicts regenerate), lint guards
@@ -82,7 +122,7 @@ they fail there too, accepted work is committed completely (deletions included) 
 ## Daily operation
 
 ```
-/agent-loop                       # fleet: state, PR, spend, supervisor per ticket
+/agent-loop                       # fleet: COHORT slots, WAITING ADMISSION, REVIEW READY
 /agent-loop resume all            # after a reboot or a stop: `runner.py resume --all`, then operator tickets + panes
 /agent-loop start                 # drip: next ready ticket(s) from the top of the epic board (Jira Rank)
 #   runner.py supervise drip-start   # install the 15-min LaunchAgent so the drip runs itself

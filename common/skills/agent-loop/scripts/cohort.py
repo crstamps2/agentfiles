@@ -253,9 +253,15 @@ def _ci(ticket_dir: pathlib.Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+PAST_HUMAN_GATE_1 = frozenset(("colleague-loop", "human-gate-2", "done"))
+
+
 def _review_evidence(cfg, key, *, pr_lookup, head_lookup):
+    """(pr, reason) when the ticket's slot may be released, else None."""
     ticket_dir = cfg.ticket_dir(key)
     ticket = state.load(ticket_dir)
+    if ticket.state in PAST_HUMAN_GATE_1:
+        return _ci(ticket_dir).get("pr") or 0, "passed-human-gate-1"
     if ticket.state != "human-gate-1" or ticket.decision_request:
         return None
     if not isinstance(ticket.recovery, dict) or ticket.recovery.get("active") is not None or ticket.recovery.get("queued"):
@@ -267,20 +273,22 @@ def _review_evidence(cfg, key, *, pr_lookup, head_lookup):
     if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
         return None
     try:
-        head = head_lookup(ticket.worktree)
         pr_status = pr_lookup(pr)
+        if pr_status == "merged":
+            return pr, "passed-human-gate-1"
+        head = head_lookup(ticket.worktree)
     except Exception:
         return None
     if not isinstance(head, str) or not head or pr_status != "ready":
         return None
     if ticket.evidence_sha != head and ci.get("ready_marked_sha") != head:
         return None
-    return pr
+    return pr, "verified-human-gate-1"
 
 
-def _release(value, slot, pr):
+def _release(value, slot, pr, reason="verified-human-gate-1"):
     value.history.append({"event": "released", "ticket": slot.ticket, "slot": slot.slot,
-                          "pr": pr, "reason": "verified-human-gate-1", "utc": _now()})
+                          "pr": pr, "reason": reason, "utc": _now()})
     value.slots[slot.slot - 1] = Slot(slot=slot.slot)
     value.generation += 1
 
@@ -314,10 +322,10 @@ def release_if_review_ready(cfg, key: str, *, pr_lookup, head_lookup) -> bool:
         slot = _find(value, key)
         if slot is None:
             return False
-        pr = _review_evidence(cfg, key, pr_lookup=pr_lookup, head_lookup=head_lookup)
-        if pr is None:
+        evidence = _review_evidence(cfg, key, pr_lookup=pr_lookup, head_lookup=head_lookup)
+        if evidence is None:
             return False
-        _release(value, slot, pr)
+        _release(value, slot, *evidence)
         _save_unlocked(cfg, value)
         return True
 
@@ -345,10 +353,32 @@ def reconcile(cfg, *, dry_run=False, pr_lookup=None, supervisor=None, head_looku
             report.errors.append("cohort lease is already held; retry next cycle")
             return report
         try:
-            return _reconcile_locked(cfg, report, False, pr_lookup, head_lookup, supervisor)
+            _reconcile_locked(cfg, report, False, pr_lookup, head_lookup, supervisor)
         except (CohortError, OSError, ValueError, TypeError) as exc:
             report.errors.append(str(exc))
             return report
+    # Spinup can take half an hour; it runs outside the cohort lease so releases, events and resumes continue.
+    # reserve()/activate() take the lease briefly; the drip lease keeps two admitters off the same ticket.
+    import drip
+    admission = locks.Lease(cfg.state_root / "locks" / "drip", "cohort-admission")
+    if admission.acquire(hold=True):
+        try:
+            report.admitted.extend(drip._tick_locked(cfg, log=lambda message: None, supervisor=supervisor))
+        except Exception as exc:  # noqa: BLE001
+            report.errors.append(f"admission: {type(exc).__name__}: {exc}")
+        finally:
+            admission.release()
+    return report
+
+
+def _virtual(cfg) -> Cohort:
+    import cohort_migration
+    plan = cohort_migration.build_plan(cfg)
+    order = {e.ticket: i for i, e in enumerate(plan.candidates, 1)}
+    slots = [Slot(slot=i, ticket=key, phase="active", admission_sequence=order[key], source="migration-plan")
+             for i, key in enumerate(plan.members, 1)]
+    slots += [Slot(slot=i) for i in range(len(slots) + 1, cfg.cohort_capacity + 1)]
+    return Cohort(SCHEMA_VERSION, cfg.cohort_capacity, cfg.hard_capacity, 1, len(order) + 1, slots)
 
 
 def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
@@ -358,7 +388,10 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
     import recovery
     import repair
     import runner
-    value = _load_unlocked(cfg)
+    if dry_run and not _path(cfg).exists():
+        value = _virtual(cfg)                        # shadow mode before migration: the proposed membership
+    else:
+        value = _load_unlocked(cfg)
     if state.paused(cfg.state_root):
         report.retained = [row.ticket for row in value.slots if row.ticket]
         report.waits = {key: "operator PAUSE" for key in report.retained}
@@ -370,9 +403,11 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
 
     if not dry_run:
         try:
-            applied = recovery.consume_events(cfg, retry_task=runner.retry_task,
-                                             ensure_supervisor=supervisor.ensure_running, can_resume=can_resume)
+            event_errors = []
+            applied = recovery.consume_events(cfg, retry_task=runner.retry_task, ensure_supervisor=supervisor.ensure_running,
+                                             can_resume=can_resume, errors=event_errors)
             report.resumed.extend(row.rsplit(":", 1)[0] for row in applied if row.endswith(":resumed"))
+            report.errors.extend(f"repair event: {error}" for error in event_errors)
         except (recovery.RecoveryError, OSError, ValueError, TypeError) as exc:
             report.errors.append(f"repair events: {exc}")
 
@@ -441,9 +476,9 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
                 else:
                     report.retained.append(key); report.waits[key] = f"product decision {request['id']}"
                     continue
-            pr = _review_evidence(cfg, key, pr_lookup=pr_lookup, head_lookup=head_lookup)
-            if pr is not None:
-                _release(value, slot, pr)
+            evidence = _review_evidence(cfg, key, pr_lookup=pr_lookup, head_lookup=head_lookup)
+            if evidence is not None:
+                _release(value, slot, *evidence)
                 if not dry_run:
                     _save_unlocked(cfg, value)
                 report.released.append(key)
@@ -458,6 +493,10 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
             report.waits[key] = f"diagnostic recovery: {exc}"
             if not dry_run:
                 repair.record_defect(cfg, key, "cohort", f"invalid controller state: {exc}")
+        except Exception as exc:  # noqa: BLE001 -- e.g. launchctl: one ticket must not stall the pass
+            report.retained.append(key)
+            report.errors.append(f"{key}: {type(exc).__name__}: {exc}")
+            report.waits[key] = f"retrying next cycle: {exc}"
         finally:
             if not dry_run:
                 ticket_lease.release()
@@ -470,8 +509,6 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
                 supervisor.stop(entry["ticket"])
                 entry["supervisor_stopped"] = True
                 _save_unlocked(cfg, value)
-        started = drip._tick_locked(cfg, log=lambda message: None, supervisor=supervisor)
-        report.admitted.extend(started)
     else:
         free = sum(row.ticket is None for row in value.slots)
         occupied = {row.ticket for row in value.slots if row.ticket}

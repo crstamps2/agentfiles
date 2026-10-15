@@ -26,6 +26,7 @@ import types
 
 import botreview
 import ci
+import cohort
 import contracts
 import guards
 import ledger
@@ -107,6 +108,13 @@ def _next_task(cfg, key, tasks):
 
 def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | None = None) -> Step:
     tdir = cfg.ticket_dir(key); t = state.load(tdir); t.worktree = str(wt)
+    if (cfg.state_root / "cohort.json").exists():
+        try:
+            admitted = key in cohort.members(cfg)
+        except cohort.CohortError as exc:
+            return Step(key, t.state, "cohort unavailable", detail=str(exc), wait=True)
+        if not admitted:
+            return Step(key, t.state, "not admitted to cohort", wait=True)
     if wt and pathlib.Path(wt).exists():
         recovered = recover_interrupted_git_state(wt)
         if recovered:

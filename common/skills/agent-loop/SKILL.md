@@ -37,7 +37,10 @@ only those listed tickets with the rules below, then reopen panes.
 
 With a cohort, a ticket outside it cannot be resumed while all four slots are owned (`resume` refuses);
 members waiting on a recovery contract are resumed by the reconciler when their repair lands, so do
-not resume them by hand. For one ticket, or each ticket `--all` listed under `needs_operator`:
+not resume them by hand (`resume` refuses; `runner.py recovery-clear --ticket X [--resume-from STAGE]` is the
+deliberate override, and `runner.py repair-approved --defect ID` wakes tickets after Cody applies a
+`needs-approval` patch). A `needs Cody` notification is a genuine owner question: answer it, then `resume`.
+For one ticket, or each ticket `--all` listed under `needs_operator`:
 - state `paused` or `blocked`: read the reason.
   - `resource:` / `heavy lane` → `python3 runner.py resume --ticket X --from implement` (transient).
   - `plan failed` / `budget exceeded` → `python3 runner.py resume --ticket X` (back to `plan`, which

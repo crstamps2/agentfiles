@@ -21,6 +21,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 
 import cohort
 import recovery
@@ -168,6 +169,15 @@ def candidates(cfg, log=print) -> list[dict]:
 
 
 MAX_SPINUP_ATTEMPTS = 3
+SPINUP_BACKOFF_S = 5 * 60
+SPINUP_BACKOFF_MAX_S = 6 * 3600
+
+
+def _spinup_waiting(cfg, key: str) -> bool:
+    try:
+        return json.loads((cfg.ticket_dir(key) / "spinup-backoff.json").read_text())["next_epoch"] > time.time()
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return False
 CHAIN_OK = ("ok", "serving-timeout")
 
 
@@ -274,6 +284,13 @@ def record_spinup_failure(cfg, key: str, e: SpinupFailed, log=print) -> None:
         nxt = "needs operator" if n >= MAX_SPINUP_ATTEMPTS else "the drip re-runs setup next pass"
     t.reason = f"spinup failed ({e.status}), attempt {n}/{MAX_SPINUP_ATTEMPTS}; {nxt}"
     state.save(tdir, t)
+    if cohort_enabled(cfg):
+        # Keep the reservation, but back off: each retry can open a cmux workspace and runs setup.
+        delay = min(SPINUP_BACKOFF_S * 2 ** (n - 1), SPINUP_BACKOFF_MAX_S)
+        (tdir / "spinup-backoff.json").write_text(json.dumps({"next_epoch": time.time() + delay, "failures": n}))
+        if n == MAX_SPINUP_ATTEMPTS:
+            import lifecycle
+            lifecycle._notify_once(tdir, key, f"{key} spinup keeps failing", f"{e.status}; slot kept, retrying every {delay // 60} min")
     if cohort_enabled(cfg) and not state.load(tdir).recovery.get("active"):
         contract = recovery.new_contract(
             key,
@@ -359,7 +376,7 @@ def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list
     if enabled:
         for slot in reserved:
             key = slot.ticket
-            if (cfg.ticket_dir(key) / "HUMAN").exists():
+            if (cfg.ticket_dir(key) / "HUMAN").exists() or _spinup_waiting(cfg, key):
                 continue
             log(f"drip: retrying reserved {key}")
             if dry_run:

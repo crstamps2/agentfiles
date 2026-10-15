@@ -368,6 +368,28 @@ class LifecycleTests(unittest.TestCase):
         fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
         self.assertEqual(fix.allowed_files, ["app/assets/javascripts/controllers/zui_dropzone_controller.ts"])
 
+    def test_a_reek_hook_rejection_keeps_its_warnings_and_verifies_reek(self):
+        """ZIP-4287: Reek reports a file heading and bracketed warning locations, not RuboCop locations."""
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
+        source = "app/views/components/previews/zui/list_preview.rb"
+        (tdir / "hook-reject.out").write_text(
+            "bash: command not found: atuin\n"
+            "┃ reek ❯\n\n"
+            "Inspecting 1 file(s):\nS\n\n"
+            f"{source} -- 5 warnings:\n"
+            "  [47, 48, 49]:DuplicateMethodCall: ZUI::ListPreview#flush_list calls 'list.with_item' 3 times\n"
+            "exit status 2\n"
+            "┃ rubocop ❯\n\n"
+            "1 file inspected, no offenses detected\n")
+        tid = lifecycle._lint_fix_task(tdir, "gates failed: pre-commit lint rejected the commit",
+                                       self.wt / "planning" / "zip-7873" / "tasks.toml")
+        import contracts
+        fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
+        self.assertEqual(fix.allowed_files, [source])
+        self.assertEqual(fix.verification_commands,
+                         [f"bin/agent_run bundle exec reek --force-exclusion {source}"])
+        self.assertTrue(any("DuplicateMethodCall" in invariant for invariant in fix.invariants))
+
     def test_review_fix_ids_do_not_collide_with_ids_already_in_the_manifest(self):
         """ZIP-7874: an operator-queued 901 was already in the plan, so the bot's first fix task was also
         numbered 901 and the whole batch was rejected as a duplicate."""

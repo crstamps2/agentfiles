@@ -94,6 +94,18 @@ def fingerprint(contract: dict) -> str:
     return hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()[:20]
 
 
+def orphaned(cfg, contract: dict) -> bool:
+    """A repair wait whose defect record exists nowhere can never be woken by a repair event."""
+    if contract.get("status") != "waiting-repair" or contract.get("last_event_id"):
+        return False
+    root = pathlib.Path(cfg.state_root) / "defects"
+    for defect_id in contract.get("defect_ids", []):
+        for queue in ("open", "needs-approval", "failed", "landed"):
+            if (root / queue / f"{defect_id}.json").exists() or any((root / queue).glob(f"{defect_id}-*.json")):
+                return False
+    return True
+
+
 def new_contract(key, checkpoint, resume, defect_ids=(), *, contract_id=None, status=None) -> dict:
     now = _now()
     kind = resume.get("kind") if isinstance(resume, dict) else None

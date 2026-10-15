@@ -298,6 +298,17 @@ class RunnerHarness(unittest.TestCase):
         for section in ("COHORT 4/4", "WAITING ADMISSION", "REVIEW READY"):
             self.assertIn(section, out.getvalue())
 
+    def test_cohort_migrate_cli_requires_one_mode_and_dry_run_is_read_only(self):
+        state.save(self.cfg.ticket_dir("ZIP-9"), state.Ticket(key="ZIP-9", state="implement", worktree=str(self.wt)))
+        with self.assertRaises(SystemExit):
+            self.cli("cohort-migrate")
+        out = io.StringIO()
+        with patch("supervise.stop") as stop, contextlib.redirect_stdout(out):
+            self.assertEqual(self.cli("cohort-migrate", "--dry-run"), 0)
+        stop.assert_not_called()
+        self.assertIn("PROPOSED COHORT", out.getvalue())
+        self.assertFalse((self.cfg.state_root / "cohort.json").exists())
+
     def test_decision_answer_cli_persists_guidance_and_resumes_ticket(self):
         import decision
         tdir = self.cfg.ticket_dir("ZIP-7873")

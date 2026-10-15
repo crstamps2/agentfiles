@@ -846,6 +846,10 @@ def main(argv=None) -> int:
     rs.add_argument("--worktree", default=None)
     rs.add_argument("--retry-task", default=None, metavar="ID", help="fresh escalation ladder for this task (its rejections were a runner defect); implies --from implement")
     ov = sub.add_parser("overview", help="one line per hopper ticket: state, reason, PR, supervisor, spend")
+    cm = sub.add_parser("cohort-migrate", help="move legacy in-flight tickets into the four-slot cohort (snapshot + metadata-only rollback)")
+    mode = cm.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true"); mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--rollback", metavar="SNAPSHOT_ID"); cm.add_argument("--force", action="store_true")
     cr = sub.add_parser("cohort-reconcile", help="deterministically recover, retain, release, and refill cohort slots")
     cr.add_argument("--dry-run", action="store_true")
     dp = sub.add_parser("drip", help="fill free in-flight slots from the top of the epic board (Jira Rank order); spinup + supervisor + pane per ticket")
@@ -871,6 +875,18 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
+    if a.cmd == "cohort-migrate":
+        import cohort_migration
+        try:
+            if a.rollback:
+                cohort_migration.rollback(cfg, a.rollback, force=a.force); print("rolled back", a.rollback); return 0
+            plan = cohort_migration.build_plan(cfg)
+            print(cohort_migration.render(plan))
+            if a.apply:
+                print("\nsnapshot:", cohort_migration.apply(cfg, plan).name)
+        except cohort_migration.MigrationError as exc:
+            print(f"cohort-migrate: {exc}", file=sys.stderr); return 2
+        return 0
     if a.cmd == "cohort-reconcile":
         import dataclasses, cohort
         report = cohort.reconcile(cfg, dry_run=a.dry_run)

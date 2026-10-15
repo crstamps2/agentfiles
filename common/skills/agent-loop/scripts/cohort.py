@@ -285,6 +285,27 @@ def _release(value, slot, pr):
     value.generation += 1
 
 
+def _park_slot(value, slot):
+    value.history.append({"event": "parked", "ticket": slot.ticket, "slot": slot.slot,
+                          "admission_sequence": slot.admission_sequence, "reason": "operator park", "utc": _now()})
+    value.slots[slot.slot - 1] = Slot(slot=slot.slot)
+    value.generation += 1
+
+
+def park_member(cfg, key: str) -> bool:
+    """Release a member that the operator explicitly parked; its durable marker keeps its admission order."""
+    with _lease(cfg) as acquired:
+        if not acquired:
+            raise CohortError("cohort lease is already held")
+        value = _load_unlocked(cfg)
+        slot = _find(value, key)
+        if slot is None:
+            return False
+        _park_slot(value, slot)
+        _save_unlocked(cfg, value)
+        return True
+
+
 def release_if_review_ready(cfg, key: str, *, pr_lookup, head_lookup) -> bool:
     with _lease(cfg) as acquired:
         if not acquired:
@@ -360,6 +381,12 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
         if not key:
             continue
         tdir = cfg.ticket_dir(key)
+        if (tdir / "PARKED").exists():
+            _park_slot(value, slot)
+            if not dry_run:
+                _save_unlocked(cfg, value)
+            report.parked.append(key)
+            continue
         if (tdir / "HUMAN").exists():
             report.retained.append(key); report.waits[key] = "HUMAN takeover; slot retained"
             continue

@@ -229,7 +229,15 @@ def resume_active(cfg, key, *, retry_task, ensure_supervisor) -> str:
         ticket.recovery["active"] = contract
         state.save(tdir, ticket)
         if action["kind"] == "retry-task":
-            retry_task(cfg, key, action["task_id"], note=note)
+            try:
+                retry_task(cfg, key, action["task_id"], note=note)
+            except SystemExit:
+                # The task no longer exists in this ticket's history: nothing to retry.
+                ticket = state.load(tdir)
+                ticket.recovery = _normalize(ticket.recovery)
+                _promote(ticket)
+                state.save(tdir, ticket)
+                return "obsolete"
             ticket = state.load(tdir)
         ticket = state.resume_target(ticket, action["state"], reason=note)
         contract["action_applied"] = True
@@ -314,9 +322,27 @@ def _set_event_wait(cfg, key: str, recovery_id: str, event_id: str, status: str)
     return status
 
 
-def consume_events(cfg, *, retry_task, ensure_supervisor, after_apply=None, can_resume=None) -> list[str]:
+def _apply_event_row(cfg, key, event, row, active, retry_task, ensure_supervisor) -> str:
+    recovery_id, event_id = row["recovery_id"], event["id"]
+    if not isinstance(active, dict) or active.get("id") != recovery_id:
+        return "obsolete"
+    if row.get("contract_fingerprint") and row["contract_fingerprint"] != fingerprint(active):
+        return "obsolete"
+    if event["defect_id"] not in active.get("defect_ids", []):
+        return "obsolete"
+    if event["outcome"] in ("landed", "not-needed"):
+        if active.get("last_event_id") != event_id or active.get("status") not in ("ready-to-resume", "resuming"):
+            mark_ready(cfg, key, event_id)
+        return resume_active(cfg, key, retry_task=retry_task, ensure_supervisor=ensure_supervisor)
+    if event["outcome"] == "needs-approval":
+        return _set_event_wait(cfg, key, recovery_id, event_id, "manual-safety-review")
+    return _set_event_wait(cfg, key, recovery_id, event_id, "waiting-repair")
+
+
+def consume_events(cfg, *, retry_task, ensure_supervisor, after_apply=None, can_resume=None, errors=None) -> list[str]:
     """Apply pending repair events at least once; per-contract receipts make replay idempotent."""
     results = []
+    errors = [] if errors is None else errors
     for path in sorted(_events_dir(cfg).glob("*.json")):
         try:
             event = json.loads(path.read_text())
@@ -349,20 +375,13 @@ def consume_events(cfg, *, retry_task, ensure_supervisor, after_apply=None, can_
                 if any(isinstance(candidate, dict) and candidate.get("id") == recovery_id for candidate in queued):
                     pending = True
                     continue
-                if not isinstance(active, dict) or active.get("id") != recovery_id:
-                    result = "obsolete"
-                elif row.get("contract_fingerprint") and row["contract_fingerprint"] != fingerprint(active):
-                    result = "obsolete"
-                elif event["defect_id"] not in active.get("defect_ids", []):
-                    result = "obsolete"
-                elif event["outcome"] in ("landed", "not-needed"):
-                    if active.get("last_event_id") != event_id or active.get("status") not in ("ready-to-resume", "resuming"):
-                        mark_ready(cfg, key, event_id)
-                    result = resume_active(cfg, key, retry_task=retry_task, ensure_supervisor=ensure_supervisor)
-                elif event["outcome"] == "needs-approval":
-                    result = _set_event_wait(cfg, key, recovery_id, event_id, "manual-safety-review")
-                else:
-                    result = _set_event_wait(cfg, key, recovery_id, event_id, "waiting-repair")
+                try:
+                    result = _apply_event_row(cfg, key, event, row, active, retry_task, ensure_supervisor)
+                except Exception as exc:  # noqa: BLE001 -- one ticket's failure must not stall the fleet's events
+                    pending = True
+                    results.append(f"{key}:error")
+                    errors.append(f"{key}: {type(exc).__name__}: {exc}")
+                    continue
                 receipts[receipt_key] = {"result": result, "utc": _now()}
                 tmp = path.with_suffix(".json.tmp")
                 tmp.write_text(json.dumps(event, indent=2))

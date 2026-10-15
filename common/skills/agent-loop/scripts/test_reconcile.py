@@ -128,6 +128,29 @@ class FinalizeTests(ReconcileTestCase):
                 self.assertFalse((self.wt / "app" / "junk.rb").exists())
                 (self.wt / "app" / "junk.rb").unlink(missing_ok=True)
 
+    def test_late_protocol_finalize_keeps_newer_accepted_work(self):
+        """ZIP-4285: a stale protocol restore must not erase a later accepted generation."""
+        stale = self._to_classified("protocol")
+        accepted_path = self.wt / "app" / "accepted.rb"
+        accepted_path.write_text("accepted\n")
+        newer_task = make_task(summary="replacement task generation")
+        rung = ladder.Rung("cloud-worker", "cheap", 1)
+        newer = attempt.create(self.cfg, "TICK-1", newer_task, self.wt, 2,
+                               FakeAgent(), "cloud", rung, "run-abc")
+        newer = attempt.transition(newer, "LAUNCHING")
+        newer = attempt.transition(newer, "RUNNING")
+        newer = attempt.transition(newer, "STAGE_DONE")
+        newer = attempt.transition(newer, "CLASSIFYING", observed_tree=worktree.snapshot(self.wt))
+        newer = attempt.transition(newer, "CLASSIFIED", outcome="accepted", reason="ok",
+                                   next_action="none")
+        self.assertNotEqual(stale.generation, newer.generation)
+        reconcile.finalize(self.cfg, newer)
+
+        stale = reconcile.finalize(self.cfg, stale)
+
+        self.assertEqual(stale.status, "FINALIZED")
+        self.assertTrue(accepted_path.exists())
+
     def test_accepted_keeps_worktree(self):
         rec = self._to_classified(
             "accepted", after_create=lambda: (self.wt / "app" / "b.rb").write_text("b\n"))

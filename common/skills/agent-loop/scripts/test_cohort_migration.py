@@ -241,6 +241,12 @@ class RecoverySynthesisTests(MigrationFixture):
         results = recovery.consume_events(self.cfg, retry_task=lambda *a, **k: None, ensure_supervisor=lambda *a: None)
         self.assertEqual(results, ["ZIP-1:resumed"])
 
+    def test_diagnostic_tickets_get_their_own_defects(self):
+        self.ticket("ZIP-1", "blocked", reason="owner", transcript="2026-09-01T00:00:00Z")
+        self.ticket("ZIP-2", "blocked", reason="owner", transcript="2026-09-02T00:00:00Z")
+        migration.apply(self.cfg, migration.build_plan(self.cfg), supervisor=FakeSupervisor())
+        self.assertEqual(len(list((self.cfg.state_root / "defects" / "open").glob("*.json"))), 2)
+
     def test_plan_reports_synthesis_evidence_and_confidence(self):
         self.ticket("ZIP-1", "blocked", reason="owner", transcript="2026-09-01T00:00:00Z")
         self.accepted_task("ZIP-1", ["app/views/components/zui/pagination/pagination.rb"])

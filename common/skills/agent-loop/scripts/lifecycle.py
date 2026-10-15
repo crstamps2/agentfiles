@@ -57,6 +57,7 @@ def _pause(cfg, t, reason):
     return _save(cfg, t)
 
 
+OWNER_QUESTION = re.compile(r"need(?:s)? Cody|owner question|question for the owner|tier-[34]", re.I)
 RUNNER_TASK_BLOCK = re.compile(r"^task (\d{3}): (?:ladder exhausted|accepted history has no verified slug)$")
 GENERIC_BLOCK = re.compile(r"^(?:owner|blocked|unstructured owner block)?$", re.I)
 
@@ -84,6 +85,14 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
             candidate.rename(candidate.with_name(f"decision-candidate.accepted-{decided.decision_request['id']}.json"))
             return Step(t.key, decided.state, "product decision required", detail=decided.decision_request["question"], wait=True)
     current = state.load(tdir)
+    if OWNER_QUESTION.search(current.reason or ""):
+        # A genuine question for Cody: keep the slot and ask him. It is not a runner defect, and its text
+        # (often a third-party PR comment) must never become repair-agent evidence.
+        waited = _waiting_since(tdir, current)
+        _notify_once(tdir, current.key, f"{current.key} needs Cody{waited}", current.reason[:160])
+        if current.needs_operator != "owner question":
+            current.needs_operator = "owner question"; state.save(tdir, current)
+        return Step(current.key, current.state, "needs Cody: owner question", detail=current.reason, wait=True)
     active = current.recovery.get("active") if isinstance(current.recovery, dict) else None
     if active and recovery.orphaned(cfg, active):
         current.recovery["active"] = None

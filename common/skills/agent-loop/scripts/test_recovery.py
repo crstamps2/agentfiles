@@ -9,6 +9,10 @@ import recovery
 import state
 
 
+class Crash(BaseException):
+    """A process kill: never swallowed by the per-row error isolation."""
+
+
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -199,9 +203,9 @@ class RecoveryTests(unittest.TestCase):
             nonlocal calls
             calls += 1
             if calls == 1:
-                raise RuntimeError("crash after first delivery")
+                raise Crash("crash after first delivery")
 
-        with self.assertRaisesRegex(RuntimeError, "crash after first"):
+        with self.assertRaises(Crash):
             recovery.consume_events(
                 self.cfg,
                 retry_task=lambda *args, **kwargs: None,
@@ -230,8 +234,8 @@ class RecoveryTests(unittest.TestCase):
             attempts += 1
             runner.retry_task(*args, **kwargs)
             if attempts == 1:
-                raise RuntimeError("crash after task reset")
-        with self.assertRaisesRegex(RuntimeError, "crash after task reset"):
+                raise Crash("crash after task reset")
+        with self.assertRaises(Crash):
             recovery.consume_events(self.cfg, retry_task=retry_then_crash, ensure_supervisor=lambda *args: None)
         recovery.consume_events(self.cfg, retry_task=retry_then_crash, ensure_supervisor=lambda *args: None)
         entries = state.load(self.tdir).attempts[f"{self.key}/001"]
@@ -252,6 +256,29 @@ class RecoveryTests(unittest.TestCase):
         recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda *args: None)
         self.assertIsNone(state.load(self.tdir).recovery["active"])
 
+    def test_a_retry_for_a_task_with_no_attempts_becomes_obsolete_not_a_crash(self):
+        contract = self.contract(contract_id="retry-missing")
+        recovery.activate(self.cfg, self.key, contract)
+        recovery.mark_ready(self.cfg, self.key, "event-1")
+        def no_attempts(*args, **kwargs):
+            raise SystemExit("ZIP-1 has no attempts for task 001")
+        result = recovery.resume_active(self.cfg, self.key, retry_task=no_attempts, ensure_supervisor=lambda *a: None)
+        self.assertEqual(result, "obsolete")
+        self.assertIsNone(state.load(self.tdir).recovery["active"])
+
+    def test_one_failing_event_row_does_not_stop_the_others(self):
+        affected = [self.event_ticket("ZIP-2", "recovery-2"), self.event_ticket("ZIP-3", "recovery-3")]
+        event = recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": affected}, "landed", "fix")
+        started = []
+        def ensure(key, *args):
+            if key == "ZIP-2":
+                raise RuntimeError("launchctl bootstrap failed")
+            started.append(key)
+        results = recovery.consume_events(self.cfg, retry_task=lambda *a, **k: None, ensure_supervisor=ensure)
+        self.assertEqual(started, ["ZIP-3"])
+        self.assertIn("ZIP-2:error", results)
+        self.assertTrue(event.exists(), "the failed row stays pending")
+
     def test_a_contract_not_listed_on_its_defect_is_orphaned(self):
         contract = recovery.new_contract(self.key, {"state": "implement"}, {"kind": "resume-stage", "state": "implement"}, ("shared-defect",))
         path = self.cfg.state_root / "defects" / "open" / "shared-defect.json"
@@ -266,8 +293,8 @@ class RecoveryTests(unittest.TestCase):
         recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": affected}, "landed", "fix-1")
         def unavailable(*args):
             raise RuntimeError("launchd unavailable")
-        with self.assertRaisesRegex(RuntimeError, "launchd unavailable"):
-            recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=unavailable)
+        first = recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=unavailable)
+        self.assertEqual(first, ["ZIP-2:error"])
         started = []
         recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda key, *args: started.append(key))
         self.assertEqual(started, ["ZIP-2"])

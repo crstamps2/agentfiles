@@ -309,6 +309,42 @@ class RunnerHarness(unittest.TestCase):
         self.assertIn("PROPOSED COHORT", out.getvalue())
         self.assertFalse((self.cfg.state_root / "cohort.json").exists())
 
+    def waiting_ticket(self):
+        import recovery
+        tdir = self.cfg.ticket_dir("ZIP-9")
+        state.save(tdir, state.Ticket(key="ZIP-9", state="blocked", previous="implement", reason="owner", worktree=str(self.wt)))
+        contract = recovery.new_contract("ZIP-9", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"}, ("defect-9",))
+        recovery.activate(self.cfg, "ZIP-9", contract)
+        return tdir, contract
+
+    def test_resume_refuses_a_ticket_with_an_active_recovery_and_names_the_escape(self):
+        tdir, _ = self.waiting_ticket()
+        err = io.StringIO()
+        with patch("supervise.start") as start, contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            self.cli("resume", "--ticket", "ZIP-9", "--from", "implement")
+        start.assert_not_called()
+        self.assertIn("recovery-clear", err.getvalue())
+        self.assertEqual(state.load(tdir).state, "blocked")
+
+    def test_recovery_clear_obsoletes_the_contract_and_resumes(self):
+        tdir, contract = self.waiting_ticket()
+        with patch("supervise.ensure_running", return_value=True) as ensure:
+            self.assertEqual(self.cli("recovery-clear", "--ticket", "ZIP-9", "--resume-from", "gates"), 0)
+        ticket = state.load(tdir)
+        self.assertIsNone(ticket.recovery["active"])
+        self.assertEqual(ticket.state, "gates")
+        ensure.assert_called_once()
+
+    def test_repair_approved_emits_a_landing_for_a_needs_approval_record(self):
+        import recovery
+        record = {"id": "defect-9", "summary": "protected", "affected_tickets": [{"ticket": "ZIP-9", "recovery_id": "r"}]}
+        path = self.cfg.state_root / "defects" / "needs-approval" / "defect-9.json"
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_text(json.dumps(record))
+        self.assertEqual(self.cli("repair-approved", "--defect", "defect-9", "--sha", "abc"), 0)
+        events = [json.loads(p.read_text()) for p in (self.cfg.state_root / "defects" / "events").glob("*.json")]
+        self.assertEqual([(e["defect_id"], e["outcome"]) for e in events], [("defect-9", "landed")])
+        self.assertFalse(path.exists())
+
     def test_decision_answer_cli_persists_guidance_and_resumes_ticket(self):
         import decision
         tdir = self.cfg.ticket_dir("ZIP-7873")

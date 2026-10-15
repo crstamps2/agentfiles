@@ -278,6 +278,20 @@ def check_diff(changes: dict, rel: str) -> list:
 
 # --- the repair pass ---------------------------------------------------------------------------
 
+def _reviewer_unavailable(cfg) -> str | None:
+    """Why the repair reviewer's vendor cannot run now, or None. Never swaps it to the implementer's vendor."""
+    import agentdef
+    import providers
+    try:
+        model = agentdef.load(cfg.pi_agents_dir, "repair-reviewer").model
+    except Exception:  # noqa: BLE001 -- no definition here: the review stage reports its own failure
+        return None
+    provider = providers.provider_of(model)
+    if providers.is_exhausted(cfg.state_root, provider):
+        return f"{provider} is out of quota until its reset"
+    return None
+
+
 def _default_agent(cfg, name, prompt, stage, cwd, timeout):
     import plan as plan_mod
     return plan_mod._run_agent(cfg, name, prompt, stage, cwd, timeout)
@@ -422,6 +436,16 @@ def run_pass(cfg, scripts_dir=SCRIPTS, run_agent=None, run_tests=None, notify=No
     recs = [r for r in reconcile_queue(cfg) if r["attempts"] < MAX_ATTEMPTS and r.get("next_attempt_epoch", 0) <= now]
     if not recs:
         return "idle"
+    unavailable = _reviewer_unavailable(cfg)
+    if unavailable:
+        # The opposite-vendor review gate cannot run: do not spend a repair agent run that cannot land.
+        marker = _dir(cfg, "") / "reviewer-wait.json"
+        if not marker.exists() or json.loads(marker.read_text()).get("reason") != unavailable:
+            marker.write_text(json.dumps({"reason": unavailable, "utc": _now()}))
+            notify("Runner repair is waiting for its reviewer", unavailable[:160])
+        log(f"repair: reviewer unavailable ({unavailable}); skipping")
+        return "skipped"
+    (_dir(cfg, "") / "reviewer-wait.json").unlink(missing_ok=True)
     lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "repair", "repair")
     if not lease.acquire(hold=True):
         return "busy"
@@ -513,6 +537,12 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
         if not verdict:
             stderr = (review / "stderr.log").read_text(errors="replace") if (review / "stderr.log").exists() else ""
             if re.search(r"oauth|invalid_grant|usage limit|quota|overload|provider unavailable", stderr, re.I):
+                import agentdef, providers
+                try:
+                    reviewer = providers.provider_of(agentdef.load(cfg.pi_agents_dir, "repair-reviewer").model)
+                    providers.mark_exhausted(cfg.state_root, reviewer, stderr[-300:])   # the precheck skips until reset
+                except Exception:  # noqa: BLE001
+                    pass
                 with _record_lock(cfg, rec["id"]):
                     _merge_fresh(cfg, rec)
                     rec["history"].append(f"{_now()} provider-wait: reviewer unavailable: {stderr[-400:]}")

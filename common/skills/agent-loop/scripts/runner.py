@@ -834,6 +834,10 @@ def main(argv=None) -> int:
     sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop", "repair-start", "repair-stop", "cohort-start", "cohort-stop", "cohort-shadow-start"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
     rd = sub.add_parser("report-defect", help="coordinator pane: queue a runner defect for automatic repair")
     rd.add_argument("--ticket", default=None); rd.add_argument("--reason", required=True); rd.add_argument("--evidence-file", default=None)
+    rc = sub.add_parser("recovery-clear", help="operator override: drop a ticket's active recovery contract and resume it")
+    rc.add_argument("--ticket", required=True); rc.add_argument("--resume-from", default=None, choices=sorted(state.RESUMABLE_STATES))
+    ra = sub.add_parser("repair-approved", help="after applying a protected-path repair by hand: wake the tickets waiting on it")
+    ra.add_argument("--defect", required=True); ra.add_argument("--sha", default=None)
     da = sub.add_parser("decision-answer", help="record Cody's guidance and resume a ticket waiting on a product decision")
     da.add_argument("--ticket", required=True); da.add_argument("--guidance", required=True)
     pk = sub.add_parser("park", help="hold a ticket back (supervisor stopped, state kept); the drip resumes it first when a slot frees")
@@ -915,6 +919,11 @@ def main(argv=None) -> int:
         import heal, supervise
         a.from_state = a.from_state or "plan"
         tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
+        active = t.recovery.get("active") if isinstance(t.recovery, dict) else None
+        if active:
+            ap.error(f"{a.ticket} is waiting on automatic recovery {active.get('id')} ({active.get('status')}, "
+                     f"{(active.get('resume') or {}).get('kind')}); it resumes itself when its repair lands. "
+                     f"To override: runner.py recovery-clear --ticket {a.ticket} [--resume-from STAGE]")
         import cohort, drip as _drip
         admitted_now = False
         if _drip.cohort_enabled(cfg) and t.state not in ("human-gate-1", "done"):
@@ -934,8 +943,8 @@ def main(argv=None) -> int:
             t.needs_operator = ""; state.save(tdir, t)
         if t.state in ("human-gate-1", "done"):
             print(f"{a.ticket} is at {t.state}; nothing to resume"); return 0
-        if t.state in ("paused", "blocked"):
-            t.state = a.from_state; t.previous = "blocked"; t.reason = f"operator resume → {a.from_state}"; state.save(tdir, t)
+        if t.state in ("paused", "blocked", "decision-required"):
+            t = state.resume_target(t, a.from_state, reason=f"operator resume → {a.from_state}"); state.save(tdir, t)
             print(f"{a.ticket}: {a.from_state}")
         else:
             print(f"{a.ticket}: already {t.state}; restarting supervisor only")
@@ -951,6 +960,33 @@ def main(argv=None) -> int:
         if admitted_now:
             cohort.activate(cfg, a.ticket)
         return 0
+    if a.cmd == "recovery-clear":
+        import heal, recovery, supervise
+        tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
+        active = t.recovery.get("active") if isinstance(t.recovery, dict) else None
+        if not active:
+            ap.error(f"{a.ticket} has no active recovery")
+        target = a.resume_from or (active.get("resume") or {}).get("state") or "implement"
+        history = t.recovery.setdefault("cleared", [])
+        history.append({**active, "status": "obsolete", "cleared_utc": _now(), "cleared_by": "operator"})
+        t.recovery["active"] = t.recovery.get("queued", []).pop(0) if t.recovery.get("queued") else None
+        t = state.resume_target(t, target, reason=f"operator recovery-clear → {target}")
+        state.save(tdir, t)
+        heal.mark_operator_resume(tdir, f"recovery-clear {active.get('id')}")
+        supervise.ensure_running(a.ticket, t.worktree, cfg.state_root)
+        print(f"{a.ticket}: cleared {active.get('id')}; resumed {target}"); return 0
+    if a.cmd == "repair-approved":
+        import recovery
+        src = cfg.state_root / "defects" / "needs-approval" / f"{a.defect}.json"
+        if not src.is_file():
+            ap.error(f"no needs-approval record for {a.defect}")
+        rec = json.loads(src.read_text())
+        landed = cfg.state_root / "defects" / "landed" / f"{a.defect}-{int(__import__('time').time())}.json"
+        landed.parent.mkdir(parents=True, exist_ok=True)
+        landed.write_text(json.dumps({**rec, "sha": a.sha or "", "resolution": "approved by operator"}, indent=2))
+        recovery.emit_event(cfg, rec, "landed", a.sha or "")
+        src.unlink()
+        print(f"{a.defect}: approved; {len(rec.get('affected_tickets', []))} ticket(s) will resume"); return 0
     if a.cmd == "report-defect":
         import repair
         ev = pathlib.Path(a.evidence_file).read_text(errors="replace") if a.evidence_file else ""

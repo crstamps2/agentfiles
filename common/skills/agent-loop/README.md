@@ -64,6 +64,12 @@ drip uses the legacy `max_in_flight` count.
   first).
 - **Park.** `runner.py park --ticket X` writes `PARKED` first, then releases the slot to the oldest
   waiting ticket; the parked ticket resumes first when a slot frees.
+- **Operator overrides.** `resume` refuses a ticket with an active recovery contract; use
+  `runner.py recovery-clear --ticket X [--resume-from STAGE]` to drop it deliberately. After applying a
+  protected-path patch from `defects/needs-approval/` by hand, `runner.py repair-approved --defect ID
+  [--sha SHA]` wakes every ticket waiting on it. A defect that keeps failing review is re-queued behind
+  newer ones with backoff (one notice), and repair skips entirely while the reviewer's vendor is out of
+  quota rather than reviewing on the implementer's vendor.
 
 ## Lifecycle (one ticket)
 
@@ -112,6 +118,7 @@ decisions, re-raised every six hours while a decision stands.
 | `publish failed` / `finalize failed` / mark-ready / reply / adjudication | republish (after the runner fix that caused it) | 3 |
 | rebase conflict in hand-written files / spent budget / bare `blocked: owner` | structured recovery + repair (slot kept) | — |
 | validated product/API ambiguity | **decision-required** (Cody answers via `decision-answer`) | — |
+| `need(s) Cody` / owner or tier-3/4 question (e.g. reviewer questions) | **notify Cody**, slot kept, never a runner defect | — |
 | `HUMAN` file | **human** takeover (slot kept) | — |
 
 Other invariants the runner enforces so these do not recur: clean base before each attempt (stray

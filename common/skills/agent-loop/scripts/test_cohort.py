@@ -123,7 +123,6 @@ class CohortTests(unittest.TestCase):
             "draft-stage": lambda t, ci, wt: setattr(t, "state", "draft-pr"),
             "draft-pr": lambda t, ci, wt: ci.update(pr_state="draft"),
             "closed-pr": lambda t, ci, wt: ci.update(pr_state="closed"),
-            "merged-pr": lambda t, ci, wt: ci.update(pr_state="merged"),
             "missing-pr": lambda t, ci, wt: ci.pop("pr"),
             "missing-worktree": lambda t, ci, wt: wt.rmdir(),
             "stale-sha": lambda t, ci, wt: (setattr(t, "evidence_sha", "old"), ci.update(ready_marked_sha="old")),
@@ -316,6 +315,7 @@ class ReconcileTests(unittest.TestCase):
             report = self.run_reconcile()
         self.assertEqual(cohort.members(self.cfg), ["ZIP-1"])
         self.assertEqual(cohort.load(self.cfg).slots[0].phase, "reserved")
+        (self.cfg.ticket_dir("ZIP-1") / "spinup-backoff.json").write_text(json.dumps({"next_epoch": 0}))   # backoff elapsed
         with patch("drip.retry_spinup", return_value=pathlib.Path(ticket.worktree)), patch("drip.subprocess.run", return_value=type("Result", (), {"stdout": "internal/zip-1"})()):
             report = self.run_reconcile()
         self.assertIn("ZIP-1", report.admitted)
@@ -411,6 +411,62 @@ class ReconcileTests(unittest.TestCase):
             self.run_reconcile(supervisor)
         self.assertEqual(cohort.members(self.cfg), ["ZIP-1", "ZIP-2", "ZIP-3", "ZIP-4"])
         self.assertEqual(len(supervisor.started), len(set(supervisor.started)))
+
+    def test_one_launchctl_failure_does_not_abort_the_rest_of_the_pass(self):
+        for n in range(1, 4):
+            self.member(f"ZIP-{n}")
+        supervisor = Supervisor()
+        original = supervisor.ensure_running
+        def flaky(key, *args):
+            if key == "ZIP-1":
+                raise RuntimeError("launchctl bootstrap failed: 5")
+            return original(key, *args)
+        supervisor.ensure_running = flaky
+        from unittest.mock import patch
+        with patch("drip.board", return_value=[]), patch("drip.done_in_jira", return_value=set()), patch("drip.shared_services_ready", return_value=True):
+            report = cohort.reconcile(self.cfg, supervisor=supervisor, pr_lookup=lambda pr: "ready", head_lookup=lambda wt: "head-1")
+        self.assertEqual(supervisor.started, ["ZIP-2", "ZIP-3"])
+        self.assertTrue(any("ZIP-1" in error for error in report.errors))
+
+    def test_a_member_that_passed_human_gate_one_is_released(self):
+        for n, stage in ((1, "done"), (2, "human-gate-2"), (3, "colleague-loop")):
+            self.member(f"ZIP-{n}", stage)
+        self.member("ZIP-4", "human-gate-1")
+        (self.cfg.ticket_dir("ZIP-4") / "ci.json").write_text(json.dumps({"pr": 9, "ready_marked_sha": "head-1"}))
+        from unittest.mock import patch
+        with patch("drip.board", return_value=[]), patch("drip.done_in_jira", return_value=set()), patch("drip.shared_services_ready", return_value=True):
+            report = cohort.reconcile(self.cfg, supervisor=Supervisor(), pr_lookup=lambda pr: "merged", head_lookup=lambda wt: "head-1")
+        self.assertEqual(sorted(report.released), ["ZIP-1", "ZIP-2", "ZIP-3", "ZIP-4"])
+        reasons = {row["ticket"]: row["reason"] for row in cohort.load(self.cfg).history if row.get("event") == "released"}
+        self.assertEqual(reasons["ZIP-1"], "passed-human-gate-1")
+
+    def test_dry_run_before_migration_reconciles_a_virtual_cohort(self):
+        for n in range(1, 6):
+            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"; wt.mkdir()
+            (wt / "planning" / f"zip-{n}").mkdir(parents=True)
+            (wt / "planning" / f"zip-{n}" / "transcript.md").write_text(f"## 2026-09-0{n}T00:00:00Z coordinator started\n")
+            state.save(self.cfg.ticket_dir(f"ZIP-{n}"), state.Ticket(key=f"ZIP-{n}", state="implement", worktree=str(wt)))
+        report = self.run_reconcile(dry_run=True)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.retained, ["ZIP-1", "ZIP-2", "ZIP-3", "ZIP-4"])
+        self.assertFalse((self.cfg.state_root / "cohort.json").exists())
+
+    def test_spinup_runs_outside_the_cohort_lease_and_backs_off_after_failures(self):
+        from unittest.mock import patch
+        import drip, locks
+        cohort.initialize(self.cfg)
+        board = [{"key": "ZIP-9", "summary": "x", "status": "Selected for Work", "assignee": None}]
+        held = []
+        def spinup(key, log=print):
+            held.append(locks.is_held(self.cfg.state_root / "locks" / "cohort"))
+            raise drip.SpinupFailed("setup-failed", None)
+        with patch("drip.board", return_value=board), patch("drip.done_in_jira", return_value=set()), \
+             patch("drip.shared_services_ready", return_value=True), patch("drip.spinup_with_panes", side_effect=spinup):
+            for _ in range(6):
+                cohort.reconcile(self.cfg, supervisor=Supervisor(), pr_lookup=lambda pr: "ready", head_lookup=lambda wt: "head-1")
+        self.assertEqual(held[0], False, "spinup ran while holding the cohort lease")
+        self.assertLessEqual(len(held), drip.MAX_SPINUP_ATTEMPTS, "retries were not backed off")
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-9"], "the reservation is kept")
 
     def test_restart_after_supervisor_failure_converges_without_readmission(self):
         from unittest.mock import patch

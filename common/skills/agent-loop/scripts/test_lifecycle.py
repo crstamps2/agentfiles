@@ -1008,6 +1008,20 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(active["defect_ids"], [opened[0]["id"]])
         self.assertEqual(opened[0]["affected_tickets"][0]["recovery_id"], active["id"])
 
+    def test_owner_questions_ask_cody_and_never_become_runner_defects(self):
+        import repair
+        for reason, stage in (("reviewer questions need Cody: comment 6: is the slot API public?", "paused"),
+                              ("plan: critic: tier-4 question for the owner (see plan-review.md)", "blocked")):
+            with self.subTest(reason=reason):
+                self.notified.clear()
+                tdir = self.cfg.ticket_dir("ZIP-7873")
+                state.save(tdir, state.Ticket(key="ZIP-7873", state=stage, previous="plan", reason=reason, worktree=str(self.wt)))
+                step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+                self.assertTrue(step.wait)
+                self.assertIsNone(state.load(tdir).recovery["active"])
+                self.assertEqual(repair.open_defects(self.cfg), [])
+                self.assertTrue(any("needs Cody" in title for title in self.notified), self.notified)
+
     def test_exhausted_ladder_block_gets_an_exact_retry_task_contract(self):
         tdir = self.cfg.ticket_dir("ZIP-7873")
         state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason="task 002: ladder exhausted", worktree=str(self.wt)))

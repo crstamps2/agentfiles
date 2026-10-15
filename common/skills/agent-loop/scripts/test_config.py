@@ -74,12 +74,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.ticket_index("ZIP-10"), 1); self.assertEqual(cfg.ticket_index("ZIP-11"), 2)
         self.assertNotEqual(cfg.ticket_index("ZIP-4275") % 2, cfg.ticket_index("ZIP-4284") % 2)
 
+    def test_cohort_capacity_is_four_and_hard_ceiling_is_seven(self):
+        loaded = config.load(self.path)
+        self.assertEqual(loaded.cohort_capacity, 4)
+        self.assertEqual(loaded.hard_capacity, 7)
+
     def test_more_than_seven_tickets_in_flight_is_refused(self):
         # Cody, 2026-10-08: never more than 7 tickets processing.
         self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[drip]\nmax_in_flight = 8\n')
         with self.assertRaises(config.ConfigError):
             config.load(self.path)
-        self.assertLessEqual(config.load().drip["max_in_flight"], 7)
+        self.assertLessEqual(config.load().drip.get("max_in_flight", config.load().cohort_capacity), 7)
 
     def test_paths_expand_user_and_ticket_dir(self):
         c = config.load(self.path)

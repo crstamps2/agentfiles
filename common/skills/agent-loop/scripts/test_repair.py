@@ -66,6 +66,31 @@ class RecordTests(Fixture):
         recs = repair.open_defects(self.cfg)
         self.assertEqual(len(recs), 1); self.assertEqual(recs[0]["key"], "ZIP-1"); self.assertIn("tb 1", recs[0]["evidence"])
 
+    def test_duplicate_signature_merges_affected_tickets_once(self):
+        first = {"ticket": "ZIP-1", "recovery_id": "recovery-1", "contract_fingerprint": "a"}
+        second = {"ticket": "ZIP-2", "recovery_id": "recovery-2", "contract_fingerprint": "b"}
+        sig = repair.record_defect(self.cfg, "ZIP-1", "heal", "same defect", "first", recovery_ref=first)
+        repair.record_defect(self.cfg, "ZIP-2", "heal", "same defect", "second", recovery_ref=second)
+        repair.record_defect(self.cfg, "ZIP-2", "heal", "same defect", "second", recovery_ref=second)
+        record = repair.open_defects(self.cfg)[0]
+        self.assertEqual(record["id"], sig)
+        self.assertEqual([(row["ticket"], row["recovery_id"]) for row in record["affected_tickets"]],
+                         [("ZIP-1", "recovery-1"), ("ZIP-2", "recovery-2")])
+        self.assertIn("first", record["evidence"])
+        self.assertIn("second", record["evidence"])
+
+    def test_queue_reconciliation_deduplicates_refs_and_marks_landed_signature_not_needed(self):
+        ref = {"ticket": "ZIP-1", "recovery_id": "recovery-1", "contract_fingerprint": "a"}
+        sig = repair.record_defect(self.cfg, "ZIP-1", "heal", "same defect", "evidence", recovery_ref=ref)
+        path = self.cfg.state_root / "defects" / "open" / f"{sig}.json"
+        record = json.loads(path.read_text()); record["affected_tickets"].append(dict(ref)); path.write_text(json.dumps(record))
+        actionable = repair.reconcile_queue(self.cfg)
+        self.assertEqual(len(actionable[0]["affected_tickets"]), 1)
+        (self.cfg.state_root / "defects" / "landed" / f"{sig}-old.json").write_text("{}")
+        self.assertEqual(repair.reconcile_queue(self.cfg), [])
+        self.assertFalse(path.exists())
+        self.assertEqual(len(list((self.cfg.state_root / "defects" / "events").glob("*.json"))), 1)
+
     def test_heal_giving_up_on_a_recurring_failure_records_a_defect(self):
         tdir = self.cfg.ticket_dir("ZIP-1"); tdir.mkdir(parents=True, exist_ok=True)
         for _ in range(heal.MAX_SAME_SIGNATURE):
@@ -137,13 +162,31 @@ class PassTests(Fixture):
         files = git(self.live, "show", "--name-only", "--format=", "HEAD").splitlines()
         self.assertEqual(sorted(files), [f"common/skills/agent-loop/scripts/{n}" for n in ("calc.py", "test_calc.py")])
 
-    def test_a_rejected_fix_does_not_land_and_two_failures_notify(self):
+    def test_a_rejected_fix_enters_diagnostic_retry_instead_of_being_abandoned(self):
         repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
         self.review_verdict = "reject"
         self.assertEqual(self.run_pass(), "rejected")
         self.assertEqual(git(self.live, "rev-parse", "HEAD"), self.base); self.assertEqual(self.notified, [])
-        self.assertEqual(self.run_pass(), "rejected")
-        self.assertEqual(repair.open_defects(self.cfg), []); self.assertEqual(len(self.notified), 1)
+        self.assertEqual(self.run_pass(), "diagnostic-retry")
+        record = repair.open_defects(self.cfg)[0]
+        self.assertEqual(record["attempts"], 0)
+        self.assertTrue(any("diagnostic" in row for row in record["history"]))
+        self.assertEqual(len(list((self.cfg.state_root / "defects" / "events").glob("*.json"))), 1)
+
+    def test_reviewer_auth_failure_does_not_spend_repair_budget(self):
+        repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
+
+        def agent(cfg, name, prompt, stage, cwd, timeout):
+            if name == "repair-reviewer":
+                stage.mkdir(parents=True, exist_ok=True)
+                (stage / "stderr.log").write_text("OAuth refresh failed: invalid_grant")
+                return
+            self.fake_agent(cfg, name, prompt, stage, cwd, timeout)
+
+        outcome = repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=agent, run_tests=self.run_tests,
+                                  notify=lambda title, body: self.notified.append(title), log=lambda m: None)
+        self.assertEqual(outcome, "skipped")
+        self.assertEqual(repair.open_defects(self.cfg)[0]["attempts"], 0)
 
     def test_the_second_attempt_is_told_why_the_first_was_rejected(self):
         # Real smoke run 2: the fix was right but the agent also reordered imports; the reviewer rejected it

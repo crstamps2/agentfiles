@@ -150,6 +150,92 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result, "obsolete")
         self.assertEqual(state.load(self.tdir).recovery["active"], None)
 
+    def event_ticket(self, key, recovery_id):
+        tdir = self.cfg.ticket_dir(key)
+        state.save(tdir, state.Ticket(key=key, state="blocked", previous="implement", worktree=f"/tmp/{key.lower()}"))
+        contract = recovery.new_contract(
+            key,
+            {"state": "implement", "head_sha": "abc123"},
+            {"kind": "resume-stage", "state": "implement"},
+            ("defect-1",),
+            contract_id=recovery_id,
+        )
+        recovery.activate(self.cfg, key, contract)
+        return {"ticket": key, "recovery_id": recovery_id}
+
+    def test_one_landed_event_resumes_every_affected_ticket(self):
+        affected = [self.event_ticket("ZIP-2", "recovery-2"), self.event_ticket("ZIP-3", "recovery-3")]
+        event = recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": affected}, "landed", "abc123")
+        supervisors = []
+        results = recovery.consume_events(
+            self.cfg,
+            retry_task=lambda *args, **kwargs: self.fail("resume-stage called retry-task"),
+            ensure_supervisor=lambda key, *args: supervisors.append(key),
+        )
+        self.assertEqual(results, ["ZIP-2:resumed", "ZIP-3:resumed"])
+        self.assertEqual(supervisors, ["ZIP-2", "ZIP-3"])
+        self.assertEqual(state.load(self.cfg.ticket_dir("ZIP-2")).state, "implement")
+        self.assertFalse(event.exists())
+        self.assertTrue((self.cfg.state_root / "defects" / "events" / "processed" / event.name).exists())
+
+    def test_not_needed_event_also_resumes_a_matching_contract(self):
+        affected = [self.event_ticket("ZIP-2", "recovery-2")]
+        recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": affected}, "not-needed")
+        results = recovery.consume_events(
+            self.cfg,
+            retry_task=lambda *args, **kwargs: None,
+            ensure_supervisor=lambda *args: None,
+        )
+        self.assertEqual(results, ["ZIP-2:resumed"])
+
+    def test_partial_event_delivery_replays_without_duplicate_resume(self):
+        affected = [self.event_ticket("ZIP-2", "recovery-2"), self.event_ticket("ZIP-3", "recovery-3")]
+        event = recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": affected}, "landed", "abc123")
+        supervisors = []
+        calls = 0
+
+        def crash_after_first(*_):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("crash after first delivery")
+
+        with self.assertRaisesRegex(RuntimeError, "crash after first"):
+            recovery.consume_events(
+                self.cfg,
+                retry_task=lambda *args, **kwargs: None,
+                ensure_supervisor=lambda key, *args: supervisors.append(key),
+                after_apply=crash_after_first,
+            )
+        self.assertTrue(event.exists())
+        results = recovery.consume_events(
+            self.cfg,
+            retry_task=lambda *args, **kwargs: None,
+            ensure_supervisor=lambda key, *args: supervisors.append(key),
+        )
+        self.assertEqual(results, ["ZIP-2:obsolete", "ZIP-3:resumed"])
+        self.assertEqual(supervisors, ["ZIP-2", "ZIP-3"])
+
+    def test_event_for_an_obsolete_contract_is_an_audited_no_op(self):
+        affected = [self.event_ticket("ZIP-2", "recovery-old")]
+        ticket = state.load(self.cfg.ticket_dir("ZIP-2"))
+        ticket.recovery["active"] = recovery.new_contract(
+            "ZIP-2",
+            {"state": "gates", "head_sha": "new"},
+            {"kind": "resume-stage", "state": "gates"},
+            ("defect-2",),
+            contract_id="recovery-new",
+        )
+        state.save(self.cfg.ticket_dir("ZIP-2"), ticket)
+        recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": affected}, "landed", "abc123")
+        results = recovery.consume_events(
+            self.cfg,
+            retry_task=lambda *args, **kwargs: self.fail("obsolete event retried work"),
+            ensure_supervisor=lambda *args: self.fail("obsolete event started supervisor"),
+        )
+        self.assertEqual(results, ["ZIP-2:obsolete"])
+        self.assertEqual(state.load(self.cfg.ticket_dir("ZIP-2")).recovery["active"]["id"], "recovery-new")
+
 
 if __name__ == "__main__":
     unittest.main()

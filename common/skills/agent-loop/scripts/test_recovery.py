@@ -216,6 +216,59 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(results, ["ZIP-2:obsolete", "ZIP-3:resumed"])
         self.assertEqual(supervisors, ["ZIP-2", "ZIP-3"])
 
+    def test_retry_side_effect_is_not_duplicated_after_a_crash(self):
+        import heal
+        import ladder
+        import runner
+        contract = self.contract(contract_id="retry-recovery")
+        recovery.activate(self.cfg, self.key, contract)
+        recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": [{"ticket": self.key, "recovery_id": contract["id"]}]}, "landed", "fix-1")
+        attempts = 0
+        def retry_then_crash(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            runner.retry_task(*args, **kwargs)
+            if attempts == 1:
+                raise RuntimeError("crash after task reset")
+        with self.assertRaisesRegex(RuntimeError, "crash after task reset"):
+            recovery.consume_events(self.cfg, retry_task=retry_then_crash, ensure_supervisor=lambda *args: None)
+        recovery.consume_events(self.cfg, retry_task=retry_then_crash, ensure_supervisor=lambda *args: None)
+        entries = state.load(self.tdir).attempts[f"{self.key}/001"]
+        self.assertEqual(len([row for row in entries if row.get("outcome") == ladder.OPERATOR_RESET]), 1)
+        self.assertEqual(len([row for row in heal.history(self.tdir) if row.get("action") == heal.OPERATOR_RESUME]), 1)
+
+    def test_resolution_for_queued_contract_waits_until_that_contract_is_active(self):
+        first = self.contract(contract_id="recovery-first")
+        second = self.contract(contract_id="recovery-second")
+        second["defect_ids"] = ["defect-2"]
+        recovery.activate(self.cfg, self.key, first)
+        recovery.queue(self.cfg, self.key, second)
+        event = recovery.emit_event(self.cfg, {"id": "defect-2", "affected_tickets": [{"ticket": self.key, "recovery_id": second["id"]}]}, "landed")
+        recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda *args: None)
+        self.assertTrue(event.exists())
+        recovery.mark_ready(self.cfg, self.key, "first-resolved")
+        recovery.resume_active(self.cfg, self.key, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda *args: None)
+        recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda *args: None)
+        self.assertIsNone(state.load(self.tdir).recovery["active"])
+
+    def test_supervisor_failure_preserves_pending_recovery_for_replay(self):
+        affected = [self.event_ticket("ZIP-2", "recovery-2")]
+        recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": affected}, "landed", "fix-1")
+        def unavailable(*args):
+            raise RuntimeError("launchd unavailable")
+        with self.assertRaisesRegex(RuntimeError, "launchd unavailable"):
+            recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=unavailable)
+        started = []
+        recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda key, *args: started.append(key))
+        self.assertEqual(started, ["ZIP-2"])
+
+    def test_fingerprint_mismatch_is_obsolete_without_any_resume(self):
+        affected = [self.event_ticket("ZIP-2", "recovery-2")]
+        affected[0]["contract_fingerprint"] = "stale-fingerprint"
+        recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": affected}, "landed", "fix-1")
+        results = recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda *args: self.fail("stale contract resumed"))
+        self.assertEqual(results, ["ZIP-2:obsolete"])
+
     def test_event_for_an_obsolete_contract_is_an_audited_no_op(self):
         affected = [self.event_ticket("ZIP-2", "recovery-old")]
         ticket = state.load(self.cfg.ticket_dir("ZIP-2"))

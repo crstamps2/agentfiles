@@ -296,6 +296,8 @@ def _transcript_note(cfg, key, text: str) -> None:
 
 
 def _after_landing(cfg, rec: dict, sha: str) -> None:
+    if rec.get("affected_tickets"):
+        return  # Structured recovery applies ticket side effects once, under its event receipt.
     keys = [row.get("ticket") for row in rec.get("affected_tickets", [])]
     if rec.get("key"):
         keys.append(rec["key"])

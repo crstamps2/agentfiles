@@ -98,6 +98,14 @@ class RecordTests(Fixture):
         repair.on_heal_verdict(self.cfg, "ZIP-1", "guard failed on the BASE tree too: x", *heal.decide(tdir, "guard failed on the BASE tree too: x"))
         self.assertEqual([r["source"] for r in repair.open_defects(self.cfg)], ["heal"])
 
+    def test_structured_landing_defers_heal_reset_to_event_consumption(self):
+        tdir = self.cfg.ticket_dir("ZIP-1")
+        state.save(tdir, state.Ticket(key="ZIP-1", state="paused", previous="implement", needs_operator="legacy failure"))
+        record = {"id": "defect-1", "key": "ZIP-1", "summary": "parser failure", "affected_tickets": [{"ticket": "ZIP-1", "recovery_id": "recovery-1"}]}
+        repair._after_landing(self.cfg, record, "fix-1")
+        self.assertEqual(heal.history(tdir), [])
+        self.assertEqual(state.load(tdir).needs_operator, "legacy failure")
+
     def test_a_resource_pause_is_not_a_runner_defect(self):
         repair.on_heal_verdict(self.cfg, "ZIP-1", "resource: load 35.49 on 10 cores > 2.0/core", "human", "the same failure has recurred 4 times (x)")
         self.assertEqual(repair.open_defects(self.cfg), [])

@@ -41,6 +41,38 @@ class PlistTests(unittest.TestCase):
             supervise.stop("ZIP-1")
         self.assertFalse(plist.exists())
 
+    def test_ensure_running_does_not_bootout_a_running_or_loaded_supervisor(self):
+        with patch.object(supervise, "status", return_value="state=running, pid=123"), patch.object(supervise, "_launchctl", side_effect=AssertionError("must not restart live work")):
+            self.assertFalse(supervise.ensure_running("ZIP-1", "/wt/a", self.state_root))
+        with patch.object(supervise, "status", return_value="state=waiting"), patch.object(supervise, "_launchctl", side_effect=AssertionError("KeepAlive owns the loaded job")):
+            self.assertFalse(supervise.ensure_running("ZIP-1", "/wt/a", self.state_root))
+
+    def test_ensure_running_starts_missing_supervisor_once_and_respects_takeover(self):
+        with patch.object(supervise, "status", return_value="not loaded"), patch.object(supervise, "start", side_effect=lambda key, wt, root: supervise.write_plist(key, wt, root)):
+            self.assertTrue(supervise.ensure_running("ZIP-1", "/wt/a", self.state_root))
+        self.assertTrue(supervise.plist_path("ZIP-1").exists())
+        tdir = self.state_root / "tickets" / "ZIP-2"; tdir.mkdir(parents=True); (tdir / "HUMAN").touch()
+        with patch.object(supervise, "status", return_value="not loaded"), patch.object(supervise, "start", side_effect=AssertionError("human owns this ticket")):
+            self.assertFalse(supervise.ensure_running("ZIP-2", "/wt/b", self.state_root))
+
+    def test_shadow_periodic_reconciler_always_uses_dry_run(self):
+        with patch.object(supervise, "_launchctl", return_value=type("Result", (), {"returncode": 0})()):
+            supervise.start_periodic(self.state_root, "cohort-reconcile", 60, extra_args=["--dry-run"])
+        p = supervise.AGENTS_DIR / "com.cody.agent-loop.cohort-reconcile.plist"
+        payload = plistlib.loads(p.read_bytes())
+        self.assertEqual(payload["ProgramArguments"][-2:], ["cohort-reconcile", "--dry-run"])
+
+    def test_periodic_cohort_reconciler_is_not_reported_as_a_ticket(self):
+        supervise.write_plist("ZIP-1", "/wt/a", self.state_root)
+        with patch.object(supervise, "_launchctl", return_value=type("Result", (), {"returncode": 0})()):
+            supervise.start_periodic(self.state_root, "cohort-reconcile", 60)
+            supervise.start_periodic(self.state_root, "repair", 300)
+        self.assertEqual(supervise.active(), ["ZIP-1"])
+        p = supervise.AGENTS_DIR / "com.cody.agent-loop.cohort-reconcile.plist"
+        payload = plistlib.loads(p.read_bytes())
+        self.assertEqual(payload["StartInterval"], 60)
+        self.assertEqual(payload["ProgramArguments"][-1], "cohort-reconcile")
+
     def test_label_and_active_roundtrip(self):
         supervise.write_plist("ZIP-1", "/wt/a", self.state_root); supervise.write_plist("ZIP-2", "/wt/b", self.state_root)
         self.assertEqual(supervise.active(), ["ZIP-1", "ZIP-2"])

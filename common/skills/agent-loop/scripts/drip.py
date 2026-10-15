@@ -111,8 +111,11 @@ def park(cfg, key: str) -> None:
         slot = next((row for row in cohort.load(cfg).slots if row.ticket == key), None)
         if slot:
             sequence = slot.admission_sequence
+    tdir.mkdir(parents=True, exist_ok=True)
     (tdir / "PARKED.json").write_text(json.dumps({"admission_sequence": sequence}, indent=2))
     (tdir / "PARKED").touch()
+    if cohort_enabled(cfg):
+        cohort.park_member(cfg, key)          # after the marker is durable, so a crash cannot lose the ticket
     supervise.stop(key)
 
 

@@ -234,6 +234,70 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual((self.cfg.state_root / "cohort.json").read_bytes(), before)
 
+    def cli(self, *args):
+        return runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), *args])
+
+    def full_cohort(self):
+        import cohort
+        cohort.initialize(self.cfg)
+        for n in range(1, 5):
+            cohort.reserve(self.cfg, f"ZIP-{n}", "test"); cohort.activate(self.cfg, f"ZIP-{n}")
+        state.save(self.cfg.ticket_dir("ZIP-9"), state.Ticket(key="ZIP-9", state="paused", previous="implement", worktree=str(self.wt)))
+
+    def test_manual_resume_cannot_create_a_fifth_cohort_ticket(self):
+        import cohort
+        self.full_cohort()
+        before = (self.cfg.state_root / "cohort.json").read_bytes()
+        with patch("supervise.start") as start, self.assertRaises(SystemExit):
+            self.cli("resume", "--ticket", "ZIP-9", "--from", "implement")
+        start.assert_not_called()
+        self.assertEqual((self.cfg.state_root / "cohort.json").read_bytes(), before)
+        self.assertEqual(state.load(self.cfg.ticket_dir("ZIP-9")).state, "paused")
+        self.assertEqual(len(cohort.members(self.cfg)), 4)
+
+    def test_manual_resume_with_a_free_slot_reserves_it_before_supervision(self):
+        import cohort
+        cohort.initialize(self.cfg)
+        state.save(self.cfg.ticket_dir("ZIP-9"), state.Ticket(key="ZIP-9", state="paused", previous="implement", worktree=str(self.wt)))
+        observed = []
+        with patch("supervise.status", return_value="not loaded"), patch("supervise.start", side_effect=lambda *a: observed.append(cohort.members(self.cfg)) or "label"):
+            self.assertEqual(self.cli("resume", "--ticket", "ZIP-9", "--from", "implement"), 0)
+        self.assertEqual(observed, [["ZIP-9"]])
+        self.assertEqual(cohort.load(self.cfg).slots[0].source, "manual-resume")
+
+    def test_capacity_override_above_seven_is_rejected_before_mutation(self):
+        with patch("drip.tick") as tick, self.assertRaises(SystemExit):
+            self.cli("drip", "--max-in-flight", "8")
+        tick.assert_not_called()
+
+    def test_dry_run_drip_in_cohort_mode_does_not_touch_state_or_supervisors(self):
+        self.full_cohort()
+        files = lambda: {str(p): p.read_bytes() for p in self.cfg.state_root.rglob("*") if p.is_file()}
+        before = files()
+        with patch("supervise.start") as start, patch("supervise.stop") as stop, patch("drip.board", return_value=[]), patch("drip.done_in_jira", return_value=set()):
+            self.assertEqual(self.cli("drip", "--dry-run"), 0)
+        start.assert_not_called(); stop.assert_not_called()
+        self.assertEqual(files(), before)
+
+    def test_park_releases_a_member_after_its_marker_is_durable(self):
+        import cohort
+        self.full_cohort()
+        observed = []
+        with patch("supervise.stop", side_effect=lambda key: observed.append((self.cfg.ticket_dir(key) / "PARKED").exists())):
+            self.assertEqual(self.cli("park", "--ticket", "ZIP-2"), 0)
+        self.assertEqual(observed, [True])
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-1", "ZIP-3", "ZIP-4"])
+        self.assertEqual(json.loads((self.cfg.ticket_dir("ZIP-2") / "PARKED.json").read_text())["admission_sequence"], 2)
+        self.assertEqual(cohort.load(self.cfg).history[-1]["event"], "parked")
+
+    def test_overview_in_cohort_mode_prints_fleet_sections(self):
+        self.full_cohort()
+        out = io.StringIO()
+        with patch("supervise.active", return_value=[]), patch("ledger.collect", return_value=[]), patch("watch.pr_state", return_value="draft"), contextlib.redirect_stdout(out):
+            self.assertEqual(self.cli("overview"), 0)
+        for section in ("COHORT 4/4", "WAITING ADMISSION", "REVIEW READY"):
+            self.assertIn(section, out.getvalue())
+
     def test_decision_answer_cli_persists_guidance_and_resumes_ticket(self):
         import decision
         tdir = self.cfg.ticket_dir("ZIP-7873")

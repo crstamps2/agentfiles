@@ -661,6 +661,15 @@ after = ["001"]
         self.assertEqual([r["outcome"] for r in rows[:2]], ["rejected", "rejected"])   # cheap rungs are consumed as usual
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 3)         # first PREMIUM disagreement pauses
 
+    def test_last_premium_guard_disagreement_pauses_instead_of_crashing_from_blocked(self):
+        """ZIP-8257: the final premium rung is projected blocked before the guard-repair pause."""
+        tasks = self.tasks_with(verification_commands=["test ! -e app/components/worker_touch.rb"])
+        outcome, _ = self.run_task("fail", "fail", "fail", "pass_but_guard_fails", tasks=tasks)
+        self.assertEqual(outcome, "paused")
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertEqual(t.state, "paused")
+        self.assertIn("guard disagreement", t.reason)
+
     def test_premium_contract_complaint_is_environment_and_flagged_for_repair(self):
         """ZIP-7872/005 x3: Terra reported STATUS: blocked / REASON: stale-todo -- the AC was unsatisfiable. That is
         evidence about the plan: no rung consumed, complaint recorded for the task-writer, ticket pauses."""

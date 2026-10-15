@@ -400,6 +400,8 @@ class Runner:
                 self._flag_bad_guard(t, task, cmd, "premium worker reported STATUS: pass; the guard rejected it. The worker's report:\n"
                                                     + (rec.path / "result.md").read_text(errors="replace")[:1500])
                 t = state.load(tdir)
+                if t.state == "blocked":
+                    t = state.transition(t, "implement")
                 if t.state != "paused":
                     t = state.transition(t, "paused", reason=f"guard failed on the BASE tree too (independent of the work): guard disagreement on task {task.id}; {reason[:200]}")
                     state.save(tdir, t)

@@ -832,6 +832,8 @@ def main(argv=None) -> int:
     sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop", "repair-start", "repair-stop"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
     rd = sub.add_parser("report-defect", help="coordinator pane: queue a runner defect for automatic repair")
     rd.add_argument("--ticket", default=None); rd.add_argument("--reason", required=True); rd.add_argument("--evidence-file", default=None)
+    da = sub.add_parser("decision-answer", help="record Cody's guidance and resume a ticket waiting on a product decision")
+    da.add_argument("--ticket", required=True); da.add_argument("--guidance", required=True)
     pk = sub.add_parser("park", help="hold a ticket back (supervisor stopped, state kept); the drip resumes it first when a slot frees")
     pk.add_argument("--ticket", required=True)
     sub.add_parser("repair", help="repair at most one queued runner defect (test-first fix, review, fast-forward the live branch)")
@@ -865,6 +867,14 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
+    if a.cmd == "decision-answer":
+        import decision, supervise
+        try:
+            ticket = decision.answer(cfg, a.ticket, a.guidance, ensure_supervisor=supervise.start)
+        except decision.DecisionError as exc:
+            ap.error(str(exc))
+        print(f"{a.ticket}: decision recorded; resumed {ticket.state}")
+        return 0
     if a.cmd == "resume" and a.all:
         if a.from_state or a.worktree:
             ap.error("resume --all does not take --from or --worktree; resume one ticket to change its stage")

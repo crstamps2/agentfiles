@@ -29,6 +29,7 @@ import traceback
 
 import heal
 import locks
+import recovery
 import state
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
@@ -82,15 +83,37 @@ def _git(cwd, *args, check=True) -> str:
 
 # --- recording ---------------------------------------------------------------------------------
 
-def record_defect(cfg, key, source: str, summary: str, evidence: str = "") -> str:
-    """Queue a defect for repair, once per failure signature. Returns the signature."""
+def _recovery_ref(value) -> dict | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("recovery_ref must be an object")
+    ticket, recovery_id = value.get("ticket"), value.get("recovery_id")
+    if not isinstance(ticket, str) or not ticket or not isinstance(recovery_id, str) or not recovery_id:
+        raise ValueError("recovery_ref needs ticket and recovery_id")
+    return {"ticket": ticket, "recovery_id": recovery_id,
+            "contract_fingerprint": str(value.get("contract_fingerprint", "")), "attached_utc": _now()}
+
+
+def record_defect(cfg, key, source: str, summary: str, evidence: str = "", recovery_ref=None) -> str:
+    """Queue one defect signature and attach every affected ticket recovery."""
     sig = heal.signature(f"{source}|{summary}")
     open_p = _dir(cfg, "open") / f"{sig}.json"
+    ref = _recovery_ref(recovery_ref)
     if open_p.exists():
+        rec = json.loads(open_p.read_text())
+        rec.setdefault("schema_version", 2)
+        refs = rec.setdefault("affected_tickets", [])
+        if ref and not any((row.get("ticket"), row.get("recovery_id")) == (ref["ticket"], ref["recovery_id"]) for row in refs):
+            refs.append(ref)
+        if evidence and evidence not in rec.get("evidence", ""):
+            rec["evidence"] = (rec.get("evidence", "") + "\n" + evidence)[-EVIDENCE_MAX:]
+        open_p.write_text(json.dumps(rec, indent=2))
         return sig
     landed = list(_dir(cfg, "landed").glob(f"{sig}-*.json"))
-    rec = {"id": sig, "key": key, "source": source, "summary": summary[:500], "evidence": evidence[-EVIDENCE_MAX:],
-           "created_utc": _now(), "attempts": 0, "history": []}
+    rec = {"schema_version": 2, "id": sig, "key": key, "source": source, "summary": summary[:500],
+           "evidence": evidence[-EVIDENCE_MAX:], "created_utc": _now(), "attempts": 0, "history": [],
+           "affected_tickets": [ref] if ref else []}
     if len(landed) >= MAX_LANDINGS_PER_SIGNATURE:
         rec["history"].append(f"already repaired {len(landed)} times; not repairing again")
         (_dir(cfg, "failed") / f"{sig}.json").write_text(json.dumps(rec, indent=2))
@@ -124,6 +147,30 @@ def on_heal_verdict(cfg, key, reason: str, action: str, why: str) -> None:
 def open_defects(cfg) -> list:
     recs = [json.loads(p.read_text()) for p in _dir(cfg, "open").glob("*.json")]
     return sorted(recs, key=lambda r: r["created_utc"])
+
+
+def reconcile_queue(cfg) -> list[dict]:
+    """Normalize references and resolve signatures whose fix already landed."""
+    actionable = []
+    for rec in open_defects(cfg):
+        path = _dir(cfg, "open") / f"{rec['id']}.json"
+        refs, seen = [], set()
+        for row in rec.get("affected_tickets", []):
+            pair = (row.get("ticket"), row.get("recovery_id"))
+            if pair[0] and pair[1] and pair not in seen:
+                refs.append(row); seen.add(pair)
+        rec["affected_tickets"] = refs
+        landed = list(_dir(cfg, "landed").glob(f"{rec['id']}-*.json"))
+        if landed:
+            rec["history"].append(f"{_now()} not-needed: signature already landed")
+            recovery.emit_event(cfg, rec, "not-needed")
+            target = _dir(cfg, "landed") / f"{rec['id']}-{int(time.time())}.json"
+            target.write_text(json.dumps({**rec, "resolution": "not-needed: signature already landed"}, indent=2))
+            path.unlink(missing_ok=True)
+            continue
+        path.write_text(json.dumps(rec, indent=2))
+        actionable.append(rec)
+    return actionable
 
 
 # --- gates -------------------------------------------------------------------------------------
@@ -249,19 +296,18 @@ def _transcript_note(cfg, key, text: str) -> None:
 
 
 def _after_landing(cfg, rec: dict, sha: str) -> None:
-    key = rec.get("key")
-    if not key or not (cfg.ticket_dir(key) / "state.json").exists():
-        return
-    tdir = cfg.ticket_dir(key)
-    heal.mark_operator_resume(tdir, f"automatic repair {sha[:10]}")
-    t = state.load(tdir)
-    if t.needs_operator:
-        t.needs_operator = ""; state.save(tdir, t)
-    m = re.search(r"\btask (\w+):", t.reason or "")
-    if t.state == "blocked" and m:
-        import runner
-        runner.retry_task(cfg, key, m.group(1), note=f"automatic repair {sha[:10]}")
-    _transcript_note(cfg, key, f"Defect `{rec['summary'][:200]}` repaired in {sha[:10]}; heal budgets reset. Coordinator: no action.")
+    keys = [row.get("ticket") for row in rec.get("affected_tickets", [])]
+    if rec.get("key"):
+        keys.append(rec["key"])
+    for key in dict.fromkeys(key for key in keys if key):
+        if not (cfg.ticket_dir(key) / "state.json").exists():
+            continue
+        tdir = cfg.ticket_dir(key)
+        heal.mark_operator_resume(tdir, f"automatic repair {sha[:10]}")
+        t = state.load(tdir)
+        if t.needs_operator:
+            t.needs_operator = ""; state.save(tdir, t)
+        _transcript_note(cfg, key, f"Defect `{rec['summary'][:200]}` repaired in {sha[:10]}; recovery event queued.")
 
 
 def _cleanup(live, *paths, branch=None):
@@ -278,11 +324,13 @@ def _fail(cfg, rec, outcome, why, notify):
     rec["attempts"] += 1; rec["history"].append(f"{_now()} {outcome}: {why[:400]}")
     src = _dir(cfg, "open") / f"{rec['id']}.json"
     if rec["attempts"] >= MAX_ATTEMPTS:
-        (_dir(cfg, "failed") / f"{rec['id']}.json").write_text(json.dumps(rec, indent=2)); src.unlink(missing_ok=True)
-        notify("Automatic runner repair failed", f"{rec.get('key') or 'loop'}: {rec['summary'][:100]} -- {why[:100]}")
-        _transcript_note(cfg, rec.get("key"), f"Automatic repair of `{rec['summary'][:200]}` failed twice ({why[:300]}); Cody notified.")
-    else:
+        rec["attempts"] = 0
+        rec["history"].append(f"{_now()} diagnostic-retry: local attempt limit reached; retain evidence and re-diagnose")
         src.write_text(json.dumps(rec, indent=2))
+        recovery.emit_event(cfg, rec, "diagnostic-retry")
+        notify("Automatic runner repair needs deeper diagnosis", f"{rec.get('key') or 'loop'}: {rec['summary'][:100]} -- {why[:100]}")
+        return "diagnostic-retry"
+    src.write_text(json.dumps(rec, indent=2))
     return outcome
 
 
@@ -295,7 +343,7 @@ def run_pass(cfg, scripts_dir=SCRIPTS, run_agent=None, run_tests=None, notify=No
         notify = lambda title, body: _notify_default(cfg, None, title, body)  # noqa: E731
     if state.paused(cfg.state_root):
         return "paused"
-    recs = [r for r in open_defects(cfg) if r["attempts"] < MAX_ATTEMPTS]
+    recs = [r for r in reconcile_queue(cfg) if r["attempts"] < MAX_ATTEMPTS]
     if not recs:
         return "idle"
     lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "repair", "repair")
@@ -339,6 +387,7 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
         if marker.lower().startswith("not-needed") and not changed:
             (_dir(cfg, "landed") / f"{rec['id']}-{int(time.time())}.json").write_text(json.dumps({**rec, "resolution": marker}, indent=2))
             (_dir(cfg, "open") / f"{rec['id']}.json").unlink(missing_ok=True)
+            recovery.emit_event(cfg, rec, "not-needed", base)
             _after_landing(cfg, rec, base); return "not-needed"
         if not marker.lower().startswith("fixed") or not changed:
             return _fail(cfg, rec, "rejected", f"repair agent: {marker or 'no REPAIR marker'}", notify)
@@ -353,6 +402,7 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
             _stage(wt, changed); patch.write_text(_git(wt, "diff", "--cached", base))
             (_dir(cfg, "needs-approval") / f"{rec['id']}.json").write_text(json.dumps({**rec, "violations": viol}, indent=2))
             (_dir(cfg, "open") / f"{rec['id']}.json").unlink(missing_ok=True)
+            recovery.emit_event(cfg, rec, "needs-approval")
             notify("Runner repair needs your approval", f"{rec['summary'][:100]} -- touches a protected safety file; patch at {patch}")
             return "needs-approval"
         if viol:
@@ -380,6 +430,12 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
         if after != changed or _git(wt, "diff", "--cached", base) != before:
             return _fail(cfg, rec, "rejected", "the reviewer modified the change", notify)
         verdict = re.search(r"^VERDICT:\s*(approve|reject)", (review / "review.md").read_text() if (review / "review.md").exists() else "", re.M | re.I)
+        if not verdict:
+            stderr = (review / "stderr.log").read_text(errors="replace") if (review / "stderr.log").exists() else ""
+            if re.search(r"oauth|invalid_grant|usage limit|quota|overload|provider unavailable", stderr, re.I):
+                rec["history"].append(f"{_now()} provider-wait: reviewer unavailable: {stderr[-400:]}")
+                (_dir(cfg, "open") / f"{rec['id']}.json").write_text(json.dumps(rec, indent=2))
+                return "skipped"
         if not verdict or verdict.group(1).lower() != "approve":
             return _fail(cfg, rec, "rejected", f"reviewer: {verdict.group(1) if verdict else 'no verdict'}", notify)
         msg_p = stage / "commit-message.txt"
@@ -391,6 +447,7 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
         sha = _git(live, "rev-parse", "HEAD")
         (_dir(cfg, "landed") / f"{rec['id']}-{int(time.time())}.json").write_text(json.dumps({**rec, "sha": sha}, indent=2))
         (_dir(cfg, "open") / f"{rec['id']}.json").unlink(missing_ok=True)
+        recovery.emit_event(cfg, rec, "landed", sha)
         _after_landing(cfg, rec, sha)
         log(f"repair: landed {sha[:10]} for {rec['summary'][:80]}")
         return "landed"

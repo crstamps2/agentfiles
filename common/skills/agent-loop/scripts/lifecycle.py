@@ -84,18 +84,15 @@ def _manifest_identities(manifest) -> list:
 
 
 def _task_accepted(cfg, key, task) -> bool:
-    """Accepted iff an accepted attempt exists for this id AND that attempt's task.md carries the
-    same slug. Task ids are re-used across manifests (a re-plan starts at 001 again); the slug is
-    what identifies the work."""
+    """Accepted iff an accepted attempt has the same runner-recorded slug.
+
+    Task ids are re-used across manifests, so the slug identifies the work. Legacy entries have
+    no state slug; only a safely-read, matching task.toml can establish their identity."""
+    import attempt
     t = state.load(cfg.ticket_dir(key))
     for e in t.attempts.get(f"{key}/{task.id}", []):
-        if e.get("outcome") != "accepted":
-            continue
-        n = e.get("n")
-        task_toml = cfg.state_root / "attempts" / key / task.id / str(n) / "task.toml" if n is not None else None
-        if task_toml is None or not task_toml.exists():
-            continue
-        if f"slug = {json.dumps(task.slug)}" in task_toml.read_text():
+        if (e.get("outcome") == "accepted"
+                and attempt.task_slug_for_entry(cfg, t, task.id, e) == task.slug):
             return True
     return False
 

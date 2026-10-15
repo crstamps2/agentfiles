@@ -57,6 +57,10 @@ def _pause(cfg, t, reason):
     return _save(cfg, t)
 
 
+RUNNER_TASK_BLOCK = re.compile(r"^task (\d{3}): (?:ladder exhausted|accepted history has no verified slug)$")
+GENERIC_BLOCK = re.compile(r"^(?:owner|blocked|unstructured owner block)?$", re.I)
+
+
 def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
     """Only a complete staged ambiguity may wait on Cody; everything else is repair work."""
     import heal
@@ -89,14 +93,19 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
         return Step(t.key, current.state, "waiting for automatic recovery", detail=current.reason, wait=True)
     target = current.previous if current.previous in state.RESUMABLE_STATES else "implement"
     action = {"kind": "replan", "state": "plan"} if target in ("plan", "plan-review") else {"kind": "resume-stage", "state": target}
+    checkpoint = {"state": target, "head_sha": _head(wt) if pathlib.Path(wt).exists() else "unknown"}
     summary = current.reason or "unstructured owner block"
-    defect_id = heal.signature(f"{source}|{summary}")
-    contract = recovery.new_contract(
-        current.key,
-        {"state": target, "head_sha": _head(wt) if pathlib.Path(wt).exists() else "unknown"},
-        action,
-        (defect_id,),
-    )
+    ladder = RUNNER_TASK_BLOCK.match(summary)
+    if ladder:
+        # A runner-written ladder block: resuming implement would re-block at once; reset that task's ladder.
+        slug = next((task.slug for task in _manifest_identities(_manifest_path(wt, current.key)) if task.id == ladder.group(1)), None)
+        if slug:
+            action = {"kind": "retry-task", "state": "implement", "task_id": ladder.group(1), "task_slug": slug}
+            checkpoint = {**checkpoint, "state": "implement", "task_id": ladder.group(1), "task_slug": slug}
+    # Generic reasons share text across tickets but not causes; one ticket must not spend another's landings.
+    scope = current.key if (ladder or GENERIC_BLOCK.match(summary)) else None
+    defect_id = repair.defect_id(source, summary, scope)
+    contract = recovery.new_contract(current.key, checkpoint, action, (defect_id,))
     # Record first: a contract activated without its defect could never be woken.
     repair.record_defect(
         cfg,
@@ -106,6 +115,7 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
         f"state={current.state} previous={current.previous} reason={summary}",
         recovery_ref={"ticket": current.key, "recovery_id": contract["id"],
                       "contract_fingerprint": recovery.fingerprint(contract)},
+        scope=scope,
     )
     recovery.activate(cfg, current.key, contract)
     return Step(current.key, current.state, "waiting for automatic recovery", detail=summary, wait=True)

@@ -17,7 +17,6 @@ import subprocess
 import tomllib
 
 import cohort
-import heal
 import locks
 import recovery
 import state
@@ -355,12 +354,12 @@ def apply(cfg, plan: MigrationPlan, *, supervisor=None) -> pathlib.Path:
             try:
                 import repair
                 summary = f"legacy block needs diagnosis: {proposal['evidence']}"
-                defect_id = heal.signature(f"migration|{summary}") if proposal["status"] == "waiting-repair" else f"migration-{snap.name}"
+                defect_id = repair.defect_id("migration", summary, key) if proposal["status"] == "waiting-repair" else f"migration-{snap.name}"
                 contract = recovery.new_contract(key, proposal["checkpoint"], proposal["resume"], (defect_id,), status="waiting-repair")
                 if proposal["status"] == "waiting-repair":
                     repair.record_defect(cfg, key, "migration", summary, proposal["evidence"],
                                          recovery_ref={"ticket": key, "recovery_id": contract["id"],
-                                                       "contract_fingerprint": recovery.fingerprint(contract)})
+                                                       "contract_fingerprint": recovery.fingerprint(contract)}, scope=key)
                 t = state.load(cfg.ticket_dir(key))
                 prior = t.recovery.get("active") if isinstance(t.recovery, dict) else None
                 if proposal.get("supersedes") and prior and prior.get("id") == proposal["supersedes"]:

@@ -987,7 +987,8 @@ class LifecycleTests(unittest.TestCase):
         contract = recovery.new_contract("ZIP-7873", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"}, ("defect-1",))
         recovery.activate(self.cfg, "ZIP-7873", contract)
         linked = self.cfg.state_root / "defects" / "open" / "defect-1.json"
-        linked.parent.mkdir(parents=True, exist_ok=True); linked.write_text("{}")
+        linked.parent.mkdir(parents=True, exist_ok=True)
+        linked.write_text(json.dumps({"id": "defect-1", "affected_tickets": [{"ticket": "ZIP-7873", "recovery_id": contract["id"]}]}))
         with patch("heal.decide", side_effect=AssertionError("recovery wait must precede self-heal")):
             _, steps, ticket = self.run_once()
         self.assertTrue(steps[0].wait)
@@ -1006,6 +1007,20 @@ class LifecycleTests(unittest.TestCase):
         opened = repair.open_defects(self.cfg)
         self.assertEqual(active["defect_ids"], [opened[0]["id"]])
         self.assertEqual(opened[0]["affected_tickets"][0]["recovery_id"], active["id"])
+
+    def test_exhausted_ladder_block_gets_an_exact_retry_task_contract(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason="task 002: ladder exhausted", worktree=str(self.wt)))
+        lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        active = state.load(tdir).recovery["active"]
+        self.assertEqual(active["resume"], {"kind": "retry-task", "state": "implement", "task_id": "002", "task_slug": "b"})
+
+    def test_generic_blocks_on_different_tickets_get_separate_defects(self):
+        import repair
+        for key in ("ZIP-7873", "ZIP-7874"):
+            state.save(self.cfg.ticket_dir(key), state.Ticket(key=key, state="blocked", previous="implement", reason="owner", worktree=str(self.wt)))
+            lifecycle._decision_or_recovery(self.cfg, state.load(self.cfg.ticket_dir(key)), self.wt)
+        self.assertEqual(len(repair.open_defects(self.cfg)), 2)
 
     def test_defect_recording_failure_leaves_no_orphaned_contract(self):
         tdir = self.cfg.ticket_dir("ZIP-7873")

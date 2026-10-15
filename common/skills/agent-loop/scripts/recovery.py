@@ -99,10 +99,18 @@ def orphaned(cfg, contract: dict) -> bool:
     if contract.get("status") != "waiting-repair" or contract.get("last_event_id"):
         return False
     root = pathlib.Path(cfg.state_root) / "defects"
+    mine = (contract.get("ticket"), contract.get("id"))
     for defect_id in contract.get("defect_ids", []):
         for queue in ("open", "needs-approval", "failed", "landed"):
-            if (root / queue / f"{defect_id}.json").exists() or any((root / queue).glob(f"{defect_id}-*.json")):
-                return False
+            for path in [root / queue / f"{defect_id}.json", *(root / queue).glob(f"{defect_id}-*.json")]:
+                try:
+                    record = json.loads(path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    continue
+                # Signatures are shared across tickets: only a record that lists this contract can wake it.
+                if any((row.get("ticket"), row.get("recovery_id")) == mine
+                       for row in record.get("affected_tickets", []) if isinstance(row, dict)):
+                    return False
     return True
 
 

@@ -1,4 +1,5 @@
 import copy
+import json
 import pathlib
 import tempfile
 import unittest
@@ -250,6 +251,15 @@ class RecoveryTests(unittest.TestCase):
         recovery.resume_active(self.cfg, self.key, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda *args: None)
         recovery.consume_events(self.cfg, retry_task=lambda *args, **kwargs: None, ensure_supervisor=lambda *args: None)
         self.assertIsNone(state.load(self.tdir).recovery["active"])
+
+    def test_a_contract_not_listed_on_its_defect_is_orphaned(self):
+        contract = recovery.new_contract(self.key, {"state": "implement"}, {"kind": "resume-stage", "state": "implement"}, ("shared-defect",))
+        path = self.cfg.state_root / "defects" / "open" / "shared-defect.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"id": "shared-defect", "affected_tickets": [{"ticket": "ZIP-other", "recovery_id": "recovery-x"}]}))
+        self.assertTrue(recovery.orphaned(self.cfg, contract))
+        path.write_text(json.dumps({"id": "shared-defect", "affected_tickets": [{"ticket": self.key, "recovery_id": contract["id"]}]}))
+        self.assertFalse(recovery.orphaned(self.cfg, contract))
 
     def test_supervisor_failure_preserves_pending_recovery_for_replay(self):
         affected = [self.event_ticket("ZIP-2", "recovery-2")]

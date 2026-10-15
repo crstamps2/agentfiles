@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
@@ -84,6 +85,12 @@ def validate_contract(payload) -> dict:
     for field in ("created_utc", "updated_utc"):
         _nonempty(value.get(field), field)
     return value
+
+
+def fingerprint(contract: dict) -> str:
+    value = validate_contract(contract)
+    stable = {key: value[key] for key in ("ticket", "checkpoint", "resume", "defect_ids")}
+    return hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()[:20]
 
 
 def new_contract(key, checkpoint, resume, defect_ids=(), *, contract_id=None, status=None) -> dict:

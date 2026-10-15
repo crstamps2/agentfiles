@@ -28,6 +28,7 @@ import botreview
 import ci
 import cohort
 import contracts
+import decision
 import guards
 import ledger
 import plan as plan_mod
@@ -54,6 +55,55 @@ def _pause(cfg, t, reason):
     if t.state != "paused":
         t = state.transition(t, "paused", reason=reason)
     return _save(cfg, t)
+
+
+def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
+    """Only a complete staged ambiguity may wait on Cody; everything else is repair work."""
+    import heal
+    import recovery
+    import repair
+    tdir = cfg.ticket_dir(t.key)
+    candidate = tdir / "decision-candidate.json"
+    if candidate.exists():
+        try:
+            payload = json.loads(candidate.read_text())
+            decided = decision.propose(
+                cfg,
+                t.key,
+                payload,
+                notify=lambda title, body: _notify_once(tdir, t.key, f"{t.key}: {title.lower()}", body),
+            )
+        except (OSError, json.JSONDecodeError, decision.DecisionError) as exc:
+            t.reason = f"invalid decision candidate: {exc}; {t.reason}"[:500]
+            state.save(tdir, t)
+        else:
+            candidate.rename(candidate.with_name(f"decision-candidate.accepted-{decided.decision_request['id']}.json"))
+            return Step(t.key, decided.state, "product decision required", detail=decided.decision_request["question"], wait=True)
+    current = state.load(tdir)
+    active = current.recovery.get("active") if isinstance(current.recovery, dict) else None
+    if active:
+        return Step(t.key, current.state, "waiting for automatic recovery", detail=current.reason, wait=True)
+    target = current.previous if current.previous in state.RESUMABLE_STATES else "implement"
+    action = {"kind": "replan", "state": "plan"} if target in ("plan", "plan-review") else {"kind": "resume-stage", "state": target}
+    summary = current.reason or "unstructured owner block"
+    defect_id = heal.signature(f"{source}|{summary}")
+    contract = recovery.new_contract(
+        current.key,
+        {"state": target, "head_sha": _head(wt) if pathlib.Path(wt).exists() else "unknown"},
+        action,
+        (defect_id,),
+    )
+    recovery.activate(cfg, current.key, contract)
+    repair.record_defect(
+        cfg,
+        current.key,
+        source,
+        summary,
+        f"state={current.state} previous={current.previous} reason={summary}",
+        recovery_ref={"ticket": current.key, "recovery_id": contract["id"],
+                      "contract_fingerprint": recovery.fingerprint(contract)},
+    )
+    return Step(current.key, current.state, "waiting for automatic recovery", detail=summary, wait=True)
 
 
 def _manifest_path(wt, key) -> pathlib.Path:
@@ -129,6 +179,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         return Step(key, t.state, "HUMAN takeover file present", wait=True)
     if (tdir / "PARKED").exists():
         return Step(key, t.state, "parked: waiting for a slot", wait=True)
+    if isinstance(t.recovery, dict) and t.recovery.get("active"):
+        return Step(key, t.state, "waiting for automatic recovery", detail=t.reason, wait=True)
     if t.state == "paused" and t.reason.startswith("guard failed on the BASE tree") and (tdir / "bad-guards.md").exists():
         # Self-repair: the runner proved a verification command fails before the task's work exists,
         # so the manifest -- not the worker -- is wrong. The task-writer rewrites/drops the guard;
@@ -156,11 +208,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         import repair
         repair.on_heal_verdict(cfg, key, t.reason, action, why)
         if action == "human":
-            waited = _waiting_since(tdir, t)
-            _notify_once(tdir, key, f"{key} needs an operator{waited}", f"{why}: {t.reason[:120]}")
-            if t.needs_operator != why:
-                t.needs_operator = why; state.save(tdir, t)
-            return Step(key, "paused", f"needs operator: {why}", detail=t.reason, wait=True)
+            return _decision_or_recovery(cfg, t, wt, source="heal")
         if action == "fix-task":
             try:
                 ft = _lint_fix_task(tdir, t.reason, _manifest_path(wt, key), cfg, key)
@@ -198,8 +246,14 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         print(f"{key}: self-heal {action} ({why}) -> {back}", flush=True)
         return Step(key, back, f"self-heal: {action}", detail=why)
     if t.state == "blocked":
-        _notify_once(tdir, key, f"{key} blocked", t.reason[:140])
-        return Step(key, t.state, t.reason, wait=True)
+        return _decision_or_recovery(cfg, t, wt)
+    if t.state == "decision-required":
+        request = t.decision_request
+        if not request:
+            return _decision_or_recovery(cfg, t, wt)
+        title, body = decision._notice(request)
+        _notify_once(tdir, key, f"{key}: {title.lower()}", body)
+        return Step(key, t.state, "product decision required", detail=request["question"], wait=True)
 
     if t.state in ("queued", "spinup"):
         # worktree already exists in the pilot (spinup is the cmux chain); advance

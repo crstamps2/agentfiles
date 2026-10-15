@@ -784,22 +784,74 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(steps[0].action, "self-heal: retry"); self.assertEqual(r.calls, ["001"])   # implement resumed, worker ran
         import heal; self.assertEqual(heal.history(tdir)[0]["action"], "retry")
 
-    def test_spent_heal_budget_waits_for_operator(self):
+    def test_spent_heal_budget_routes_to_structured_recovery(self):
         import heal
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
         for _ in range(2): heal.record(tdir, "prepare-retry", "gates failed: rails test rc=1", "gates")
         tt = state.transition(tt, "gates"); tt = state.transition(tt, "paused", reason="gates failed: rails test rc=1"); state.save(tdir, tt)
         r, steps, t = self.run_once()
-        self.assertTrue(steps[0].wait); self.assertIn("needs operator", steps[0].action); self.assertEqual(r.calls, [])
-        self.assertIn("ZIP-7873 needs an operator", self.notified)
-        # The coordinator pane and overview read state, not the supervisor log: say it there too.
-        self.assertIn("budget 2 spent", state.load(tdir).needs_operator)
+        self.assertTrue(steps[0].wait); self.assertIn("waiting for automatic recovery", steps[0].action)
+        self.assertIsNotNone(state.load(tdir).recovery["active"])
+        self.assertEqual(r.calls, [])
+        self.assertEqual(self.notified, [])
 
-    def test_human_pause_reasons_wait(self):
+    def test_rebase_conflict_routes_to_structured_recovery(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
         tt = state.transition(tt, "paused", reason="rebase onto origin/main conflicted before task 003; needs a human"); state.save(tdir, tt)
         r, steps, t = self.run_once()
-        self.assertTrue(steps[0].wait); self.assertEqual(r.calls, [])
+        self.assertTrue(steps[0].wait); self.assertIn("automatic recovery", steps[0].action)
+        self.assertIsNotNone(state.load(tdir).recovery["active"])
+        self.assertEqual(r.calls, [])
+
+    def test_blocked_failures_and_bare_owner_claims_are_recovery_not_decisions(self):
+        reasons = [
+            "missing file app/views/components/x.rb",
+            "dependency complaint: task 002 needs 001",
+            "verification failed: rails test rc=1",
+            "rebase conflict in config/locales/en.yml",
+            "provider quota exhausted until tomorrow",
+            "repair budget exhausted",
+            "owner",
+        ]
+        for reason in reasons:
+            with self.subTest(reason):
+                tdir = self.cfg.ticket_dir("ZIP-7873")
+                tt = state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason=reason, worktree=str(self.wt))
+                state.save(tdir, tt)
+                step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+                current = state.load(tdir)
+                self.assertTrue(step.wait)
+                self.assertIsNotNone(current.recovery["active"])
+                self.assertNotEqual(current.state, "decision-required")
+
+    def test_valid_staged_product_ambiguity_enters_decision_required_once(self):
+        import decision
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        tt = state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason="product decision candidate", worktree=str(self.wt))
+        state.save(tdir, tt)
+        payload = {
+            "schema_version": 1,
+            "summary": "Choose the public component API.",
+            "sources": ["Jira AC", "existing API"],
+            "options": [
+                {"id": "records", "label": "Records", "consequences": "Callers can mutate records."},
+                {"id": "values", "label": "Values", "consequences": "Callers use explicit commands."},
+            ],
+            "recommendation": "values",
+            "recommendation_reason": "Explicit commands preserve the shipped API.",
+            "why_unresolved": "The ticket contradicts the documented public API.",
+            "question": "Which API should be public?",
+            "checkpoint": {"state": "implement", "head_sha": "abc"},
+            "resume": {"kind": "resume-stage", "state": "implement"},
+        }
+        (tdir / "decision-candidate.json").write_text(json.dumps(payload))
+        first = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        second = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        current = state.load(tdir)
+        self.assertEqual(current.state, "decision-required")
+        self.assertEqual(first.action, "product decision required")
+        self.assertTrue(second.wait)
+        self.assertEqual(len([title for title in self.notified if "decision" in title]), 2)  # fixture records calls; real notifier dedupes
 
     def test_accepted_but_uncommitted_task_is_republished_before_new_work(self):
         import contracts as c, attempt as attempt_mod
@@ -925,6 +977,19 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(step.wait)
         self.assertEqual(step.action, "not admitted to cohort")
         self.assertEqual(runner.calls, [])
+
+    def test_active_recovery_prevents_self_heal_and_worker_dispatch(self):
+        import recovery
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        ticket = state.load(tdir)
+        ticket = state.transition(ticket, "paused", reason="heavy lane held")
+        state.save(tdir, ticket)
+        contract = recovery.new_contract("ZIP-7873", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"}, ("defect-1",))
+        recovery.activate(self.cfg, "ZIP-7873", contract)
+        with patch("heal.decide", side_effect=AssertionError("recovery wait must precede self-heal")):
+            _, steps, ticket = self.run_once()
+        self.assertTrue(steps[0].wait)
+        self.assertEqual(ticket.state, "paused")
 
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()

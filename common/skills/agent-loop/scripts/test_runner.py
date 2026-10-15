@@ -225,6 +225,35 @@ class RunnerHarness(unittest.TestCase):
         outcome, rows = self.run_task("pass")
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
 
+    def test_decision_answer_cli_persists_guidance_and_resumes_ticket(self):
+        import decision
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        t = state.Ticket(key="ZIP-7873", state="implement", previous="plan-review", worktree=str(self.wt))
+        state.save(tdir, t)
+        payload = {
+            "schema_version": 1,
+            "summary": "Choose one public API.",
+            "sources": ["Jira AC", "current API"],
+            "options": [
+                {"id": "a", "label": "Records", "consequences": "Mutable objects are public."},
+                {"id": "b", "label": "Values", "consequences": "Explicit writes are required."},
+            ],
+            "recommendation": "b",
+            "recommendation_reason": "Explicit writes preserve compatibility.",
+            "why_unresolved": "The ticket and current API disagree.",
+            "question": "Which API should be public?",
+            "checkpoint": {"state": "implement", "head_sha": "abc"},
+            "resume": {"kind": "resume-stage", "state": "implement"},
+        }
+        decision.propose(self.cfg, "ZIP-7873", payload)
+        with patch("supervise.start", return_value="started") as start:
+            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "decision-answer",
+                              "--ticket", "ZIP-7873", "--guidance", "Use immutable values."])
+        self.assertEqual(rc, 0)
+        self.assertEqual(state.load(tdir).state, "implement")
+        self.assertEqual(state.load(tdir).decisions[-1]["guidance"], "Use immutable values.")
+        start.assert_called_once()
+
     def test_human_file_stops_before_launch(self):
         (self.cfg.ticket_dir("ZIP-7873")).mkdir(parents=True, exist_ok=True); (self.cfg.ticket_dir("ZIP-7873") / "HUMAN").touch()
         outcome, rows = self.run_task("pass")

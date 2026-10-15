@@ -87,10 +87,45 @@ class RecordTests(Fixture):
         record = json.loads(path.read_text()); record["affected_tickets"].append(dict(ref)); path.write_text(json.dumps(record))
         actionable = repair.reconcile_queue(self.cfg)
         self.assertEqual(len(actionable[0]["affected_tickets"]), 1)
-        (self.cfg.state_root / "defects" / "landed" / f"{sig}-old.json").write_text("{}")
+        import time as _time
+        (self.cfg.state_root / "defects" / "landed" / f"{sig}-{int(_time.time()) + 5}.json").write_text("{}")
         self.assertEqual(repair.reconcile_queue(self.cfg), [])
         self.assertFalse(path.exists())
         self.assertEqual(len(list((self.cfg.state_root / "defects" / "events").glob("*.json"))), 1)
+
+    def test_record_writes_are_mutually_exclusive_per_signature(self):
+        import threading
+        sig = repair.heal.signature("heal|same defect")
+        done = threading.Event()
+        def writer():
+            repair.record_defect(self.cfg, "ZIP-2", "heal", "same defect", "second",
+                                 recovery_ref={"ticket": "ZIP-2", "recovery_id": "recovery-2"})
+            done.set()
+        with repair._record_lock(self.cfg, sig):
+            repair.record_defect(self.cfg, "ZIP-1", "heal", "same defect", "first",
+                                 recovery_ref={"ticket": "ZIP-1", "recovery_id": "recovery-1"}, _locked=True)
+            thread = threading.Thread(target=writer); thread.start()
+            self.assertFalse(done.wait(0.3), "a second writer entered while the record was locked")
+        thread.join(5)
+        record = repair.open_defects(self.cfg)[0]
+        self.assertEqual(sorted(row["ticket"] for row in record["affected_tickets"]), ["ZIP-1", "ZIP-2"])
+
+    def test_a_recurrence_after_a_landing_still_gets_a_real_repair(self):
+        sig = repair.record_defect(self.cfg, "ZIP-1", "heal", "same defect", "evidence")
+        landed = self.cfg.state_root / "defects" / "landed" / f"{sig}-1000.json"
+        landed.parent.mkdir(parents=True, exist_ok=True); landed.write_text("{}")
+        self.assertEqual([r["id"] for r in repair.reconcile_queue(self.cfg)], [sig])
+
+    def test_a_signature_repaired_twice_stays_open_with_backoff_instead_of_failing_its_tickets(self):
+        sig = repair.heal.signature("heal|same defect")
+        for n in (1000, 2000):
+            p = self.cfg.state_root / "defects" / "landed" / f"{sig}-{n}.json"
+            p.parent.mkdir(parents=True, exist_ok=True); p.write_text("{}")
+        repair.record_defect(self.cfg, "ZIP-1", "heal", "same defect", "evidence",
+                             recovery_ref={"ticket": "ZIP-1", "recovery_id": "recovery-1"})
+        self.assertEqual(list((self.cfg.state_root / "defects" / "failed").glob("*.json")), [])
+        record = json.loads((self.cfg.state_root / "defects" / "open" / f"{sig}.json").read_text())
+        self.assertGreater(record["next_attempt_epoch"], 0)
 
     def test_heal_giving_up_on_a_recurring_failure_records_a_defect(self):
         tdir = self.cfg.ticket_dir("ZIP-1"); tdir.mkdir(parents=True, exist_ok=True)
@@ -181,6 +216,21 @@ class PassTests(Fixture):
         self.assertEqual(record["attempts"], 0)
         self.assertTrue(any("diagnostic" in row for row in record["history"]))
         self.assertEqual(len(list((self.cfg.state_root / "defects" / "events").glob("*.json"))), 1)
+
+    def test_a_ticket_joining_during_the_repair_is_woken_by_the_landing(self):
+        first = {"ticket": "ZIP-1", "recovery_id": "recovery-1", "contract_fingerprint": "a"}
+        late = {"ticket": "ZIP-2", "recovery_id": "recovery-2", "contract_fingerprint": "b"}
+        repair.record_defect(self.cfg, "ZIP-1", "traceback", "AssertionError in calc.add", "trace", recovery_ref=first)
+        def agent(cfg, name, prompt, stage, cwd, timeout):
+            if name == "repair-agent":
+                repair.record_defect(self.cfg, "ZIP-2", "traceback", "AssertionError in calc.add", "trace", recovery_ref=late)
+            self.fake_agent(cfg, name, prompt, stage, cwd, timeout)
+        outcome = repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=agent, run_tests=self.run_tests,
+                                  notify=lambda title, body: self.notified.append(title), log=lambda m: None)
+        self.assertEqual(outcome, "landed")
+        events = [json.loads(p.read_text()) for p in (self.cfg.state_root / "defects" / "events").glob("*.json")]
+        self.assertEqual(sorted(row["ticket"] for row in events[0]["affected_tickets"]), ["ZIP-1", "ZIP-2"])
+        self.assertEqual(repair.open_defects(self.cfg), [], "the late reference must not resurrect an open record")
 
     def test_an_always_rejected_defect_does_not_starve_younger_ones(self):
         old = repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")

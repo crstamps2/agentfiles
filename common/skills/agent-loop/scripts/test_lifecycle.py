@@ -582,6 +582,17 @@ class LifecycleTests(unittest.TestCase):
         r, steps, t = self.run_once(outcomes=("rejected",))
         self.assertEqual(r.calls, ["001"])
 
+    def test_state_slug_survives_a_tampered_task_toml(self):
+        task = lifecycle.contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")[0]
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "slug": task.slug,
+                                          "rung": {"agent": "x", "tier": "cheap", "n": 1}}]
+        state.save(tdir, tt)
+        d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True)
+        outside = self.cfg.state_root.parent / "other-task.toml"; outside.write_text('id = "001"\nslug = "other"\n')
+        (d / "task.toml").symlink_to(outside)
+        self.assertTrue(lifecycle._task_accepted(self.cfg, "ZIP-7873", task))
+
     def test_visual_task_runs_screenshot_gate_and_pr_body_has_table(self):
         p = self.wt / "planning" / "zip-7873" / "tasks.toml"; p.write_text(MANIFEST.replace('slug = "b"', 'slug = "b"\nvisual = true'))
         (self.wt / "planning" / "zip-7873" / "plan.md").write_text("# plan\n\n## Design decisions\n\n- Tier 1: follow the skill\n\n## Evidence\n\n- read things\n")

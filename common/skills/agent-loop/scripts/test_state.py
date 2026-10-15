@@ -67,10 +67,13 @@ class TransitionTests(unittest.TestCase):
     def test_transition_does_not_alias_mutable_fields(self):
         t = state.load(self.d / "TICKET-1")
         t.attempts["001"] = [{"n": 1}]
+        t.attempt_slugs["attempt-1"] = "task-a"
         t2 = state.transition(t, "spinup")
         t2.attempts["001"].append({"n": 2})
+        t2.attempt_slugs["attempt-2"] = "task-b"
         t2.decisions.append("x")
         self.assertEqual(len(t.attempts["001"]), 1)
+        self.assertEqual(t.attempt_slugs, {"attempt-1": "task-a"})
         self.assertEqual(t.decisions, [])
 
     def test_load_ignores_unknown_keys(self):

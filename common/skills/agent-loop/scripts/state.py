@@ -43,6 +43,7 @@ class Ticket:
     author_vendor: str = ""
     critic_vendor: str = ""
     attempts: dict = dataclasses.field(default_factory=dict)
+    attempt_slugs: dict = dataclasses.field(default_factory=dict)
     decisions: list = dataclasses.field(default_factory=list)
     reason: str = ""
     spinup_failures: int = 0
@@ -81,7 +82,7 @@ def transition(t: Ticket, to: str, reason: str = "") -> Ticket:
         raise IllegalTransition(f"{t.key}: {t.state} -> {to} not allowed (allowed: {sorted(allowed)})")
     return dataclasses.replace(t, state=to, previous=t.state, reason=reason, updated_utc=_now(), needs_operator="",
                                attempts={k: list(v) for k, v in t.attempts.items()},
-                               decisions=list(t.decisions))
+                               attempt_slugs=dict(t.attempt_slugs), decisions=list(t.decisions))
 
 
 def paused(state_root) -> bool:

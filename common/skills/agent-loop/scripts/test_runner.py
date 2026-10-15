@@ -867,6 +867,53 @@ after = ["001"]
         self.assertEqual(outcome, "accepted")
         self.assertEqual({row["arm"] for row in rows}, {"cloud"}); self.assertGreaterEqual(len(rows), 2)
 
+    def test_replanned_task_retries_instead_of_reusing_old_slug_acceptance(self):
+        """ZIP-4287: a re-plan can reuse an id but must not reuse its old acceptance."""
+        self.run_task("pass")
+        legacy = state.load(self.cfg.ticket_dir("ZIP-7873")); legacy.attempts["ZIP-7873/001"][0].pop("slug", None)
+        state.save(self.cfg.ticket_dir("ZIP-7873"), legacy)
+        replacement = self.tasks_with(slug="replacement-task")[0]
+        t = state.load(self.cfg.ticket_dir("ZIP-7873")); self.scenarios = ["pass"]
+        outcome = self._implement(runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher), t, replacement, 0)
+        self.assertEqual(outcome, "accepted")
+        self.assertEqual(self.launches, 2)
+
+    def test_replanned_task_with_missing_legacy_slug_blocks(self):
+        self.run_task("pass")
+        legacy = state.load(self.cfg.ticket_dir("ZIP-7873")); legacy.attempts["ZIP-7873/001"][0].pop("slug", None)
+        state.save(self.cfg.ticket_dir("ZIP-7873"), legacy)
+        (self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "task.toml").unlink()
+        replacement = self.tasks_with(slug="replacement-task")[0]
+        outcome = self._implement(runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher),
+                                  state.load(self.cfg.ticket_dir("ZIP-7873")), replacement, 0)
+        self.assertEqual(outcome, "blocked")
+        self.assertEqual(self.launches, 1)
+
+    def test_state_slug_keeps_tampered_rejected_attempt_on_ladder(self):
+        pause = self.cfg.state_root / "PAUSE"
+        outside = self.cfg.state_root.parent / "replacement-task.toml"; outside.write_text('slug = "replacement-task"\n')
+        real_launcher = self.launcher
+
+        def pause_after_first_attempt(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=None):
+            result = real_launcher(argv, cwd, timeout_s, env, stdout_path, stderr_path, on_start=on_start)
+            task_toml = pathlib.Path(env["AL_TASK_DIR"]) / "task.toml"
+            task_toml.unlink(); task_toml.symlink_to(outside)
+            pause.touch()
+            return result
+
+        t = self._fresh_ticket(); state.save(self.cfg.ticket_dir("ZIP-7873"), t)
+        self.scenarios = ["fail"]
+        outcome = self._implement(runner.Runner(self.cfg, run_id="test", pi_launcher=pause_after_first_attempt), t, self.tasks[0], 0)
+        self.assertEqual(outcome, "paused")
+        history = state.load(self.cfg.ticket_dir("ZIP-7873")).attempts["ZIP-7873/001"]
+        self.assertEqual(history[0]["slug"], self.tasks[0].slug)
+
+        pause.unlink(); self.scenarios = ["pass"]
+        outcome = self._implement(runner.Runner(self.cfg, run_id="test", pi_launcher=self.launcher), state.load(self.cfg.ticket_dir("ZIP-7873")), self.tasks[0], 0)
+        self.assertEqual(outcome, "accepted")
+        history = state.load(self.cfg.ticket_dir("ZIP-7873")).attempts["ZIP-7873/001"]
+        self.assertEqual([entry["rung"]["n"] for entry in history], [1, 2])
+
     # ----- Fix round 1, finding 3: attempt.create() UnsafePath -> no record; ladder
     # advances by hand, append_feedback is skipped, and a later attempt (once the trap is
     # gone) proceeds normally. --------------------------------------------------------

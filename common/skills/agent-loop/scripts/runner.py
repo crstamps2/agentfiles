@@ -287,7 +287,7 @@ class Runner:
             if t.state == "paused":
                 return "paused"
 
-            history = ladder.since_reset(t.attempts.get(lineage, []))
+            history = ladder.since_reset(attempt.history_for_task(self.cfg, t, task.id, task.slug))
             # The arm is sticky for a task once an attempt has produced a REAL outcome. Attempts that
             # never got a fair shot (environment / interrupted) do not pin it, so an operator can
             # re-pin a ticket after an environment defect (ZIP-7873/001: three local attempts died on
@@ -306,7 +306,12 @@ class Runner:
 
             rung = ladder.next_rung(attempts, arm)
             if rung is None:
-                if attempts and attempts[-1].outcome == "accepted": return "accepted"
+                if attempts and attempts[-1].outcome == "accepted":
+                    accepted_entry = next(e for e in reversed(history) if e.get("outcome") in ladder.OUTCOMES)
+                    if attempt.task_slug_for_entry(self.cfg, t, task.id, accepted_entry) == task.slug:
+                        return "accepted"
+                    t = state.transition(t, "blocked", reason=f"task {task.id}: accepted history has no verified slug")
+                    state.save(tdir, t); return "blocked"
                 t = state.transition(t, "blocked", reason=f"task {task.id}: ladder exhausted")
                 state.save(tdir, t); return "blocked"
 
@@ -362,7 +367,7 @@ class Runner:
                 t = state.load(tdir)
                 entries = t.attempts.setdefault(lineage, [])
                 entries.append({"n": None, "rung": dataclasses.asdict(rung), "outcome": outcome,
-                                "reason": reason, "arm": arm, "attempt_id": None})
+                                "reason": reason, "arm": arm, "attempt_id": None, "slug": task.slug})
                 state.save(tdir, t)
                 continue
 
@@ -471,7 +476,7 @@ class Runner:
             agent = _dc.replace(agent, model=resolved)
         # If the PREVIOUS attempt on this lineage died because this vendor is out of quota, run the same
         # rung on the other vendor rather than waiting for the limit to reset (2026-09-18).
-        prior = [e for e in t.attempts.get(f"{t.key}/{task.id}", []) if e.get("outcome") == "environment"]
+        prior = [e for e in attempt.history_for_task(self.cfg, t, task.id, task.slug) if e.get("outcome") == "environment"]
         alt = self.worker_alternate(agent.model) if rung.agent in self.FAILOVER_WORKERS else None
         if not registry_failover and prior and "provider unavailable" in (prior[-1].get("reason") or "") and alt:
             import dataclasses as _dc
@@ -494,6 +499,10 @@ class Runner:
             print(f"{t.key}/{task.id}: reverted stray tracked edits before attempt {n}: {strays[:6]}", file=sys.stderr, flush=True)
         try:
             rec = attempt.create(self.cfg, t.key, task, wt, n, agent, arm, rung, self.run_id)
+            # The worker receives rec.path below, so preserve its task identity in runner-owned state first.
+            ticket_state = state.load(self.cfg.ticket_dir(t.key))
+            ticket_state.attempt_slugs[rec.attempt_id] = task.slug
+            state.save(self.cfg.ticket_dir(t.key), ticket_state)
             reconcile._maybe_crash("after-created")
         except attempt.UnsafePath as e:
             print(f"task {task.id}: unsafe task-level feedback.md, refusing to create attempt {n}: {e}",

@@ -148,12 +148,13 @@ def finalize(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
 
 def project_history(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     """`state.json.attempts[lineage]` gets `{n, rung, outcome, reason, arm, attempt_id,
-    generation}` iff no entry with this `attempt_id` already exists. Idempotent by
+    generation, slug}` iff no entry with this `attempt_id` already exists. Idempotent by
     attempt_id dedupe; short-circuits entirely if `history` is already true."""
     if rec.history:
         return rec
     tdir = cfg.ticket_dir(_ticket_key(rec))
     t = state_mod.load(tdir)
+    slug = t.attempt_slugs.get(rec.attempt_id)
     entries = t.attempts.setdefault(rec.lineage, [])
     if not any(e.get("attempt_id") == rec.attempt_id for e in entries):
         entries.append({
@@ -164,6 +165,7 @@ def project_history(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
             "arm": rec.arm,
             "attempt_id": rec.attempt_id,
             "generation": rec.generation,
+            "slug": slug,
         })
         state_mod.save(tdir, t)
     _maybe_crash("after-history")
@@ -378,7 +380,7 @@ def _ladder_history(cfg, rec: attempt_mod.Record) -> tuple[list, int]:
     `environment` outcomes -- the same shape the in-run path threads through `next_action`."""
     tdir = cfg.ticket_dir(_ticket_key(rec))
     t = state_mod.load(tdir)
-    entries = t.attempts.get(rec.lineage, [])
+    entries = attempt_mod.history_for_task(cfg, t, _task_id(rec), t.attempt_slugs.get(rec.attempt_id))
     history = [ladder_mod.Attempt(ladder_mod.Rung(**e["rung"]), e["outcome"])
                for e in entries if e.get("outcome") in ladder_mod.OUTCOMES]
     env_failures = 0

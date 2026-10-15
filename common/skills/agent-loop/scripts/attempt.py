@@ -17,6 +17,7 @@ import pathlib
 import shutil
 import stat
 import subprocess
+import tomllib
 import uuid
 
 import contracts
@@ -476,6 +477,35 @@ def next_n(root) -> int:
         return 1
     nums = [int(p.name) for p in root.iterdir() if p.is_dir() and p.name.isdigit()]
     return 1 + max(nums, default=0)
+
+
+def task_slug_for_entry(cfg, t, task_id: str, entry) -> str | None:
+    """Return a runner-recorded or safely verified legacy slug; None is ambiguous."""
+    entry_slug = entry.get("slug")
+    if isinstance(entry_slug, str) and entry_slug.strip():
+        return entry_slug
+    if "slug" in entry:
+        return None
+    n = entry.get("n")
+    if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+        return None
+    try:
+        legacy = tomllib.loads(safe_read(attempt_dir(cfg, t.key, task_id, n) / "task.toml"))
+    except (OSError, UnicodeDecodeError, UnsafePath, tomllib.TOMLDecodeError):
+        return None
+    legacy_slug = legacy.get("slug")
+    if legacy.get("id") != task_id or not isinstance(legacy_slug, str) or not legacy_slug.strip():
+        return None
+    return legacy_slug
+
+
+def history_for_task(cfg, t, task_id: str, slug: str) -> list:
+    """Return entries for this id and slug, retaining ambiguous legacy history."""
+    entries = t.attempts.get(f"{t.key}/{task_id}", [])
+    if not isinstance(slug, str) or not slug.strip():
+        return list(entries)
+    return [entry for entry in entries
+            if (entry_slug := task_slug_for_entry(cfg, t, task_id, entry)) is None or entry_slug == slug]
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import pathlib
 import uuid
 
 import heal
+import locks
 import state
 
 SCHEMA_VERSION = 1
@@ -193,9 +194,9 @@ def resume_active(cfg, key, *, retry_task, ensure_supervisor) -> str:
     if active is None:
         return "no-active"
     contract = validate_contract(active)
-    if contract["status"] != "ready-to-resume":
+    if contract["status"] not in ("ready-to-resume", "resuming"):
         return "waiting"
-    if not _task_identity_still_matches(ticket, contract):
+    if ticket.state in ("human-gate-1", "human-gate-2", "done") or not _task_identity_still_matches(ticket, contract):
         _promote(ticket)
         state.save(tdir, ticket)
         return "obsolete"
@@ -203,18 +204,33 @@ def resume_active(cfg, key, *, retry_task, ensure_supervisor) -> str:
     event_id = contract["last_event_id"]
     action = contract["resume"]
     note = f"automatic recovery {event_id}"
-    if action["kind"] == "retry-task":
-        retry_task(cfg, key, action["task_id"], note=note)
-        ticket = state.load(tdir)
-    else:
+    if not contract.get("action_applied"):
+        contract["status"] = "resuming"
+        ticket.recovery["active"] = contract
+        state.save(tdir, ticket)
+        if action["kind"] == "retry-task":
+            retry_task(cfg, key, action["task_id"], note=note)
+            ticket = state.load(tdir)
         ticket = state.resume_target(ticket, action["state"], reason=note)
-
+        contract["action_applied"] = True
+        ticket.recovery["active"] = contract
+        state.save(tdir, ticket)
+    if not any(row.get("action") == heal.OPERATOR_RESUME and row.get("note") == note for row in heal.history(tdir)):
+        heal.mark_operator_resume(tdir, note)
+    if ticket.worktree and pathlib.Path(ticket.worktree).is_dir():
+        transcript = pathlib.Path(ticket.worktree) / "planning" / key.lower() / "transcript.md"
+        marker = f"<!-- recovery {contract['id']} event {event_id} -->"
+        if not transcript.exists() or marker not in transcript.read_text():
+            transcript.parent.mkdir(parents=True, exist_ok=True)
+            with transcript.open("a") as handle:
+                handle.write(f"\n{marker}\nAutomatic recovery: {action['kind']} -> {action['state']}.\n")
+    ensure_supervisor(key, ticket.worktree, cfg.state_root)
+    ticket = state.load(tdir)
     ticket.recovery = _normalize(ticket.recovery)
     active_after_action = ticket.recovery["active"]
     if active_after_action and active_after_action.get("id") == contract["id"]:
         _promote(ticket)
     state.save(tdir, ticket)
-    ensure_supervisor(key, ticket.worktree, cfg.state_root)
     return "resumed"
 
 
@@ -241,7 +257,8 @@ def emit_event(cfg, defect: dict, outcome: str, sha: str = "") -> pathlib.Path:
         pair = (_nonempty(row.get("ticket"), "affected.ticket"),
                 _nonempty(row.get("recovery_id"), "affected.recovery_id"))
         if pair not in seen:
-            rows.append({"ticket": pair[0], "recovery_id": pair[1]})
+            rows.append({"ticket": pair[0], "recovery_id": pair[1],
+                         "contract_fingerprint": row.get("contract_fingerprint", "")})
             seen.add(pair)
     event_id = f"repair-{defect_id}-{uuid.uuid4()}"
     value = {
@@ -277,7 +294,7 @@ def _set_event_wait(cfg, key: str, recovery_id: str, event_id: str, status: str)
     return status
 
 
-def consume_events(cfg, *, retry_task, ensure_supervisor, after_apply=None) -> list[str]:
+def consume_events(cfg, *, retry_task, ensure_supervisor, after_apply=None, can_resume=None) -> list[str]:
     """Apply pending repair events at least once; per-contract receipts make replay idempotent."""
     results = []
     for path in sorted(_events_dir(cfg).glob("*.json")):
@@ -288,25 +305,54 @@ def consume_events(cfg, *, retry_task, ensure_supervisor, after_apply=None) -> l
         if event.get("schema_version") != 1 or event.get("outcome") not in EVENT_OUTCOMES:
             raise RecoveryError(f"unsupported repair event {path.name}")
         event_id = _nonempty(event.get("id"), "event.id")
+        receipts = event.setdefault("receipts", {})
+        pending = False
         for row in event.get("affected_tickets", []):
             key = _nonempty(row.get("ticket"), "affected.ticket")
             recovery_id = _nonempty(row.get("recovery_id"), "affected.recovery_id")
+            receipt_key = f"{key}|{recovery_id}"
+            if receipt_key in receipts:
+                results.append(f"{key}:obsolete")
+                continue
             tdir = cfg.ticket_dir(key)
-            ticket = state.load(tdir)
-            active = ticket.recovery.get("active") if isinstance(ticket.recovery, dict) else None
-            if not isinstance(active, dict) or active.get("id") != recovery_id:
-                result = "obsolete"
-            elif event["outcome"] in ("landed", "not-needed"):
-                mark_ready(cfg, key, event_id)
-                heal.mark_operator_resume(tdir, f"automatic repair {event.get('sha', '')[:10] or event['outcome']}")
-                result = resume_active(cfg, key, retry_task=retry_task, ensure_supervisor=ensure_supervisor)
-            elif event["outcome"] == "needs-approval":
-                result = _set_event_wait(cfg, key, recovery_id, event_id, "manual-safety-review")
-            else:
-                result = _set_event_wait(cfg, key, recovery_id, event_id, "waiting-repair")
-            results.append(f"{key}:{result}")
-            if after_apply is not None:
-                after_apply(event, row, result)
-        processed = _events_dir(cfg, processed=True) / path.name
-        os.replace(path, processed)
+            if (can_resume is not None and not can_resume(key)) or (tdir / "HUMAN").exists() or (tdir / "PARKED").exists():
+                pending = True
+                continue
+            lease = locks.Lease(cfg.state_root / "locks" / f"runner-{key.lower()}", "recovery-event")
+            if not lease.acquire(hold=True):
+                pending = True
+                continue
+            try:
+                ticket = state.load(tdir)
+                active = ticket.recovery.get("active") if isinstance(ticket.recovery, dict) else None
+                queued = ticket.recovery.get("queued", []) if isinstance(ticket.recovery, dict) else []
+                if any(isinstance(candidate, dict) and candidate.get("id") == recovery_id for candidate in queued):
+                    pending = True
+                    continue
+                if not isinstance(active, dict) or active.get("id") != recovery_id:
+                    result = "obsolete"
+                elif row.get("contract_fingerprint") and row["contract_fingerprint"] != fingerprint(active):
+                    result = "obsolete"
+                elif event["defect_id"] not in active.get("defect_ids", []):
+                    result = "obsolete"
+                elif event["outcome"] in ("landed", "not-needed"):
+                    if active.get("last_event_id") != event_id or active.get("status") not in ("ready-to-resume", "resuming"):
+                        mark_ready(cfg, key, event_id)
+                    result = resume_active(cfg, key, retry_task=retry_task, ensure_supervisor=ensure_supervisor)
+                elif event["outcome"] == "needs-approval":
+                    result = _set_event_wait(cfg, key, recovery_id, event_id, "manual-safety-review")
+                else:
+                    result = _set_event_wait(cfg, key, recovery_id, event_id, "waiting-repair")
+                receipts[receipt_key] = {"result": result, "utc": _now()}
+                tmp = path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(event, indent=2))
+                os.replace(tmp, path)
+                results.append(f"{key}:{result}")
+                if after_apply is not None:
+                    after_apply(event, row, result)
+            finally:
+                lease.release()
+        if not pending:
+            processed = _events_dir(cfg, processed=True) / path.name
+            os.replace(path, processed)
     return results

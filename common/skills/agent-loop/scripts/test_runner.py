@@ -394,6 +394,22 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(outcome, "accepted")
         self.assertTrue((self.wt / "app" / "components" / "exact.rb").exists())
 
+    def test_prepare_restores_its_lockfile_change_before_allowlist_check(self):
+        (self.wt / "bin").mkdir()
+        prepare = self.wt / "bin" / "wt"
+        prepare.write_text("#!/bin/sh\nprintf 'prepared\\n' > yarn.lock\nprintf 'prepared\\n'\n")
+        prepare.chmod(0o755)
+        (self.wt / "yarn.lock").write_text("base\n")
+        git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "prepare fixture")
+        tasks = self.tasks_with(verification_commands=["bin/wt prepare --for rails"])
+        outcome, rows = self.run_task("pass", tasks=tasks)
+        self.assertEqual(rows[0]["outcome"], "accepted")
+        self.assertEqual(outcome, "accepted")
+        self.assertEqual((self.wt / "yarn.lock").read_text(), "base\n")
+        self.assertTrue((self.wt / "app" / "components" / "worker_touch.rb").exists())
+        verify_out = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1" / "verify-0.out"
+        self.assertIn("prepared", verify_out.read_text())
+
     def test_verification_timeout_with_forbidden_change_is_rejected_and_restored(self):
         tasks = self.tasks_with(verification_commands=["mkdir -p bin && touch bin/oops && sleep 60"])
         outcome, rows = self.run_task("pass", tasks=tasks)

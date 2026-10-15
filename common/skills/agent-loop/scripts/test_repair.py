@@ -1,4 +1,5 @@
 import json
+import re
 import pathlib
 import subprocess
 import tempfile
@@ -180,6 +181,26 @@ class PassTests(Fixture):
         self.assertEqual(record["attempts"], 0)
         self.assertTrue(any("diagnostic" in row for row in record["history"]))
         self.assertEqual(len(list((self.cfg.state_root / "defects" / "events").glob("*.json"))), 1)
+
+    def test_an_always_rejected_defect_does_not_starve_younger_ones(self):
+        old = repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
+        record = json.loads((self.cfg.state_root / "defects" / "open" / f"{old}.json").read_text())
+        record["created_utc"] = "2026-01-01T00:00:00Z"
+        (self.cfg.state_root / "defects" / "open" / f"{old}.json").write_text(json.dumps(record))
+        young = repair.record_defect(self.cfg, None, "traceback", "KeyError in calc.sub", "trace")
+        attempted = []
+        def agent(cfg, name, prompt, stage, cwd, timeout):
+            if name == "repair-agent":
+                attempted.append(re.search(r"/([0-9a-f]{12})-\d+/evidence\.md", prompt).group(1))
+            self.fake_agent(cfg, name, prompt, stage, cwd, timeout)
+        self.review_verdict = "reject"
+        for _ in range(4):
+            repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=agent, run_tests=self.run_tests,
+                            notify=lambda title, body: self.notified.append(title), log=lambda m: None)
+        self.assertIn(young, attempted, "the younger defect was never attempted")
+        self.assertLessEqual(attempted.count(old), 2)
+        self.assertEqual(attempted, [old, old, young, young])
+        self.assertEqual(len([t for t in self.notified if "deeper diagnosis" in t]), 2, "one notice per record, not per pass")
 
     def test_reviewer_auth_failure_does_not_spend_repair_budget(self):
         repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")

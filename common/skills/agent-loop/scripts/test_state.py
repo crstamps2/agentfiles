@@ -68,13 +68,44 @@ class TransitionTests(unittest.TestCase):
         t = state.load(self.d / "TICKET-1")
         t.attempts["001"] = [{"n": 1}]
         t.attempt_slugs["attempt-1"] = "task-a"
+        t.recovery = {"active": {"checkpoint": {"state": "implement"}}, "queued": []}
+        t.decision_request = {"options": [{"id": "A"}]}
         t2 = state.transition(t, "spinup")
         t2.attempts["001"].append({"n": 2})
         t2.attempt_slugs["attempt-2"] = "task-b"
         t2.decisions.append("x")
+        t2.recovery["active"]["checkpoint"]["state"] = "gates"
+        self.assertIsNotNone(t2.decision_request)
+        t2.decision_request["options"].append({"id": "B"})
         self.assertEqual(len(t.attempts["001"]), 1)
         self.assertEqual(t.attempt_slugs, {"attempt-1": "task-a"})
         self.assertEqual(t.decisions, [])
+        self.assertEqual(t.recovery["active"]["checkpoint"]["state"], "implement")
+        self.assertEqual(t.decision_request["options"], [{"id": "A"}])
+
+    def test_old_state_loads_recovery_and_decision_defaults(self):
+        td = self.d / "TICKET-OLD"
+        td.mkdir(parents=True)
+        (td / "state.json").write_text(json.dumps({"key": "TICKET-OLD", "state": "blocked"}))
+        t = state.load(td)
+        self.assertEqual(t.recovery, {"active": None, "queued": []})
+        self.assertIsNone(t.decision_request)
+
+    def test_decision_required_is_a_real_wait_state_and_resumes_through_saved_target(self):
+        t = state.load(self.d / "TICKET-DECISION")
+        for target in ("spinup", "plan", "plan-review", "implement"):
+            t = state.transition(t, target)
+        t = state.transition(t, "decision-required", reason="public API ambiguous")
+        self.assertEqual(t.state, "decision-required")
+        resumed = state.resume_target(t, "plan", reason="owner chose compatibility")
+        self.assertEqual((resumed.state, resumed.previous), ("plan", "decision-required"))
+
+    def test_recovery_resume_rejects_terminal_and_unknown_targets(self):
+        t = state.transition(state.load(self.d / "TICKET-RESUME"), "spinup")
+        t = state.transition(t, "paused", reason="repair")
+        for target in ("done", "human-gate-1", "bogus"):
+            with self.subTest(target=target), self.assertRaises(state.IllegalTransition):
+                state.resume_target(t, target)
 
     def test_load_ignores_unknown_keys(self):
         td = self.d / "TICKET-2"

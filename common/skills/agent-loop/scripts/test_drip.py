@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+import cohort
 import config
 import drip
 import state
@@ -155,6 +156,65 @@ class DripSpinupFailureTests(DripFixture):
         self.assertIn("needs operator", t.reason)
         self.rerun.reset_mock(); drip.tick(self.cfg, log=lambda m: None)
         self.rerun.assert_not_called()
+
+
+class CohortAdmissionTests(DripFixture):
+    def setUp(self):
+        super().setUp()
+        cohort.initialize(self.cfg)
+        import supervise
+        self.ready = patch.object(drip, "shared_services_ready", return_value=True).start()
+        self.start = patch.object(supervise, "start", return_value="label").start()
+        self.addCleanup(patch.stopall)
+
+    def worktree(self, key):
+        wt = self.wts / key.lower(); wt.mkdir(parents=True, exist_ok=True); return wt
+
+    def admit(self, key, ticket_state="implement", phase="active"):
+        cohort.reserve(self.cfg, key, "test")
+        if phase == "active":
+            cohort.activate(self.cfg, key)
+        state.save(self.cfg.ticket_dir(key), state.Ticket(key=key, state=ticket_state, worktree=str(self.wts / key.lower())))
+
+    def test_all_waiting_states_retain_their_slots(self):
+        self.admit("ZIP-1", "paused")
+        self.admit("ZIP-2", "blocked")
+        self.admit("ZIP-3", "decision-required")
+        self.admit("ZIP-4", "implement")
+        ticket = state.load(self.cfg.ticket_dir("ZIP-4"))
+        ticket.recovery["active"] = {"status": "waiting-provider"}
+        state.save(self.cfg.ticket_dir("ZIP-4"), ticket)
+        self.assertEqual(drip.in_flight(self.cfg), ["ZIP-1", "ZIP-2", "ZIP-3", "ZIP-4"])
+        self.assertEqual(drip.tick(self.cfg, log=lambda m: None, dry_run=True), [])
+
+    def test_ticket_is_reserved_before_spinup_and_activated_after_success(self):
+        seen = []
+
+        def spin(key, log):
+            seen.append((key, cohort.load(self.cfg).slots[0].phase, cohort.members(self.cfg)))
+            return self.worktree(key)
+
+        with patch.object(drip, "spinup_with_panes", side_effect=spin), \
+             patch.object(drip, "candidates", return_value=[BOARD[3]]):
+            self.assertEqual(drip.tick(self.cfg, log=lambda m: None), ["ZIP-7874"])
+        self.assertEqual(seen, [("ZIP-7874", "reserved", ["ZIP-7874"])])
+        self.assertEqual(cohort.load(self.cfg).slots[0].phase, "active")
+
+    def test_failed_spinup_keeps_the_same_reservation(self):
+        worktree = self.worktree("ZIP-7874")
+        with patch.object(drip, "spinup_with_panes", side_effect=drip.SpinupFailed("setup-failed", str(worktree))), \
+             patch.object(drip, "candidates", return_value=[BOARD[3]]):
+            self.assertEqual(drip.tick(self.cfg, log=lambda m: None), [])
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-7874"])
+        self.assertEqual(cohort.load(self.cfg).slots[0].phase, "reserved")
+
+    def test_parked_order_uses_persisted_admission_sequence(self):
+        for key, sequence in (("ZIP-9", 9), ("ZIP-2", 2)):
+            tdir = self.cfg.ticket_dir(key); tdir.mkdir(parents=True)
+            state.save(tdir, state.Ticket(key=key, state="implement"))
+            (tdir / "PARKED").touch()
+            (tdir / "PARKED.json").write_text(drip.json.dumps({"admission_sequence": sequence}))
+        self.assertEqual(drip.parked(self.cfg), ["ZIP-2", "ZIP-9"])
 
 
 class MultiEpicTests(DripFixture):

@@ -22,6 +22,8 @@ import pathlib
 import subprocess
 import sys
 
+import cohort
+import recovery
 import state
 
 IN_FLIGHT_STATES = {"spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop", "paused"}
@@ -33,7 +35,13 @@ ME = "cody@zipline.inc"
 HARD_MAX_IN_FLIGHT = 7             # Cody, 2026-10-08: never more than 7 tickets processing
 
 
+def cohort_enabled(cfg) -> bool:
+    return (cfg.state_root / "cohort.json").exists()
+
+
 def limit(cfg) -> int:
+    if cohort_enabled(cfg):
+        return cohort.load(cfg).capacity
     return min(int(cfg.drip.get("max_in_flight", 3)), HARD_MAX_IN_FLIGHT)
 
 
@@ -77,21 +85,40 @@ def done_in_jira(keys: list[str]) -> set[str]:
     return {r["key"] for r in rows}
 
 
+def _park_order(mark: pathlib.Path):
+    metadata = mark.with_name("PARKED.json")
+    try:
+        value = json.loads(metadata.read_text())
+        sequence = int(value["admission_sequence"])
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        sequence = 10**12
+    return sequence, mark.stat().st_mtime, mark.parent.name
+
+
 def parked(cfg) -> list[str]:
-    """Parked tickets, oldest first."""
+    """Parked tickets, oldest durable admission first."""
     root = cfg.state_root / "tickets"
-    marks = sorted(root.glob("*/PARKED"), key=lambda p: p.stat().st_mtime) if root.exists() else []
+    marks = sorted(root.glob("*/PARKED"), key=_park_order) if root.exists() else []
     return [m.parent.name for m in marks if (m.parent / "state.json").exists()]
 
 
 def park(cfg, key: str) -> None:
     """Hold a ticket back without losing its state: stop its supervisor; the drip resumes it later."""
     import supervise
-    (cfg.ticket_dir(key) / "PARKED").touch()
+    tdir = cfg.ticket_dir(key)
+    sequence = 10**12
+    if cohort_enabled(cfg):
+        slot = next((row for row in cohort.load(cfg).slots if row.ticket == key), None)
+        if slot:
+            sequence = slot.admission_sequence
+    (tdir / "PARKED.json").write_text(json.dumps({"admission_sequence": sequence}, indent=2))
+    (tdir / "PARKED").touch()
     supervise.stop(key)
 
 
 def in_flight(cfg) -> list[str]:
+    if cohort_enabled(cfg):
+        return cohort.members(cfg)
     out = []
     tdir_root = cfg.state_root / "tickets"
     if not tdir_root.exists():
@@ -233,14 +260,24 @@ def spinup_retries(cfg) -> list[state.Ticket]:
 
 
 def record_spinup_failure(cfg, key: str, e: SpinupFailed, log=print) -> None:
-    """Blocked keeps the drip from re-running the chain (a duplicate workspace) and frees the slot."""
+    """Record setup failure without releasing a cohort reservation."""
     tdir = cfg.ticket_dir(key)
     t = state.load(tdir) if (tdir / "state.json").exists() else state.Ticket(key=key)
     n = t.spinup_failures = t.spinup_failures + 1
     t.state, t.worktree = "blocked", e.worktree or t.worktree
-    nxt = "needs operator" if n >= MAX_SPINUP_ATTEMPTS else "the drip re-runs setup next pass"
+    if cohort_enabled(cfg):
+        nxt = "cohort retains the slot and retries this ticket"
+    else:
+        nxt = "needs operator" if n >= MAX_SPINUP_ATTEMPTS else "the drip re-runs setup next pass"
     t.reason = f"spinup failed ({e.status}), attempt {n}/{MAX_SPINUP_ATTEMPTS}; {nxt}"
     state.save(tdir, t)
+    if cohort_enabled(cfg) and not state.load(tdir).recovery.get("active"):
+        contract = recovery.new_contract(
+            key,
+            {"state": "spinup", "previous": t.previous, "head_sha": t.head_sha},
+            {"kind": "retry-spinup", "state": "spinup"},
+        )
+        recovery.activate(cfg, key, contract)
     log(f"drip: {key} {t.reason}")
 
 
@@ -275,47 +312,100 @@ def tick(cfg, log=print, dry_run: bool = False) -> list[str]:
         lease.release()
 
 
+def _finish_spinup(cfg, key: str, wt, supervise) -> None:
+    tdir = cfg.ticket_dir(key)
+    t = state.load(tdir) if (tdir / "state.json").exists() else state.Ticket(key=key)
+    t.state, t.reason = ("queued", "") if t.state == "blocked" else (t.state, t.reason)
+    t.worktree = str(wt)
+    t.branch = subprocess.run(["git", "-C", str(wt), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
+    if cohort_enabled(cfg) and isinstance(t.recovery, dict):
+        active = t.recovery.get("active")
+        if isinstance(active, dict) and active.get("resume", {}).get("kind") == "retry-spinup":
+            t.recovery["active"] = None
+    state.save(tdir, t)
+    supervise.start(key, str(wt), cfg.state_root)
+    if cohort_enabled(cfg):
+        cohort.activate(cfg, key)
+
+
 def _tick_locked(cfg, log=print, dry_run: bool = False) -> list[str]:
     import supervise
+    enabled = cohort_enabled(cfg)
     cap = limit(cfg)
     flight = in_flight(cfg)
     free = cap - len(flight)
-    log(f"drip: in flight {flight} ({len(flight)}/{cap})")
-    if free <= 0:
-        return []
+    noun = "cohort" if enabled else "in flight"
+    log(f"drip: {noun} {flight} ({len(flight)}/{cap})")
     if not dry_run and not shared_services_ready(log):
         log("drip: shared services are not ready; skipping this tick")
         return []
+
     started = []
-    for key in parked(cfg)[:free]:
-        log(f"drip: resuming parked {key}")
-        if not dry_run:
-            (cfg.ticket_dir(key) / "PARKED").unlink(missing_ok=True)
-            supervise.start(key, state.load(cfg.ticket_dir(key)).worktree, cfg.state_root)
-        started.append(key)
-    free -= len(started)
+    if enabled:
+        reserved = [row for row in cohort.load(cfg).slots if row.ticket and row.phase == "reserved"]
+        for slot in reserved:
+            key = slot.ticket
+            log(f"drip: retrying reserved {key}")
+            if dry_run:
+                started.append(key)
+                continue
+            t = state.load(cfg.ticket_dir(key))
+            spin = (lambda t=t: retry_spinup(cfg, t, log)) if t.worktree and pathlib.Path(t.worktree).is_dir() else (lambda key=key: spinup_with_panes(key, log))
+            try:
+                wt = spin()
+            except SpinupFailed as e:
+                record_spinup_failure(cfg, key, e, log)
+                continue
+            except Exception as e:  # noqa: BLE001
+                log(f"drip: {key} reserved spinup failed: {e}")
+                continue
+            _finish_spinup(cfg, key, wt, supervise)
+            started.append(key)
+        flight = in_flight(cfg)
+        free = cap - len(flight)
+
     if free <= 0:
         return started
-    work = [(t.key, lambda t=t: retry_spinup(cfg, t, log), "retry setup") for t in spinup_retries(cfg)]
+
+    occupied = set(flight)
+    parked_started = 0
+    for key in [candidate for candidate in parked(cfg) if candidate not in occupied][:free]:
+        log(f"drip: resuming parked {key}")
+        if not dry_run:
+            if enabled:
+                cohort.reserve(cfg, key, "parked")
+            (cfg.ticket_dir(key) / "PARKED").unlink(missing_ok=True)
+            (cfg.ticket_dir(key) / "PARKED.json").unlink(missing_ok=True)
+            supervise.start(key, state.load(cfg.ticket_dir(key)).worktree, cfg.state_root)
+            if enabled:
+                cohort.activate(cfg, key)
+        started.append(key)
+        parked_started += 1
+    free -= parked_started
+    if free <= 0:
+        return started
+
+    work = [] if enabled else [(t.key, lambda t=t: retry_spinup(cfg, t, log), "retry setup") for t in spinup_retries(cfg)]
     work += [(r["key"], lambda r=r: spinup_with_panes(r["key"], log), r["summary"][:60]) for r in candidates(cfg, log)]
     for key, spin, what in work[:free]:
         log(f"drip: next → {key} {what}")
         if dry_run:
-            started.append(key); continue
+            started.append(key)
+            continue
+        if enabled:
+            cohort.reserve(cfg, key, "drip")
         try:
             wt = spin()
         except SpinupFailed as e:
-            if e.worktree and pathlib.Path(e.worktree).is_dir():
+            if enabled or (e.worktree and pathlib.Path(e.worktree).is_dir()):
                 record_spinup_failure(cfg, key, e, log)
             else:
                 log(f"drip: {key} spinup failed before a worktree existed: {e}")
-            log("drip: stopping this pass after a spinup failure"); break
+            log("drip: stopping this pass after a spinup failure")
+            break
         except Exception as e:  # noqa: BLE001
-            log(f"drip: {key} spinup failed: {e}"); break
-        tdir = cfg.ticket_dir(key); t = state.load(tdir) if (tdir / "state.json").exists() else state.Ticket(key=key)
-        t.state, t.reason = ("queued", "") if t.state == "blocked" else (t.state, t.reason)
-        t.worktree = str(wt); t.branch = subprocess.run(["git", "-C", str(wt), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
-        state.save(tdir, t)
-        supervise.start(key, str(wt), cfg.state_root)
+            log(f"drip: {key} spinup failed: {e}")
+            break
+        _finish_spinup(cfg, key, wt, supervise)
         started.append(key)
     return started

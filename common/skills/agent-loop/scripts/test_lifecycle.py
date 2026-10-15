@@ -917,6 +917,15 @@ class LifecycleTests(unittest.TestCase):
             step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
         self.assertNotIn("ceiling", step.action); self.assertNotIn("ceiling", state.load(tdir).reason)
 
+    def test_cohort_mode_does_not_dispatch_a_nonmember_ticket(self):
+        import cohort
+        cohort.initialize(self.cfg)
+        runner = FakeRunner(self.cfg, ("accepted",))
+        step = lifecycle.step(self.cfg, runner, None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertTrue(step.wait)
+        self.assertEqual(step.action, "not admitted to cohort")
+        self.assertEqual(runner.calls, [])
+
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()
         r, steps, t = self.run_once()

@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
+import os
+import pathlib
 import uuid
 
+import heal
 import state
 
 SCHEMA_VERSION = 1
@@ -12,6 +16,7 @@ STATUSES = frozenset((
     "waiting-repair", "waiting-provider", "ready-to-resume", "resuming",
     "manual-safety-review", "resolved", "obsolete",
 ))
+EVENT_OUTCOMES = frozenset(("landed", "not-needed", "needs-approval", "diagnostic-retry"))
 ACTION_TARGETS = {
     "republish": "implement",
     "replan": "plan",
@@ -204,3 +209,97 @@ def resume_active(cfg, key, *, retry_task, ensure_supervisor) -> str:
     state.save(tdir, ticket)
     ensure_supervisor(key, ticket.worktree, cfg.state_root)
     return "resumed"
+
+
+def _events_dir(cfg, processed: bool = False) -> pathlib.Path:
+    path = pathlib.Path(cfg.state_root) / "defects" / "events"
+    if processed:
+        path /= "processed"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def emit_event(cfg, defect: dict, outcome: str, sha: str = "") -> pathlib.Path:
+    if outcome not in EVENT_OUTCOMES:
+        raise RecoveryError(f"invalid repair event outcome {outcome!r}")
+    defect_id = _nonempty(defect.get("id"), "defect.id")
+    affected = defect.get("affected_tickets", [])
+    if not isinstance(affected, list):
+        raise RecoveryError("affected_tickets must be a list")
+    rows = []
+    seen = set()
+    for row in affected:
+        if not isinstance(row, dict):
+            raise RecoveryError("affected ticket references must be objects")
+        pair = (_nonempty(row.get("ticket"), "affected.ticket"),
+                _nonempty(row.get("recovery_id"), "affected.recovery_id"))
+        if pair not in seen:
+            rows.append({"ticket": pair[0], "recovery_id": pair[1]})
+            seen.add(pair)
+    event_id = f"repair-{defect_id}-{uuid.uuid4()}"
+    value = {
+        "schema_version": 1,
+        "id": event_id,
+        "defect_id": defect_id,
+        "outcome": outcome,
+        "sha": sha,
+        "affected_tickets": rows,
+        "created_utc": _now(),
+    }
+    target = _events_dir(cfg) / f"{event_id}.json"
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(value, indent=2))
+    os.replace(tmp, target)
+    return target
+
+
+def _set_event_wait(cfg, key: str, recovery_id: str, event_id: str, status: str) -> str:
+    tdir, ticket = _ticket(cfg, key)
+    ticket.recovery = _normalize(ticket.recovery)
+    active = ticket.recovery["active"]
+    if not isinstance(active, dict) or active.get("id") != recovery_id:
+        return "obsolete"
+    active = validate_contract(active)
+    if active.get("last_event_id") == event_id and active.get("status") == status:
+        return status
+    active["status"] = status
+    active["last_event_id"] = event_id
+    active["updated_utc"] = _now()
+    ticket.recovery["active"] = active
+    state.save(tdir, ticket)
+    return status
+
+
+def consume_events(cfg, *, retry_task, ensure_supervisor, after_apply=None) -> list[str]:
+    """Apply pending repair events at least once; per-contract receipts make replay idempotent."""
+    results = []
+    for path in sorted(_events_dir(cfg).glob("*.json")):
+        try:
+            event = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RecoveryError(f"cannot read repair event {path}: {exc}") from exc
+        if event.get("schema_version") != 1 or event.get("outcome") not in EVENT_OUTCOMES:
+            raise RecoveryError(f"unsupported repair event {path.name}")
+        event_id = _nonempty(event.get("id"), "event.id")
+        for row in event.get("affected_tickets", []):
+            key = _nonempty(row.get("ticket"), "affected.ticket")
+            recovery_id = _nonempty(row.get("recovery_id"), "affected.recovery_id")
+            tdir = cfg.ticket_dir(key)
+            ticket = state.load(tdir)
+            active = ticket.recovery.get("active") if isinstance(ticket.recovery, dict) else None
+            if not isinstance(active, dict) or active.get("id") != recovery_id:
+                result = "obsolete"
+            elif event["outcome"] in ("landed", "not-needed"):
+                mark_ready(cfg, key, event_id)
+                heal.mark_operator_resume(tdir, f"automatic repair {event.get('sha', '')[:10] or event['outcome']}")
+                result = resume_active(cfg, key, retry_task=retry_task, ensure_supervisor=ensure_supervisor)
+            elif event["outcome"] == "needs-approval":
+                result = _set_event_wait(cfg, key, recovery_id, event_id, "manual-safety-review")
+            else:
+                result = _set_event_wait(cfg, key, recovery_id, event_id, "waiting-repair")
+            results.append(f"{key}:{result}")
+            if after_apply is not None:
+                after_apply(event, row, result)
+        processed = _events_dir(cfg, processed=True) / path.name
+        os.replace(path, processed)
+    return results

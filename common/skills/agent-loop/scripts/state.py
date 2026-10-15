@@ -1,5 +1,6 @@
 """Per-ticket lifecycle state, persisted as state.json with atomic writes."""
 from __future__ import annotations
+import copy
 import dataclasses
 import datetime as dt
 import json
@@ -7,16 +8,18 @@ import os
 import pathlib
 
 STATES = ("queued", "spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready",
-          "bot-loop", "human-gate-1", "colleague-loop", "human-gate-2", "done", "blocked", "paused")
+          "bot-loop", "human-gate-1", "colleague-loop", "human-gate-2", "done", "blocked", "paused",
+          "decision-required")
 _FORWARD = ("queued", "spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready",
             "bot-loop", "human-gate-1", "colleague-loop", "human-gate-2", "done")
+RESUMABLE_STATES = frozenset(("spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop"))
 
 EDGES = {s: set() for s in STATES}
 for a, b in zip(_FORWARD, _FORWARD[1:]):
     EDGES[a].add(b)
 for s in STATES:
-    if s not in ("done", "blocked", "paused"):
-        EDGES[s] |= {"blocked", "paused"}
+    if s not in ("done", "blocked", "paused", "decision-required", "human-gate-1", "human-gate-2"):
+        EDGES[s] |= {"blocked", "paused", "decision-required"}
 EDGES["blocked"] |= {"implement", "plan"}
 for s in ("ready", "bot-loop", "colleague-loop", "human-gate-1", "human-gate-2"):
     EDGES[s].add("gates")            # any new SHA invalidates evidence
@@ -24,6 +27,7 @@ EDGES["plan-review"].add("plan")     # critic sends the plan back
 for s_ in ("gates", "ready", "bot-loop"):
     EDGES[s_].add("implement")       # a failed gate / CI code failure / accepted review finding becomes a fix task
 EDGES["paused"] = set()              # resolved dynamically: only `previous`
+EDGES["decision-required"] = set()  # resolved through `resume_target` after durable guidance
 
 
 class IllegalTransition(ValueError):
@@ -44,6 +48,8 @@ class Ticket:
     critic_vendor: str = ""
     attempts: dict = dataclasses.field(default_factory=dict)
     attempt_slugs: dict = dataclasses.field(default_factory=dict)
+    recovery: dict = dataclasses.field(default_factory=lambda: {"active": None, "queued": []})
+    decision_request: dict | None = None
     decisions: list = dataclasses.field(default_factory=list)
     reason: str = ""
     spinup_failures: int = 0
@@ -74,15 +80,34 @@ def save(ticket_dir, t: Ticket) -> None:
     os.replace(tmp, ticket_dir / "state.json")
 
 
+def _replace(t: Ticket, **changes) -> Ticket:
+    return dataclasses.replace(
+        t,
+        attempts=copy.deepcopy(t.attempts),
+        attempt_slugs=dict(t.attempt_slugs),
+        recovery=copy.deepcopy(t.recovery),
+        decision_request=copy.deepcopy(t.decision_request),
+        decisions=copy.deepcopy(t.decisions),
+        **changes,
+    )
+
+
 def transition(t: Ticket, to: str, reason: str = "") -> Ticket:
     if to not in STATES:
         raise IllegalTransition(f"unknown state {to!r}")
     allowed = {t.previous} if t.state == "paused" else EDGES[t.state]
     if to not in allowed:
         raise IllegalTransition(f"{t.key}: {t.state} -> {to} not allowed (allowed: {sorted(allowed)})")
-    return dataclasses.replace(t, state=to, previous=t.state, reason=reason, updated_utc=_now(), needs_operator="",
-                               attempts={k: list(v) for k, v in t.attempts.items()},
-                               attempt_slugs=dict(t.attempt_slugs), decisions=list(t.decisions))
+    return _replace(t, state=to, previous=t.state, reason=reason, updated_utc=_now(), needs_operator="")
+
+
+def resume_target(t: Ticket, target: str, reason: str = "") -> Ticket:
+    """Resume controller-owned pre-review work from a durable checkpoint."""
+    if target not in RESUMABLE_STATES:
+        raise IllegalTransition(f"invalid recovery target {target!r}")
+    if t.state in ("human-gate-1", "human-gate-2", "done"):
+        raise IllegalTransition(f"{t.key}: cannot recover terminal state {t.state!r}")
+    return _replace(t, state=target, previous=t.state, reason=reason, updated_utc=_now(), needs_operator="")
 
 
 def paused(state_root) -> bool:

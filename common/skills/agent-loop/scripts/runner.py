@@ -77,6 +77,19 @@ def _harden_lint_cmd(cmd: str) -> str:
     return _re.sub(r"(?:(?<=^)|(?<=[\s;&|]))(rubocop|reek)(?=\s)", fix, cmd)
 
 
+def _is_rails_prepare(cmd: str) -> bool:
+    import shlex
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False
+    while argv and contracts.ENV_PREFIX.match(argv[0]):
+        argv.pop(0)
+    while argv and argv[0] == "bin/agent_run":
+        argv.pop(0)
+    return argv == ["bin/wt", "prepare", "--for", "rails"]
+
+
 def vs_out_tail(attempt_dir, idx: int, n: int = 1200) -> str:
     out = ""
     for suf in (".out", ".err"):
@@ -662,6 +675,9 @@ class Runner:
                 if cmd_errs:
                     print(f"{t.key}/{task.id}: refusing verification command: {cmd_errs[0]}", file=sys.stderr, flush=True)
                     return "environment", f"unsafe verification command refused: {cmd_errs[0]}", None
+                # Preparation can repair local dependencies and rewrite yarn.lock. Its source-tree
+                # changes are environmental, not candidate work, so restore the worker's tree afterward.
+                prepare_tree = worktree.snapshot(wt) if _is_rails_prepare(cmd) else None
                 try:
                     # Verification commands are real shell commands ("true", "npm test", ...)
                     # and must never be redirected through self.launch -- that hook exists
@@ -692,6 +708,8 @@ class Runner:
                     reconcile.fence(self.cfg, rec, f"termination unverified pgid {vs.pgid}",
                                     proc=stages[-1]["proc"])
                     raise AssertionError("unreachable: fence() always raises FenceExit")
+                if prepare_tree is not None:
+                    worktree.restore(wt, prepare_tree)
                 if vs.timed_out:
                     verify_outcome, verify_reason = "environment", f"verification timeout: {cmd}"
                     break

@@ -12,11 +12,18 @@ workspace runs `/loop-watch <TICKET>` as the coordinator. This skill is the *fle
 
 ## `/agent-loop` or `/agent-loop status`  (default)
 
-1. `python3 runner.py overview` -- one line per hopper ticket: state, PR, worktree, spend, deps,
-   supervisor. Print it verbatim.
-2. `python3 runner.py supervise status` -- which LaunchAgents are loaded and alive.
-3. Summarise in ≤5 lines: tickets at Human Gate 1 (PR links), in flight (stage), paused/blocked
-   (reason, one line each), queued-but-eligible. If `~/.local/state/agent-loop/PAUSE` exists say so first.
+1. `python3 runner.py overview` -- with a cohort: `COHORT n/4` slot rows (admission #, state,
+   recovery or decision wait, supervisor, progress), `WAITING ADMISSION` (parked order, next
+   candidate) and `REVIEW READY` (PRs). Without one: the legacy per-ticket lines. Print it verbatim.
+2. `python3 runner.py supervise status` -- which ticket LaunchAgents are loaded and alive.
+3. Summarise in ≤5 lines: tickets at Human Gate 1 (PR links), cohort members and what each waits on,
+   open product decisions (question + `decision-answer` command), next admission. If
+   `~/.local/state/agent-loop/PAUSE` exists say so first.
+
+## `/agent-loop decide TICKET "guidance"`  -- answer a product decision
+`python3 runner.py decision-answer --ticket X --guidance "..."`. Only for tickets in
+`decision-required`; it records the answer, appends `## Owner rulings` to plan.md, and resumes the
+saved stage (or re-plans). Never edit state files to answer.
 
 ## `/agent-loop resume [TICKET | all]`  -- "pick up where they left off"
 
@@ -28,7 +35,9 @@ that has a worktree without changing its state (heal.py then handles `paused` by
 supervisors alone, and lists `HUMAN` takeovers and `blocked` tickets under `needs_operator`. Work through
 only those listed tickets with the rules below, then reopen panes.
 
-For one ticket, or each ticket `--all` listed under `needs_operator`:
+With a cohort, a ticket outside it cannot be resumed while all four slots are owned (`resume` refuses);
+members waiting on a recovery contract are resumed by the reconciler when their repair lands, so do
+not resume them by hand. For one ticket, or each ticket `--all` listed under `needs_operator`:
 - state `paused` or `blocked`: read the reason.
   - `resource:` / `heavy lane` → `python3 runner.py resume --ticket X --from implement` (transient).
   - `plan failed` / `budget exceeded` → `python3 runner.py resume --ticket X` (back to `plan`, which
@@ -48,14 +57,20 @@ Finish with `/agent-loop status`.
 The hopper is a **drip fed from Jira**: children of the epic in board Rank order (top first), any
 assignee, only tickets in the ready column (`Selected for Work`), skipping tickets excluded in
 `hopper.toml` (Martin's audit) and tickets whose `deps` are not Done in Jira (no autonomous PR
-stacks). It keeps `[drip].max_in_flight` (3) tickets between spinup and Human Gate 1.
+stacks). With `cohort.json` present it admits only into empty cohort slots (four; parked tickets
+first, by original admission order); without it, the legacy `[drip].max_in_flight` count applies.
 
 - `python3 runner.py drip --dry-run` -- show what it would start and why others were skipped.
 - `python3 runner.py drip` -- start now (spinup with all panes incl. `/loop-watch`, assign to Cody,
   In Progress, supervisor).
 - `python3 runner.py supervise drip-start` -- install the 15-minute LaunchAgent so the drip runs
   itself forever; `drip-stop` removes it.
-Tickets at Human Gate 1 do not occupy a slot (they wait on Cody, not the machine).
+- `python3 runner.py supervise cohort-start` -- install the 60-second deterministic reconciler
+  (`cohort-shadow-start` runs it with `--dry-run`; `cohort-stop` removes it).
+- `python3 runner.py cohort-migrate --dry-run | --apply | --rollback <snapshot> [--force]` -- move
+  legacy in-flight tickets into the cohort (snapshot first; metadata-only rollback).
+Only verified Human Gate 1 releases a slot. Paused, blocked, repairing, provider-waiting, and
+`decision-required` tickets keep theirs; `park --ticket X` releases one deliberately.
 
 ## `/agent-loop pause` / `unpause`
 `touch ~/.local/state/agent-loop/PAUSE` -- every runner and coordinator halts at its next boundary

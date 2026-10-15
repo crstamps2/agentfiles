@@ -83,13 +83,23 @@ def _diff_patch(wt, base_tree: str, observed_tree: str) -> str:
     return r.stdout.decode("utf-8", "replace")
 
 
+def _has_newer_accepted_attempt(rec: attempt_mod.Record) -> bool:
+    """An old failed attempt must not restore over a later accepted tree."""
+    for adir in pathlib.Path(rec.path).parent.iterdir():
+        if adir.is_symlink() or not adir.is_dir() or not adir.name.isdigit() or int(adir.name) <= rec.n:
+            continue
+        if attempt_mod.load(adir, validate_worktree=False).outcome == "accepted":
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # finalize(): CLASSIFIED -> FINALIZED.
 # ---------------------------------------------------------------------------
 
 def finalize(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
-    """Restore the worktree to base_tree iff `rec.outcome` is one that discards the
-    worker's tree (rejected/protocol/blocked); otherwise keep it. `diff.patch` is always
+    """Restore the worktree to base_tree for a rejected/protocol/blocked outcome unless
+    a later attempt was accepted; otherwise keep it. `diff.patch` is always
     regenerated as `git diff base_tree observed_tree` (regenerable, so overwriting it is
     always safe) before the record transitions to FINALIZED.
 
@@ -110,7 +120,7 @@ def finalize(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     wt = pathlib.Path(rec.worktree)
     observed = rec.observed_tree
 
-    if rec.outcome in RESTORE_OUTCOMES:
+    if rec.outcome in RESTORE_OUTCOMES and not _has_newer_accepted_attempt(rec):
         try:
             worktree_mod.restore(wt, rec.base_tree)
         except RuntimeError as e:

@@ -945,7 +945,9 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=
             r"\b((?:app|test|lib|config|linters)/[\w./-]+\.(?:ts|js|tsx|jsx|scss|css|rb|rake|slim))\b", reason)})
     if not files:
         raise ValueError("no offending file could be parsed from the hook output")
-    offenses = "\n".join(f"  {ln.strip()}" for ln in reason.splitlines() if _re.search(r":\d+:\d+:", ln))[:1500]
+    reek_warning = r"\[\d+(?:,\s*\d+)*\]:\w+:"
+    offenses = "\n".join(f"  {ln.strip()}" for ln in reason.splitlines()
+                         if _re.search(r":\d+:\d+:|" + reek_warning, ln))[:1500]
     import contracts as _contracts
     import worktree as _worktree
     existing = _contracts.load_tasks(manifest) if manifest.exists() else []
@@ -955,6 +957,8 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=
     tid = _next_runner_task_id(manifest)
     if all(f.endswith((".ts", ".js", ".tsx", ".jsx", ".scss", ".css")) for f in files):
         cmd = "bin/agent_run yarn prettier --check " + " ".join(files)
+    elif _re.search(reek_warning, reason):
+        cmd = "bin/agent_run bundle exec reek --force-exclusion " + " ".join(files)
     else:
         cmd = "bin/agent_run rubocop --cache false --force-exclusion " + " ".join(files)
     _append_task(manifest, {

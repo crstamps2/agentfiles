@@ -889,10 +889,28 @@ def main(argv=None) -> int:
             ap.error("resume --all does not take --from or --worktree; resume one ticket to change its stage")
         result = resume_all(cfg, log=lambda m: print(m, flush=True))
         print("resume --all:", result); return 0
+    if a.cmd == "drip" and a.max_in_flight is not None:
+        import drip as _drip
+        if a.max_in_flight > _drip.HARD_MAX_IN_FLIGHT:
+            ap.error(f"--max-in-flight {a.max_in_flight} exceeds the hard ceiling of {_drip.HARD_MAX_IN_FLIGHT}")
+        if _drip.cohort_enabled(cfg):
+            ap.error("--max-in-flight does not apply in cohort mode; capacity is owned by cohort.json")
     if a.cmd == "resume":
         import heal, supervise
         a.from_state = a.from_state or "plan"
         tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
+        import cohort, drip as _drip
+        admitted_now = False
+        if _drip.cohort_enabled(cfg) and t.state not in ("human-gate-1", "done"):
+            try:
+                if a.ticket not in cohort.members(cfg):
+                    if cohort.available(cfg) < 1:
+                        ap.error(f"cohort is full ({len(cohort.members(cfg))}/{cohort.load(cfg).capacity}); "
+                                 f"{a.ticket} waits for a verified Human Gate 1 release or an explicit park")
+                    cohort.reserve(cfg, a.ticket, "manual-resume"); admitted_now = True
+                    (tdir / "PARKED").unlink(missing_ok=True); (tdir / "PARKED.json").unlink(missing_ok=True)
+            except cohort.CohortError as exc:
+                ap.error(f"cohort unavailable; refusing to resume {a.ticket}: {exc}")
         heal.mark_operator_resume(tdir, f"resume from {t.state}")
         if a.retry_task:
             retry_task(cfg, a.ticket, a.retry_task, note="operator --retry-task"); t = state.load(tdir)
@@ -909,8 +927,14 @@ def main(argv=None) -> int:
         st = supervise.status(a.ticket)
         if "state=running" in st and t.state not in ("paused", "blocked"):
             # A live runner will pick up the state change on its own loop; bouncing it kills the attempt in flight.
-            print(f"supervisor already running ({st}); not restarting"); return 0
-        print("supervisor", supervise.start(a.ticket, wt, cfg.state_root)); return 0
+            print(f"supervisor already running ({st}); not restarting")
+            if admitted_now:
+                cohort.activate(cfg, a.ticket)
+            return 0
+        print("supervisor", supervise.start(a.ticket, wt, cfg.state_root))
+        if admitted_now:
+            cohort.activate(cfg, a.ticket)
+        return 0
     if a.cmd == "report-defect":
         import repair
         ev = pathlib.Path(a.evidence_file).read_text(errors="replace") if a.evidence_file else ""
@@ -929,6 +953,9 @@ def main(argv=None) -> int:
         if a.max_in_flight is not None: cfg.drip["max_in_flight"] = a.max_in_flight
         started = drip.tick(cfg, log=lambda m: print(m, flush=True), dry_run=a.dry_run)
         print("started:", started); return 0
+    if a.cmd == "overview" and (cfg.state_root / "cohort.json").exists():
+        import watch
+        print(watch.fleet(cfg)); return 0
     if a.cmd == "overview":
         import supervise, ledger
         rows = ledger.collect(cfg.state_root); spend = {}

@@ -34,6 +34,8 @@ import state
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 MAX_ATTEMPTS = 2
+DIAGNOSTIC_BACKOFF_S = 30 * 60
+DIAGNOSTIC_BACKOFF_MAX_S = 24 * 3600
 MAX_LANDINGS_PER_SIGNATURE = 2
 EVIDENCE_MAX = 20000
 AGENT_TIMEOUT_S = 3600
@@ -326,11 +328,17 @@ def _fail(cfg, rec, outcome, why, notify):
     rec["attempts"] += 1; rec["history"].append(f"{_now()} {outcome}: {why[:400]}")
     src = _dir(cfg, "open") / f"{rec['id']}.json"
     if rec["attempts"] >= MAX_ATTEMPTS:
+        # Rotate to the back with a growing backoff: an unfixable record must not hold the FIFO head.
+        rounds = rec.get("diagnostic_rounds", 0) + 1
+        rec["diagnostic_rounds"] = rounds
         rec["attempts"] = 0
-        rec["history"].append(f"{_now()} diagnostic-retry: local attempt limit reached; retain evidence and re-diagnose")
+        rec["created_utc"] = _now()
+        rec["next_attempt_epoch"] = time.time() + min(DIAGNOSTIC_BACKOFF_S * 2 ** (rounds - 1), DIAGNOSTIC_BACKOFF_MAX_S)
+        rec["history"].append(f"{_now()} diagnostic-retry {rounds}: local attempt limit reached; re-queued behind newer defects")
         src.write_text(json.dumps(rec, indent=2))
         recovery.emit_event(cfg, rec, "diagnostic-retry")
-        notify("Automatic runner repair needs deeper diagnosis", f"{rec.get('key') or 'loop'}: {rec['summary'][:100]} -- {why[:100]}")
+        if rounds == 1:
+            notify("Automatic runner repair needs deeper diagnosis", f"{rec.get('key') or 'loop'}: {rec['summary'][:100]} -- {why[:100]}")
         return "diagnostic-retry"
     src.write_text(json.dumps(rec, indent=2))
     return outcome
@@ -345,7 +353,8 @@ def run_pass(cfg, scripts_dir=SCRIPTS, run_agent=None, run_tests=None, notify=No
         notify = lambda title, body: _notify_default(cfg, None, title, body)  # noqa: E731
     if state.paused(cfg.state_root):
         return "paused"
-    recs = [r for r in reconcile_queue(cfg) if r["attempts"] < MAX_ATTEMPTS]
+    now = time.time()
+    recs = [r for r in reconcile_queue(cfg) if r["attempts"] < MAX_ATTEMPTS and r.get("next_attempt_epoch", 0) <= now]
     if not recs:
         return "idle"
     lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "repair", "repair")

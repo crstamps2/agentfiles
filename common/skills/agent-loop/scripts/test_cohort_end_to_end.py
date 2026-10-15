@@ -56,12 +56,14 @@ class TenTicketSimulation(unittest.TestCase):
         self.cfg.ensure_dirs()
         cohort.initialize(self.cfg)
         self.launchd = Launchd()
+        self.tick = 0
         self.spinup_failures = {"ZIP-3"}
         board = [{"key": k, "summary": k, "status": "Selected for Work", "assignee": None} for k in KEYS]
         for p in (patch.object(drip, "board", return_value=board), patch.object(drip, "done_in_jira", return_value=set()),
                   patch.object(drip, "shared_services_ready", return_value=True),
                   patch.object(drip, "spinup_with_panes", side_effect=self.spinup),
-                  patch.object(drip, "retry_spinup", side_effect=lambda cfg, t, log=print: self.spinup(t.key))):
+                  patch.object(drip, "retry_spinup", side_effect=lambda cfg, t, log=print: self.spinup(t.key)),
+                  patch.object(drip.time, "time", side_effect=lambda: 1_800_000_000 + 60 * self.tick)):   # one reconcile per minute
             p.start(); self.addCleanup(p.stop)
 
     def tearDown(self):

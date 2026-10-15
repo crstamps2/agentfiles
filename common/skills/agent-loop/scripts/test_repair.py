@@ -252,6 +252,19 @@ class PassTests(Fixture):
         self.assertEqual(attempted, [old, old, young, young])
         self.assertEqual(len([t for t in self.notified if "deeper diagnosis" in t]), 2, "one notice per record, not per pass")
 
+    def test_an_unavailable_reviewer_vendor_skips_before_the_repair_agent_runs(self):
+        from unittest.mock import patch
+        repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
+        calls = []
+        with patch.object(repair, "_reviewer_unavailable", return_value="anthropic usage limit"):
+            outcome = repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=lambda *a: calls.append(a[1]),
+                                      run_tests=self.run_tests, notify=lambda t, b: self.notified.append(t), log=lambda m: None)
+            again = repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=lambda *a: calls.append(a[1]),
+                                    run_tests=self.run_tests, notify=lambda t, b: self.notified.append(t), log=lambda m: None)
+        self.assertEqual((outcome, again), ("skipped", "skipped"))
+        self.assertEqual(calls, [])
+        self.assertEqual(len(self.notified), 1)
+
     def test_reviewer_auth_failure_does_not_spend_repair_budget(self):
         repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
 

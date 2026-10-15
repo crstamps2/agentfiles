@@ -1,11 +1,14 @@
 """Durable ownership of the four tickets admitted to autonomous work."""
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime as dt
 import json
 import os
 import pathlib
+import subprocess
+import threading
 
 import locks
 import state
@@ -50,6 +53,7 @@ class CohortReport:
     reserved: list[str] = dataclasses.field(default_factory=list)
     admitted: list[str] = dataclasses.field(default_factory=list)
     errors: list[str] = dataclasses.field(default_factory=list)
+    waits: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def _now() -> str:
@@ -60,8 +64,26 @@ def _path(cfg) -> pathlib.Path:
     return cfg.state_root / "cohort.json"
 
 
-def _lease(cfg) -> locks.Lease:
-    return locks.Lease(cfg.state_root / "locks" / "cohort", "cohort")
+_HELD = threading.local()
+
+
+@contextlib.contextmanager
+def _lease(cfg):
+    key = str(cfg.state_root.resolve())
+    held = getattr(_HELD, "roots", set())
+    if key in held:
+        yield True
+        return
+    lease = locks.Lease(cfg.state_root / "locks" / "cohort", "cohort")
+    acquired = lease.acquire(hold=True)
+    if acquired:
+        _HELD.roots = held | {key}
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            _HELD.roots = held
+            lease.release()
 
 
 def _from_dict(raw) -> Cohort:
@@ -231,6 +253,38 @@ def _ci(ticket_dir: pathlib.Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _review_evidence(cfg, key, *, pr_lookup, head_lookup):
+    ticket_dir = cfg.ticket_dir(key)
+    ticket = state.load(ticket_dir)
+    if ticket.state != "human-gate-1" or ticket.decision_request:
+        return None
+    if not isinstance(ticket.recovery, dict) or ticket.recovery.get("active") is not None or ticket.recovery.get("queued"):
+        return None
+    if not ticket.worktree or not pathlib.Path(ticket.worktree).is_dir():
+        return None
+    ci = _ci(ticket_dir)
+    pr = ci.get("pr")
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
+        return None
+    try:
+        head = head_lookup(ticket.worktree)
+        pr_status = pr_lookup(pr)
+    except Exception:
+        return None
+    if not isinstance(head, str) or not head or pr_status != "ready":
+        return None
+    if ticket.evidence_sha != head and ci.get("ready_marked_sha") != head:
+        return None
+    return pr
+
+
+def _release(value, slot, pr):
+    value.history.append({"event": "released", "ticket": slot.ticket, "slot": slot.slot,
+                          "pr": pr, "reason": "verified-human-gate-1", "utc": _now()})
+    value.slots[slot.slot - 1] = Slot(slot=slot.slot)
+    value.generation += 1
+
+
 def release_if_review_ready(cfg, key: str, *, pr_lookup, head_lookup) -> bool:
     with _lease(cfg) as acquired:
         if not acquired:
@@ -239,39 +293,163 @@ def release_if_review_ready(cfg, key: str, *, pr_lookup, head_lookup) -> bool:
         slot = _find(value, key)
         if slot is None:
             return False
-        ticket_dir = cfg.ticket_dir(key)
-        ticket = state.load(ticket_dir)
-        if ticket.state != "human-gate-1" or ticket.decision_request:
+        pr = _review_evidence(cfg, key, pr_lookup=pr_lookup, head_lookup=head_lookup)
+        if pr is None:
             return False
-        active_recovery = ticket.recovery.get("active") if isinstance(ticket.recovery, dict) else None
-        if active_recovery is not None:
-            return False
-        worktree = pathlib.Path(ticket.worktree)
-        if not ticket.worktree or not worktree.is_dir():
-            return False
-        ci = _ci(ticket_dir)
-        pr = ci.get("pr")
-        if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
-            return False
-        try:
-            head = head_lookup(str(worktree))
-            pr_status = pr_lookup(pr)
-        except Exception:
-            return False
-        if not isinstance(head, str) or not head or pr_status != "ready":
-            return False
-        if ticket.evidence_sha != head and ci.get("ready_marked_sha") != head:
-            return False
-
-        value.history.append({
-            "event": "released",
-            "ticket": key,
-            "slot": slot.slot,
-            "pr": pr,
-            "reason": "verified-human-gate-1",
-            "utc": _now(),
-        })
-        value.slots[slot.slot - 1] = Slot(slot=slot.slot)
-        value.generation += 1
+        _release(value, slot, pr)
         _save_unlocked(cfg, value)
         return True
+
+
+def _head(worktree):
+    result = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30, check=True)
+    return result.stdout.strip()
+
+
+def reconcile(cfg, *, dry_run=False, pr_lookup=None, supervisor=None, head_lookup=None) -> CohortReport:
+    import supervise
+    import watch
+    report = CohortReport()
+    pr_lookup = pr_lookup or watch.pr_state
+    head_lookup = head_lookup or _head
+    supervisor = supervisor or supervise
+    if dry_run:
+        try:
+            return _reconcile_locked(cfg, report, True, pr_lookup, head_lookup, supervisor)
+        except (CohortError, OSError, ValueError, TypeError) as exc:
+            report.errors.append(str(exc))
+            return report
+    with _lease(cfg) as acquired:
+        if not acquired:
+            report.errors.append("cohort lease is already held; retry next cycle")
+            return report
+        try:
+            return _reconcile_locked(cfg, report, False, pr_lookup, head_lookup, supervisor)
+        except (CohortError, OSError, ValueError, TypeError) as exc:
+            report.errors.append(str(exc))
+            return report
+
+
+def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
+    import decision
+    import drip
+    import providers
+    import recovery
+    import repair
+    import runner
+    value = _load_unlocked(cfg)
+    if state.paused(cfg.state_root):
+        report.retained = [row.ticket for row in value.slots if row.ticket]
+        report.waits = {key: "operator PAUSE" for key in report.retained}
+        return report
+
+    def can_resume(key):
+        tdir = cfg.ticket_dir(key)
+        return _find(value, key) is not None and not (tdir / "HUMAN").exists() and not (tdir / "PARKED").exists()
+
+    if not dry_run:
+        try:
+            applied = recovery.consume_events(cfg, retry_task=runner.retry_task,
+                                             ensure_supervisor=supervisor.ensure_running, can_resume=can_resume)
+            report.resumed.extend(row.rsplit(":", 1)[0] for row in applied if row.endswith(":resumed"))
+        except (recovery.RecoveryError, OSError, ValueError, TypeError) as exc:
+            report.errors.append(f"repair events: {exc}")
+
+    for slot in list(value.slots):
+        key = slot.ticket
+        if not key:
+            continue
+        tdir = cfg.ticket_dir(key)
+        if (tdir / "HUMAN").exists():
+            report.retained.append(key); report.waits[key] = "HUMAN takeover; slot retained"
+            continue
+        if slot.phase == "reserved":
+            report.reserved.append(key)
+            continue
+        ticket_lease = locks.Lease(cfg.state_root / "locks" / f"runner-{key.lower()}", "cohort-ticket")
+        if not dry_run and not ticket_lease.acquire(hold=True):
+            report.retained.append(key); report.waits[key] = "runner live"
+            continue
+        try:
+            if not (tdir / "state.json").is_file():
+                raise CohortError("missing state.json")
+            ticket = state.load(tdir)
+            if ticket.key != key or ticket.state not in state.STATES:
+                raise CohortError("invalid ticket identity or lifecycle state")
+            if not ticket.worktree or not pathlib.Path(ticket.worktree).is_dir():
+                raise CohortError("missing worktree")
+            if (tdir / "PARKED").exists():
+                raise CohortError("occupied active slot has a PARKED marker")
+            if not isinstance(ticket.recovery, dict):
+                raise CohortError("malformed recovery container")
+            active = ticket.recovery.get("active")
+            if active is not None:
+                active = recovery.validate_contract(active)
+                if active["status"] == "waiting-provider":
+                    model = active["checkpoint"].get("model")
+                    if not model:
+                        raise CohortError("provider wait missing checkpoint model")
+                    selected = providers.resolve(cfg.state_root, model)
+                    if not providers.is_exhausted(cfg.state_root, providers.provider_of(selected)):
+                        if not dry_run:
+                            recovery.mark_ready(cfg, key, f"provider-ready-{active['id']}")
+                        active["status"] = "ready-to-resume"
+                if active["status"] in ("ready-to-resume", "resuming"):
+                    if dry_run:
+                        report.resumed.append(key)
+                    else:
+                        outcome = recovery.resume_active(cfg, key, retry_task=runner.retry_task, ensure_supervisor=supervisor.ensure_running)
+                        if outcome == "resumed" and key not in report.resumed:
+                            report.resumed.append(key)
+                    ticket = state.load(tdir)
+                else:
+                    report.retained.append(key); report.waits[key] = f"recovery {active['status']}: {active['resume']['kind']}"
+                    continue
+            if ticket.state == "decision-required":
+                request = decision.validate_request(ticket.decision_request)
+                answered = next((row for row in ticket.decisions if isinstance(row, dict) and row.get("id") == request["id"]), None)
+                if answered and not dry_run:
+                    ticket = decision.answer(cfg, key, answered["guidance"], ensure_supervisor=supervisor.ensure_running)
+                    report.resumed.append(key)
+                else:
+                    report.retained.append(key); report.waits[key] = f"product decision {request['id']}"
+                    continue
+            pr = _review_evidence(cfg, key, pr_lookup=pr_lookup, head_lookup=head_lookup)
+            if pr is not None:
+                _release(value, slot, pr)
+                if not dry_run:
+                    _save_unlocked(cfg, value)
+                report.released.append(key)
+                continue
+            report.retained.append(key)
+            if not dry_run:
+                supervisor.ensure_running(key, ticket.worktree, cfg.state_root)
+                slot.last_reconciled_utc = _now()
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            report.retained.append(key)
+            report.errors.append(f"{key}: {exc}")
+            report.waits[key] = f"diagnostic recovery: {exc}"
+            if not dry_run:
+                repair.record_defect(cfg, key, "cohort", f"invalid controller state: {exc}")
+        finally:
+            if not dry_run:
+                ticket_lease.release()
+
+    if not dry_run:
+        _save_unlocked(cfg, value)
+        occupied = {row.ticket for row in value.slots if row.ticket}
+        for entry in value.history:
+            if entry.get("event") == "released" and entry.get("ticket") not in occupied and not entry.get("supervisor_stopped"):
+                supervisor.stop(entry["ticket"])
+                entry["supervisor_stopped"] = True
+                _save_unlocked(cfg, value)
+        started = drip._tick_locked(cfg, log=lambda message: None, supervisor=supervisor)
+        report.admitted.extend(started)
+    else:
+        free = sum(row.ticket is None for row in value.slots)
+        occupied = {row.ticket for row in value.slots if row.ticket}
+        waiting = [key for key in drip.parked(cfg) if key not in occupied and not (cfg.ticket_dir(key) / "HUMAN").exists()]
+        if len(waiting) < free:
+            waiting.extend(row["key"] for row in drip.candidates(cfg, log=lambda message: None) if row["key"] not in occupied and row["key"] not in waiting)
+        report.admitted.extend(waiting[:free])
+    return report

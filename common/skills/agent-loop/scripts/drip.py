@@ -302,6 +302,11 @@ def tick(cfg, log=print, dry_run: bool = False) -> list[str]:
     A scheduled tick racing `/agent-loop start` could select the same ticket twice and build two
     workspaces and two supervisors for it (branch review 2026-09-23)."""
     import locks, supervise
+    if cohort_enabled(cfg):
+        report = cohort.reconcile(cfg, dry_run=dry_run)
+        for error in report.errors:
+            log(f"cohort: {error}")
+        return report.admitted
     lease = locks.Lease(pathlib.Path(cfg.state_root) / "locks" / "drip", "drip")
     if not lease.acquire(hold=True):
         log("drip: another drip tick holds the lease; skipping")
@@ -323,33 +328,48 @@ def _finish_spinup(cfg, key: str, wt, supervise) -> None:
         if isinstance(active, dict) and active.get("resume", {}).get("kind") == "retry-spinup":
             t.recovery["active"] = None
     state.save(tdir, t)
-    supervise.start(key, str(wt), cfg.state_root)
+    if cohort_enabled(cfg):
+        supervise.ensure_running(key, str(wt), cfg.state_root)
+    else:
+        supervise.start(key, str(wt), cfg.state_root)
     if cohort_enabled(cfg):
         cohort.activate(cfg, key)
 
 
-def _tick_locked(cfg, log=print, dry_run: bool = False) -> list[str]:
-    import supervise
+def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list[str]:
+    import supervise as default_supervisor
+    supervise = supervisor or default_supervisor
     enabled = cohort_enabled(cfg)
     cap = limit(cfg)
     flight = in_flight(cfg)
     free = cap - len(flight)
     noun = "cohort" if enabled else "in flight"
     log(f"drip: {noun} {flight} ({len(flight)}/{cap})")
+    reserved = [row for row in cohort.load(cfg).slots if row.ticket and row.phase == "reserved"] if enabled else []
+    if enabled and free <= 0 and not reserved:
+        return []
     if not dry_run and not shared_services_ready(log):
         log("drip: shared services are not ready; skipping this tick")
         return []
 
     started = []
     if enabled:
-        reserved = [row for row in cohort.load(cfg).slots if row.ticket and row.phase == "reserved"]
         for slot in reserved:
             key = slot.ticket
+            if (cfg.ticket_dir(key) / "HUMAN").exists():
+                continue
             log(f"drip: retrying reserved {key}")
             if dry_run:
                 started.append(key)
                 continue
             t = state.load(cfg.ticket_dir(key))
+            if t.worktree and pathlib.Path(t.worktree).is_dir() and (slot.source == "parked" or (t.branch and t.state not in ("blocked", "paused"))):
+                (cfg.ticket_dir(key) / "PARKED").unlink(missing_ok=True)
+                (cfg.ticket_dir(key) / "PARKED.json").unlink(missing_ok=True)
+                supervise.ensure_running(key, t.worktree, cfg.state_root)
+                cohort.activate(cfg, key)
+                started.append(key)
+                continue
             spin = (lambda t=t: retry_spinup(cfg, t, log)) if t.worktree and pathlib.Path(t.worktree).is_dir() else (lambda key=key: spinup_with_panes(key, log))
             try:
                 wt = spin()
@@ -369,14 +389,17 @@ def _tick_locked(cfg, log=print, dry_run: bool = False) -> list[str]:
 
     occupied = set(flight)
     parked_started = 0
-    for key in [candidate for candidate in parked(cfg) if candidate not in occupied][:free]:
+    for key in [candidate for candidate in parked(cfg) if candidate not in occupied and not (cfg.ticket_dir(candidate) / "HUMAN").exists()][:free]:
         log(f"drip: resuming parked {key}")
         if not dry_run:
             if enabled:
                 cohort.reserve(cfg, key, "parked")
             (cfg.ticket_dir(key) / "PARKED").unlink(missing_ok=True)
             (cfg.ticket_dir(key) / "PARKED.json").unlink(missing_ok=True)
-            supervise.start(key, state.load(cfg.ticket_dir(key)).worktree, cfg.state_root)
+            if enabled:
+                supervise.ensure_running(key, state.load(cfg.ticket_dir(key)).worktree, cfg.state_root)
+            else:
+                supervise.start(key, state.load(cfg.ticket_dir(key)).worktree, cfg.state_root)
             if enabled:
                 cohort.activate(cfg, key)
         started.append(key)

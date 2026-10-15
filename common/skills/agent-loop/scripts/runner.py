@@ -788,6 +788,8 @@ def retry_task(cfg, key: str, task_id: str, note: str = "") -> None:
     lineage = f"{key}/{task_id}"
     if lineage not in t.attempts:
         raise SystemExit(f"{key} has no attempts for task {task_id}")
+    if note.startswith("automatic recovery ") and any(row.get("outcome") == ladder.OPERATOR_RESET and row.get("note") == note for row in t.attempts[lineage]):
+        return
     t.attempts[lineage] = t.attempts[lineage] + [{"outcome": ladder.OPERATOR_RESET, "note": note, "utc": _now()}]
     if t.state == "blocked":
         t = state.transition(t, "implement", reason=f"operator retry of task {task_id}: {note}"[:200])
@@ -829,7 +831,7 @@ def main(argv=None) -> int:
     ro.add_argument("--max-steps", type=int, default=12); ro.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES")
     ro.add_argument("--supervised", action="store_true", help="launchd mode: exit 0 only at human-gate-1/done; exit 1 on any wait so KeepAlive restarts us")
     sv = sub.add_parser("supervise", help="start/stop/status launchd agents that keep run-once alive per ticket")
-    sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop", "repair-start", "repair-stop"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
+    sv.add_argument("action", choices=["start", "stop", "status", "drip-start", "drip-stop", "repair-start", "repair-stop", "cohort-start", "cohort-stop", "cohort-shadow-start"]); sv.add_argument("--ticket"); sv.add_argument("--worktree")
     rd = sub.add_parser("report-defect", help="coordinator pane: queue a runner defect for automatic repair")
     rd.add_argument("--ticket", default=None); rd.add_argument("--reason", required=True); rd.add_argument("--evidence-file", default=None)
     da = sub.add_parser("decision-answer", help="record Cody's guidance and resume a ticket waiting on a product decision")
@@ -844,6 +846,8 @@ def main(argv=None) -> int:
     rs.add_argument("--worktree", default=None)
     rs.add_argument("--retry-task", default=None, metavar="ID", help="fresh escalation ladder for this task (its rejections were a runner defect); implies --from implement")
     ov = sub.add_parser("overview", help="one line per hopper ticket: state, reason, PR, supervisor, spend")
+    cr = sub.add_parser("cohort-reconcile", help="deterministically recover, retain, release, and refill cohort slots")
+    cr.add_argument("--dry-run", action="store_true")
     dp = sub.add_parser("drip", help="fill free in-flight slots from the top of the epic board (Jira Rank order); spinup + supervisor + pane per ticket")
     dp.add_argument("--dry-run", action="store_true"); dp.add_argument("--max-in-flight", type=int, default=None)
     wa = sub.add_parser("watch", help="pane-friendly live view of ONE ticket: stage, task/attempt, worker, elapsed, PR, spend; prints a line on every change")
@@ -867,6 +871,11 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
+    if a.cmd == "cohort-reconcile":
+        import dataclasses, cohort
+        report = cohort.reconcile(cfg, dry_run=a.dry_run)
+        print(json.dumps(dataclasses.asdict(report), indent=2))
+        return 1 if report.errors else 0
     if a.cmd == "decision-answer":
         import decision, supervise
         try:
@@ -943,6 +952,14 @@ def main(argv=None) -> int:
         if a.action == "status":
             for k in (supervise.active() if not a.ticket else [a.ticket]): print(k, supervise.status(k))
             return 0
+        if a.action in ("cohort-start", "cohort-shadow-start"):
+            if a.action == "cohort-shadow-start":
+                print("started", supervise.start_periodic(cfg.state_root, "cohort-reconcile", 60, extra_args=["--dry-run"]))
+            else:
+                print("started", supervise.start_periodic(cfg.state_root, "cohort-reconcile", 60))
+            return 0
+        if a.action == "cohort-stop":
+            supervise.stop_periodic("cohort-reconcile"); print("cohort reconciler stopped"); return 0
         if a.action == "drip-start":
             print("started", supervise.start_drip(cfg.state_root)); return 0
         if a.action == "drip-stop":

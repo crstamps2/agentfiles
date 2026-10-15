@@ -97,6 +97,16 @@ def start(key: str, worktree: str, state_root: pathlib.Path) -> str:
     raise RuntimeError(f"launchctl bootstrap failed: {last}")
 
 
+def ensure_running(key: str, worktree: str, state_root: pathlib.Path) -> bool:
+    tdir = pathlib.Path(state_root) / "tickets" / key
+    if (pathlib.Path(state_root) / "PAUSE").exists() or (tdir / "HUMAN").exists() or (tdir / "PARKED").exists():
+        return False
+    if status(key) != "not loaded":
+        return False
+    start(key, worktree, state_root)
+    return True
+
+
 def stop(key: str) -> None:
     # Remove the plist BEFORE bootout: when a runner stops its own agent, bootout kills it.
     p = plist_path(key)
@@ -119,7 +129,9 @@ def status(key: str) -> str:
 
 
 def active() -> list[str]:
-    return sorted(p.stem[len(LABEL_PREFIX) + 1:].upper() for p in AGENTS_DIR.glob(f"{LABEL_PREFIX}.*.plist") if not p.stem.endswith(".drip"))
+    periodic = {"drip", "repair", "cohort-reconcile"}
+    return sorted(p.stem[len(LABEL_PREFIX) + 1:].upper() for p in AGENTS_DIR.glob(f"{LABEL_PREFIX}.*.plist")
+                  if p.stem[len(LABEL_PREFIX) + 1:] not in periodic)
 
 
 if __name__ == "__main__":
@@ -162,11 +174,11 @@ def stop_drip() -> None:
 
 
 
-def start_periodic(state_root: pathlib.Path, verb: str, interval_s: int) -> str:
+def start_periodic(state_root: pathlib.Path, verb: str, interval_s: int, *, extra_args=()) -> str:
     """A LaunchAgent that runs `runner.py <verb>` every `interval_s`, the same way the drip runs."""
     label = f"{LABEL_PREFIX}.{verb}"
     logs = state_root / "launchd"; logs.mkdir(parents=True, exist_ok=True)
-    plist = {"Label": label, "ProgramArguments": [ensure_launcher(), str(SCRIPTS / "runner.py"), verb],
+    plist = {"Label": label, "ProgramArguments": [ensure_launcher(), str(SCRIPTS / "runner.py"), verb, *extra_args],
              "WorkingDirectory": str(SCRIPTS),
              "EnvironmentVariables": {"PATH": os.path.expanduser("~/.local/share/mise/shims") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                                       "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8", "MISE_YES": "1"},

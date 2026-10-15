@@ -167,5 +167,264 @@ class CohortTests(unittest.TestCase):
                 self.assertEqual(cohort.members(self.cfg), ["ZIP-1"])
 
 
+class Supervisor:
+    def __init__(self):
+        self.running = set()
+        self.started = []
+        self.stopped = []
+
+    def ensure_running(self, key, worktree, state_root):
+        if key in self.running:
+            return False
+        self.running.add(key)
+        self.started.append(key)
+        return True
+
+    def start(self, key, worktree, state_root):
+        self.ensure_running(key, worktree, state_root)
+
+    def stop(self, key):
+        self.running.discard(key)
+        self.stopped.append(key)
+
+
+class ReconcileTests(unittest.TestCase):
+    setUp = CohortTests.setUp
+    tearDown = CohortTests.tearDown
+
+    def member(self, key, stage="implement", *, reserved=False):
+        cohort.initialize(self.cfg)
+        cohort.reserve(self.cfg, key, "test")
+        if not reserved:
+            cohort.activate(self.cfg, key)
+        wt = pathlib.Path(self.tmp.name) / key.lower()
+        wt.mkdir(exist_ok=True)
+        ticket = state.Ticket(key=key, state=stage, previous="implement", worktree=str(wt), head_sha="head-1", evidence_sha="head-1")
+        state.save(self.cfg.ticket_dir(key), ticket)
+        return ticket
+
+    def run_reconcile(self, supervisor=None, **kwargs):
+        from unittest.mock import patch
+        with patch("drip.board", return_value=[]), patch("drip.done_in_jira", return_value=set()), patch("drip.shared_services_ready", return_value=True):
+            return cohort.reconcile(self.cfg, supervisor=supervisor or Supervisor(), pr_lookup=lambda pr: "ready", head_lookup=lambda wt: "head-1", **kwargs)
+
+    def test_missing_supervisor_is_ensured_once_without_restarting_live_work(self):
+        for n in range(1, 5):
+            self.member(f"ZIP-{n}")
+        supervisor = Supervisor()
+        first = self.run_reconcile(supervisor)
+        second = self.run_reconcile(supervisor)
+        self.assertEqual(first.retained, ["ZIP-1", "ZIP-2", "ZIP-3", "ZIP-4"])
+        self.assertEqual(supervisor.started, ["ZIP-1", "ZIP-2", "ZIP-3", "ZIP-4"])
+        self.assertEqual(second.admitted, [])
+
+    def test_repair_event_resumes_contract_and_a_restart_does_not_repeat_it(self):
+        import recovery
+        ticket = self.member("ZIP-1", "blocked")
+        contract = recovery.new_contract("ZIP-1", {"state": "gates", "head_sha": "head-1"}, {"kind": "resume-stage", "state": "gates"}, ("defect-1",))
+        recovery.activate(self.cfg, "ZIP-1", contract)
+        recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": [{"ticket": "ZIP-1", "recovery_id": contract["id"]}]}, "landed", "fix-1")
+        supervisor = Supervisor()
+        first = self.run_reconcile(supervisor)
+        second = self.run_reconcile(supervisor)
+        self.assertIn("ZIP-1", first.resumed)
+        self.assertEqual(state.load(self.cfg.ticket_dir("ZIP-1")).state, "gates")
+        self.assertEqual(supervisor.started, ["ZIP-1"])
+        self.assertEqual(second.resumed, [])
+
+    def test_ready_recovery_resumes_even_without_a_pending_event(self):
+        import recovery
+        self.member("ZIP-1", "paused")
+        contract = recovery.new_contract("ZIP-1", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"})
+        recovery.activate(self.cfg, "ZIP-1", contract)
+        recovery.mark_ready(self.cfg, "ZIP-1", "previous-event")
+        report = self.run_reconcile()
+        self.assertIn("ZIP-1", report.resumed)
+        self.assertIsNone(state.load(self.cfg.ticket_dir("ZIP-1")).recovery["active"])
+
+    def test_resuming_recovery_without_an_event_replays_after_supervisor_failure(self):
+        from unittest.mock import patch
+        import recovery
+        self.member("ZIP-1", "paused")
+        contract = recovery.new_contract("ZIP-1", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"})
+        recovery.activate(self.cfg, "ZIP-1", contract)
+        recovery.mark_ready(self.cfg, "ZIP-1", "local-recovery")
+        supervisor = Supervisor()
+        with patch.object(supervisor, "ensure_running", side_effect=OSError("launchd unavailable")):
+            self.run_reconcile(supervisor)
+        self.run_reconcile(supervisor)
+        self.assertEqual(supervisor.started, ["ZIP-1"])
+        self.assertIsNone(state.load(self.cfg.ticket_dir("ZIP-1")).recovery["active"])
+
+    def test_provider_wait_keeps_slot_until_a_primary_or_equivalent_is_available(self):
+        import providers
+        import recovery
+        self.member("ZIP-1", "paused")
+        contract = recovery.new_contract("ZIP-1", {"state": "implement", "model": "openai/gpt-5.6-terra"}, {"kind": "wait-provider", "state": "implement"})
+        recovery.activate(self.cfg, "ZIP-1", contract)
+        providers.mark_exhausted(self.cfg.state_root, "openai", "quota exceeded")
+        providers.mark_exhausted(self.cfg.state_root, "anthropic", "quota exceeded")
+        waiting = self.run_reconcile()
+        self.assertEqual(waiting.resumed, [])
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-1"])
+        providers.mark_healthy(self.cfg.state_root, "anthropic")
+        ready = self.run_reconcile()
+        self.assertIn("ZIP-1", ready.resumed)
+
+    def test_human_takeover_and_product_decision_retain_slots_without_dispatch(self):
+        import decision
+        first = self.member("ZIP-1")
+        (self.cfg.ticket_dir(first.key) / "HUMAN").touch()
+        self.member("ZIP-2")
+        payload = {"schema_version": 1, "summary": "Choose the public API", "sources": ["ticket", "repository"],
+                   "why_unresolved": "The sources describe incompatible public names.",
+                   "options": [{"id": "a", "label": "Keep name", "consequences": "Compatible"}, {"id": "b", "label": "Rename", "consequences": "Needs migration"}],
+                   "recommendation": "a", "recommendation_reason": "Preserve compatibility", "question": "Which public name?",
+                   "checkpoint": {"state": "implement"}, "resume": {"kind": "resume-stage", "state": "implement"}}
+        decision.propose(self.cfg, "ZIP-2", payload)
+        supervisor = Supervisor()
+        report = self.run_reconcile(supervisor)
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-1", "ZIP-2"])
+        self.assertEqual(supervisor.started, [])
+        self.assertIn("HUMAN", report.waits["ZIP-1"])
+        self.assertIn("decision", report.waits["ZIP-2"])
+
+    def test_verified_release_refills_only_from_oldest_parked_ticket(self):
+        self.member("ZIP-1", "human-gate-1")
+        (self.cfg.ticket_dir("ZIP-1") / "ci.json").write_text(json.dumps({"pr": 123, "ready_marked_sha": "head-1"}))
+        for n in range(2, 5):
+            self.member(f"ZIP-{n}")
+        for n, sequence in ((6, 20), (5, 10)):
+            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"; wt.mkdir()
+            tdir = self.cfg.ticket_dir(f"ZIP-{n}")
+            state.save(tdir, state.Ticket(key=f"ZIP-{n}", state="implement", worktree=str(wt)))
+            (tdir / "PARKED").touch()
+            (tdir / "PARKED.json").write_text(json.dumps({"admission_sequence": sequence}))
+        supervisor = Supervisor()
+        report = self.run_reconcile(supervisor)
+        self.assertEqual(report.released, ["ZIP-1"])
+        self.assertEqual(report.admitted, ["ZIP-5"])
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-5", "ZIP-2", "ZIP-3", "ZIP-4"])
+        self.assertEqual(supervisor.stopped, ["ZIP-1"])
+        self.assertTrue((self.cfg.ticket_dir("ZIP-6") / "PARKED").exists())
+
+    def test_reserved_setup_failure_retries_same_ticket_and_retains_reservation(self):
+        from unittest.mock import patch
+        import drip
+        ticket = self.member("ZIP-1", "blocked", reserved=True)
+        with patch("drip.retry_spinup", side_effect=drip.SpinupFailed("setup-failed", ticket.worktree)):
+            report = self.run_reconcile()
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-1"])
+        self.assertEqual(cohort.load(self.cfg).slots[0].phase, "reserved")
+        with patch("drip.retry_spinup", return_value=pathlib.Path(ticket.worktree)), patch("drip.subprocess.run", return_value=type("Result", (), {"stdout": "internal/zip-1"})()):
+            report = self.run_reconcile()
+        self.assertIn("ZIP-1", report.admitted)
+        self.assertEqual(cohort.load(self.cfg).slots[0].phase, "active")
+
+    def test_malformed_ticket_or_recovery_is_diagnosed_without_releasing_capacity(self):
+        for n in range(1, 5):
+            self.member(f"ZIP-{n}")
+        (self.cfg.ticket_dir("ZIP-1") / "state.json").write_text("not-json")
+        ticket = state.load(self.cfg.ticket_dir("ZIP-2")); ticket.recovery["active"] = {"schema_version": 77}
+        state.save(self.cfg.ticket_dir("ZIP-2"), ticket)
+        report = self.run_reconcile()
+        self.assertEqual(len(cohort.members(self.cfg)), 4)
+        self.assertTrue(any("ZIP-1" in error for error in report.errors))
+        self.assertTrue(any("ZIP-2" in error for error in report.errors))
+        self.assertTrue(list((self.cfg.state_root / "defects" / "open").glob("*.json")))
+
+    def test_dry_run_does_not_write_state_markers_locks_or_supervisors(self):
+        self.member("ZIP-1")
+        def files():
+            return {str(p.relative_to(self.cfg.state_root)): (p.read_bytes(), p.stat().st_mtime_ns) for p in self.cfg.state_root.rglob("*") if p.is_file()}
+        before = files()
+        supervisor = Supervisor()
+        self.run_reconcile(supervisor, dry_run=True)
+        self.assertEqual(files(), before)
+        self.assertEqual(supervisor.started, [])
+        self.assertEqual(supervisor.stopped, [])
+
+    def test_crash_after_parked_reservation_converges_on_the_same_ticket(self):
+        from unittest.mock import patch
+        self.member("ZIP-1")
+        tdir = self.cfg.ticket_dir("ZIP-5")
+        wt = pathlib.Path(self.tmp.name) / "zip-5"; wt.mkdir()
+        state.save(tdir, state.Ticket(key="ZIP-5", state="implement", worktree=str(wt)))
+        (tdir / "PARKED").touch()
+        supervisor = Supervisor()
+        original = supervisor.ensure_running
+        class Crash(BaseException):
+            pass
+        def fail_after_reserve(key, *args):
+            if key == "ZIP-5":
+                raise Crash()
+            return original(key, *args)
+        with patch.object(supervisor, "ensure_running", side_effect=fail_after_reserve), self.assertRaises(Crash):
+            self.run_reconcile(supervisor)
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-1", "ZIP-5"])
+        sequence = cohort.load(self.cfg).next_admission_sequence
+        report = self.run_reconcile(supervisor)
+        self.assertEqual(cohort.load(self.cfg).next_admission_sequence, sequence)
+        self.assertEqual(supervisor.started, ["ZIP-1", "ZIP-5"])
+        self.assertEqual(cohort.load(self.cfg).slots[1].phase, "active")
+
+    def test_crash_after_release_history_still_stops_the_released_supervisor(self):
+        from unittest.mock import patch
+        self.member("ZIP-1", "human-gate-1")
+        (self.cfg.ticket_dir("ZIP-1") / "ci.json").write_text(json.dumps({"pr": 123, "ready_marked_sha": "head-1"}))
+        original = cohort._save_unlocked
+        class Crash(BaseException):
+            pass
+        def save_then_crash(cfg, value):
+            original(cfg, value)
+            if value.history and value.history[-1].get("event") == "released":
+                raise Crash()
+        with patch.object(cohort, "_save_unlocked", side_effect=save_then_crash), self.assertRaises(Crash):
+            self.run_reconcile()
+        supervisor = Supervisor()
+        self.run_reconcile(supervisor)
+        self.assertEqual(cohort.members(self.cfg), [])
+        self.assertEqual(supervisor.stopped, ["ZIP-1"])
+        self.assertEqual(len(cohort.load(self.cfg).history), 1)
+
+    def test_concurrent_drip_reconcile_and_manual_resume_never_duplicate_admission(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import patch
+        import drip
+        import runner
+        import supervise
+        self.member("ZIP-1")
+        for n in range(2, 9):
+            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"; wt.mkdir()
+            tdir = self.cfg.ticket_dir(f"ZIP-{n}")
+            state.save(tdir, state.Ticket(key=f"ZIP-{n}", state="implement", worktree=str(wt)))
+            (tdir / "PARKED").touch()
+            (tdir / "PARKED.json").write_text(json.dumps({"admission_sequence": n}))
+        supervisor = Supervisor()
+        cfgpath = str(self.cfg.state_root.parent / "hopper.toml")
+        with patch("drip.board", return_value=[]), patch("drip.done_in_jira", return_value=set()), patch("drip.shared_services_ready", return_value=True), patch.object(supervise, "ensure_running", side_effect=supervisor.ensure_running), patch.object(supervise, "status", return_value="state=running"):
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = [pool.submit(cohort.reconcile, self.cfg, supervisor=supervisor), pool.submit(drip.tick, self.cfg, log=lambda message: None),
+                           pool.submit(runner.main, ["--config", cfgpath, "resume", "--ticket", "ZIP-1", "--from", "implement"])]
+                for future in futures:
+                    future.result()
+            self.run_reconcile(supervisor)
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-1", "ZIP-2", "ZIP-3", "ZIP-4"])
+        self.assertEqual(len(supervisor.started), len(set(supervisor.started)))
+
+    def test_restart_after_supervisor_failure_converges_without_readmission(self):
+        from unittest.mock import patch
+        self.member("ZIP-1")
+        supervisor = Supervisor()
+        class Crash(BaseException):
+            pass
+        with patch.object(supervisor, "ensure_running", side_effect=Crash), self.assertRaises(Crash):
+            self.run_reconcile(supervisor)
+        self.run_reconcile(supervisor)
+        self.assertEqual(supervisor.started, ["ZIP-1"])
+        self.assertEqual(cohort.members(self.cfg), ["ZIP-1"])
+        self.assertEqual(cohort.load(self.cfg).next_admission_sequence, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

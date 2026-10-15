@@ -225,6 +225,15 @@ class RunnerHarness(unittest.TestCase):
         outcome, rows = self.run_task("pass")
         self.assertEqual(outcome, "paused"); self.assertEqual(self.launches, 0)
 
+    def test_cohort_reconcile_cli_dry_run_has_no_runtime_side_effects(self):
+        import cohort
+        cohort.initialize(self.cfg)
+        before = (self.cfg.state_root / "cohort.json").read_bytes()
+        with patch("drip.board", return_value=[]), patch("drip.done_in_jira", return_value=set()):
+            rc = runner.main(["--config", str(self.cfg.state_root.parent / "hopper.toml"), "cohort-reconcile", "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.cfg.state_root / "cohort.json").read_bytes(), before)
+
     def test_decision_answer_cli_persists_guidance_and_resumes_ticket(self):
         import decision
         tdir = self.cfg.ticket_dir("ZIP-7873")

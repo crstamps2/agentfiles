@@ -986,10 +986,45 @@ class LifecycleTests(unittest.TestCase):
         state.save(tdir, ticket)
         contract = recovery.new_contract("ZIP-7873", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"}, ("defect-1",))
         recovery.activate(self.cfg, "ZIP-7873", contract)
+        linked = self.cfg.state_root / "defects" / "open" / "defect-1.json"
+        linked.parent.mkdir(parents=True, exist_ok=True); linked.write_text("{}")
         with patch("heal.decide", side_effect=AssertionError("recovery wait must precede self-heal")):
             _, steps, ticket = self.run_once()
         self.assertTrue(steps[0].wait)
         self.assertEqual(ticket.state, "paused")
+
+    def test_orphaned_recovery_without_any_defect_record_is_relinked(self):
+        import recovery, repair
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason="owner", worktree=str(self.wt)))
+        orphan = recovery.new_contract("ZIP-7873", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"}, ("missing-defect",))
+        recovery.activate(self.cfg, "ZIP-7873", orphan)
+        step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        active = state.load(tdir).recovery["active"]
+        self.assertTrue(step.wait)
+        self.assertNotEqual(active["id"], orphan["id"])
+        opened = repair.open_defects(self.cfg)
+        self.assertEqual(active["defect_ids"], [opened[0]["id"]])
+        self.assertEqual(opened[0]["affected_tickets"][0]["recovery_id"], active["id"])
+
+    def test_defect_recording_failure_leaves_no_orphaned_contract(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason="owner", worktree=str(self.wt)))
+        with patch("repair.record_defect", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertIsNone(state.load(tdir).recovery["active"])
+
+    def test_operator_reset_after_acceptance_reopens_the_task(self):
+        import contracts as c, attempt as attempt_mod, ladder
+        tasks = c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "rung": {"agent": "x", "tier": "cheap", "n": 1}}]
+        state.save(tdir, tt)
+        d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True)
+        (d / "task.toml").write_text(attempt_mod.task_toml(tasks[0]))
+        self.assertTrue(lifecycle._task_accepted(self.cfg, "ZIP-7873", tasks[0]))
+        tt = state.load(tdir); tt.attempts["ZIP-7873/001"].append({"outcome": ladder.OPERATOR_RESET, "note": "automatic recovery x"}); state.save(tdir, tt)
+        self.assertFalse(lifecycle._task_accepted(self.cfg, "ZIP-7873", tasks[0]))
 
     def test_operator_pause_file_stops_everything(self):
         (self.cfg.state_root / "PAUSE").touch()

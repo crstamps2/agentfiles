@@ -81,6 +81,10 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
             return Step(t.key, decided.state, "product decision required", detail=decided.decision_request["question"], wait=True)
     current = state.load(tdir)
     active = current.recovery.get("active") if isinstance(current.recovery, dict) else None
+    if active and recovery.orphaned(cfg, active):
+        current.recovery["active"] = None
+        state.save(tdir, current)
+        active = None
     if active:
         return Step(t.key, current.state, "waiting for automatic recovery", detail=current.reason, wait=True)
     target = current.previous if current.previous in state.RESUMABLE_STATES else "implement"
@@ -93,7 +97,7 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
         action,
         (defect_id,),
     )
-    recovery.activate(cfg, current.key, contract)
+    # Record first: a contract activated without its defect could never be woken.
     repair.record_defect(
         cfg,
         current.key,
@@ -103,6 +107,7 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
         recovery_ref={"ticket": current.key, "recovery_id": contract["id"],
                       "contract_fingerprint": recovery.fingerprint(contract)},
     )
+    recovery.activate(cfg, current.key, contract)
     return Step(current.key, current.state, "waiting for automatic recovery", detail=summary, wait=True)
 
 
@@ -140,8 +145,11 @@ def _task_accepted(cfg, key, task) -> bool:
     Task ids are re-used across manifests, so the slug identifies the work. Legacy entries have
     no state slug; only a safely-read, matching task.toml can establish their identity."""
     import attempt
+    import ladder
     t = state.load(cfg.ticket_dir(key))
-    for e in t.attempts.get(f"{key}/{task.id}", []):
+    entries = t.attempts.get(f"{key}/{task.id}", [])
+    reset = max((i for i, e in enumerate(entries) if e.get("outcome") == ladder.OPERATOR_RESET), default=-1)
+    for e in entries[reset + 1:]:
         if (e.get("outcome") == "accepted"
                 and attempt.task_slug_for_entry(cfg, t, task.id, e) == task.slug):
             return True
@@ -180,7 +188,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
     if (tdir / "PARKED").exists():
         return Step(key, t.state, "parked: waiting for a slot", wait=True)
     if isinstance(t.recovery, dict) and t.recovery.get("active"):
-        return Step(key, t.state, "waiting for automatic recovery", detail=t.reason, wait=True)
+        import recovery as _recovery
+        if not _recovery.orphaned(cfg, t.recovery["active"]):
+            return Step(key, t.state, "waiting for automatic recovery", detail=t.reason, wait=True)
+        t.recovery["active"] = None                    # orphaned: fall through to normal classification
+        state.save(tdir, t)
     if t.state == "paused" and t.reason.startswith("guard failed on the BASE tree") and (tdir / "bad-guards.md").exists():
         # Self-repair: the runner proved a verification command fails before the task's work exists,
         # so the manifest -- not the worker -- is wrong. The task-writer rewrites/drops the guard;

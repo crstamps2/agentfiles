@@ -62,6 +62,8 @@ class Config:
     local_unload_after_attempt: bool = True
     workers_parallel: int = 1        # concurrent worker (light) stages; verification stays serialised on the heavy lane
     drip: dict = dataclasses.field(default_factory=dict)
+    cohort_capacity: int = 4
+    hard_capacity: int = 7
 
     def ticket_index(self, key: str) -> int:
         """1-based hopper position, else the ticket number: drives author/critic vendor alternation, so

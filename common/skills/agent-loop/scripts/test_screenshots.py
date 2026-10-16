@@ -70,3 +70,13 @@ class EnsureDevServerTests(unittest.TestCase):
             with self.assertRaises(screenshots.VisualGateError):
                 screenshots.ensure_dev_server("/wt/zip-x")
 
+    def test_a_proxy_502_for_a_stopped_server_starts_it(self):
+        # puma-dev answers 502 when the worktree's app is down (ZIP-4275 gate, 2026-10-16).
+        cmds = []
+        replies = iter([(502, "Bad Gateway"), (200, "<html>lookbook</html>")])
+        with patch.object(screenshots, "_get", side_effect=lambda url: next(replies)), \
+             patch.object(screenshots.subprocess, "run", side_effect=lambda argv, **k: cmds.append(argv[-1])), \
+             patch("time.sleep"):
+            screenshots.ensure_dev_server("/wt/zip-x")
+        self.assertIn("bin/wt dev --start", cmds)
+

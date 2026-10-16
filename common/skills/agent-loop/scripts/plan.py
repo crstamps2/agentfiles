@@ -213,7 +213,7 @@ def _run_agent(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt: p
     return res
 
 
-PROVIDER_OUT = (r"usage limit has been reached", r"\b429\b", r"quota", r"rate.?limit", r"insufficient_quota",
+PROVIDER_OUT = (r"usage limit", r"\b429\b", r"quota", r"rate.?limit", r"insufficient_quota",
                 r"overloaded", r"\b50[234]\b", r"account .* (suspended|disabled)")
 
 
@@ -221,7 +221,7 @@ def provider_exhausted(stage_dir: pathlib.Path) -> str:
     """Non-empty reason iff the agent could not run because the PROVIDER refused (usage limit, 429,
     overload). Distinct from a model that ran and produced nothing useful."""
     import re
-    for name in ("stderr.log", "stdout.log"):
+    for name in ("stderr.log",):                   # stdout is the model's own prose, which may discuss limits
         p = stage_dir / name
         if p.exists():
             txt = p.read_text(errors="replace")[-4000:]

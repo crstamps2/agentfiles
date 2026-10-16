@@ -930,6 +930,25 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("ZIP-7873 planning ceiling", self.notified)
         import heal; self.assertEqual(heal.policy(state.load(tdir).reason)[0], "human")   # never auto-retried
 
+    def test_planning_ceiling_asks_cody_and_never_becomes_a_runner_defect(self):
+        """ZIP-8882: the ceiling says the plan needs an owner ruling, but the supervisor's next tick filed that
+        pause as a runner defect with a replan contract: a repair agent was spent on it, `resume` refused
+        Cody's ruling, and the landed repair would only have re-planned into the same ceiling."""
+        import repair
+        tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup", worktree=str(self.wt)))
+        (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")
+        (self.wt / "planning" / "zip-7873" / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
+        with patch.object(lifecycle, "_task_accepted", return_value=False), \
+             patch.object(lifecycle.ledger, "collect", return_value=[{"ticket": "ZIP-7873", "billed_usd": 30.3}]):
+            lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)     # hits the ceiling
+            self.assertIn("planning ceiling", state.load(tdir).reason)
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)   # the next tick
+        self.assertTrue(step.wait)
+        self.assertEqual(state.load(tdir).state, "paused")
+        self.assertIsNone(state.load(tdir).recovery["active"])
+        self.assertEqual(repair.open_defects(self.cfg), [])
+        self.assertTrue(any("needs Cody" in title for title in self.notified), self.notified)
+
     def test_owner_ruling_resets_the_planning_ceiling_baseline(self):
         """A ruling is new evidence: the budget that stops repeated arguments must not block the round the
         ruling authorises. Spend BEFORE the ruling no longer counts."""

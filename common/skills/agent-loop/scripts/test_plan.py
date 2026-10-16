@@ -233,6 +233,22 @@ class FailoverTests(unittest.TestCase):
             self.assertIn("gpt-6-astra", (root / "s" / "failover.json").read_text())
             self.assertIn("ADJUDICATION: written", (root / "s" / "stdout.log").read_text())   # artifacts copied back
 
+    def test_missing_legacy_codex_credentials_fail_over_to_the_other_vendor(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d); calls = []
+            def fake(cfg, agent, prompt, stage, wt, timeout, model=None):
+                calls.append(model); stage.mkdir(parents=True, exist_ok=True)
+                if model == "openai-codex/gpt-6-astra":
+                    (stage / "stderr.log").write_text("No API key found for openai-codex.\n")
+                else:
+                    (stage / "adjudication.json").write_text('{"decisions": []}')
+            with patch.object(plan, "_run_agent", side_effect=fake):
+                _res, used, out = plan.run_agent_with_failover(None, "review-adjudicator", "p", root / "s", root, 60,
+                                                                 model="openai-codex/gpt-6-astra", log=lambda m: None)
+            self.assertEqual(calls, ["openai-codex/gpt-6-astra", "anthropic/claude-fable-5-1"])
+            self.assertEqual(used, "anthropic/claude-fable-5-1"); self.assertEqual(out, "")
+            self.assertTrue((root / "s" / "adjudication.json").exists())
+
     def test_both_vendors_exhausted_reports_it(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

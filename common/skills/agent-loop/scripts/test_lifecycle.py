@@ -227,6 +227,28 @@ class LifecycleTests(unittest.TestCase):
         cis = json.loads((self.cfg.ticket_dir("ZIP-7873") / "ci.json").read_text()); self.assertEqual(cis["bot_rounds"], 0)   # round not consumed
         import heal; self.assertEqual(heal.policy(t.reason)[0], "retry")
 
+    def test_capped_missing_credential_round_is_reclaimed_as_a_provider_transient(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready",
+                                      critic_vendor="openai-codex/gpt-6-astra"))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 1, "bot_rounds": lifecycle.MAX_BOT_ROUNDS, "actions": []}))
+        failed = self.cfg.state_root / "botreview" / "ZIP-7873" / f"round-{lifecycle.MAX_BOT_ROUNDS}"
+        failed.mkdir(parents=True)
+        (failed / "stderr.log").write_text("No API key found for openai-codex.\n")
+        self.comments = [{"kind": "inline", "id": 8, "path": "a.rb", "line": 1, "reply_to": None,
+                          "sha": "s", "body": "x", "body_hash": "h8"}]
+
+        _r, _steps, t = self.run_once(max_steps=1)
+
+        self.assertEqual(t.state, "paused")
+        self.assertIn("provider unavailable", t.reason)
+        cis = json.loads((tdir / "ci.json").read_text())
+        self.assertEqual(cis["bot_rounds"], lifecycle.MAX_BOT_ROUNDS - 1)
+        self.assertFalse(failed.exists())
+        self.assertTrue(list(failed.parent.glob(f"{failed.name}-provider-*")))
+        import providers
+        self.assertTrue(providers.is_exhausted(self.cfg.state_root, "openai-codex"))
+
     def test_invalid_generated_fix_task_is_rejected_and_repairable_not_a_crash_loop(self):
         """ZIP-7875: adjudicator fix tasks lacked --force-exclusion; the manifest became unloadable and the
         runner raised ManifestError on every launchd restart. The append must roll back and pause repairably."""

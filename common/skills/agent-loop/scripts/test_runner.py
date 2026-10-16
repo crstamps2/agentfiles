@@ -345,6 +345,15 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual([(e["defect_id"], e["outcome"]) for e in events], [("defect-9", "landed")])
         self.assertFalse(path.exists())
 
+    def test_usage_limit_wordings_are_provider_unavailable_not_protocol(self):
+        stage = procs.StageResult(returncode=1, timed_out=False, elapsed_s=5.0, pgid=0)
+        for text in ("The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again.",
+                     "Error: You have hit your ChatGPT usage limit (prolite plan). Try again in ~8415 min."):
+            with self.subTest(text=text):
+                outcome, reason = runner._classify(None, stage, [], stderr=text)
+                self.assertEqual(outcome, "environment")
+                self.assertIn("provider unavailable", reason)
+
     def test_decision_answer_cli_persists_guidance_and_resumes_ticket(self):
         import decision
         tdir = self.cfg.ticket_dir("ZIP-7873")

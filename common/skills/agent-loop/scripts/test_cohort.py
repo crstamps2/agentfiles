@@ -14,7 +14,7 @@ class CohortTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = pathlib.Path(self.tmp.name)
         source = pathlib.Path(__file__).resolve().parent.parent / "hopper.toml"
-        text = source.read_text()
+        text = source.read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")   # these tests exercise four slots
         text = text.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         text = text.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}/agents"')
         path = root / "hopper.toml"

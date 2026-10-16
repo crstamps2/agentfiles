@@ -113,6 +113,9 @@ def load(path: pathlib.Path | None = None) -> Config:
     drip = dict(raw.get("drip", {}))
     if int(drip.get("max_in_flight", 3)) > 7:
         raise ConfigError(f"{path}: [drip].max_in_flight {drip['max_in_flight']} exceeds the hard cap of 7 tickets")
+    capacity = int(raw.get("cohort", {}).get("capacity", 4))
+    if not 1 <= capacity <= 7:
+        raise ConfigError(f"{path}: [cohort].capacity {capacity} must be between 1 and the hard cap of 7")
     owned = list(h.get("owned_epics", [h["epic"]]))
     unowned = [e for e in drip.get("epics", []) if e not in owned]
     if unowned:
@@ -133,6 +136,7 @@ def load(path: pathlib.Path | None = None) -> Config:
         test_path_globs=list(pr["test_path_globs"]),
         harness_artifact_globs=list(pr.get("harness_artifact_globs", [])),
         arms_alternate=list(arms["alternate"]), workers_parallel=int(arms.get("workers_parallel", 1)), drip=drip,
+        cohort_capacity=capacity,
         outcomes=dict(oc),
         local_model=local_model,
         local_unload_after_attempt=local_unload_after_attempt,

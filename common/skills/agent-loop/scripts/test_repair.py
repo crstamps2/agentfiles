@@ -265,6 +265,19 @@ class PassTests(Fixture):
         self.assertEqual(calls, [])
         self.assertEqual(len(self.notified), 1)
 
+    def test_an_agent_that_never_launched_does_not_spend_repair_budget(self):
+        repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
+        def missing_pi(cfg, name, prompt, stage, cwd, timeout):
+            stage.mkdir(parents=True, exist_ok=True)
+            (stage / "stdout.log").write_text(""); (stage / "stderr.log").write_text("gate: line 0: exec: pi: not found\n")
+        for _ in range(3):
+            outcome = repair.run_pass(self.cfg, scripts_dir=self.scripts, run_agent=missing_pi, run_tests=self.run_tests,
+                                      notify=lambda title, body: self.notified.append(title), log=lambda m: None)
+            self.assertEqual(outcome, "skipped")
+        record = repair.open_defects(self.cfg)[0]
+        self.assertEqual((record["attempts"], record.get("diagnostic_rounds", 0)), (0, 0))
+        self.assertEqual(len(self.notified), 1)
+
     def test_reviewer_auth_failure_does_not_spend_repair_budget(self):
         repair.record_defect(self.cfg, None, "traceback", "AssertionError in calc.add", "trace")
 

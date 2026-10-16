@@ -104,7 +104,7 @@ def resolve(state_root, model: str) -> str:
 def note_run(state_root, model: str, stage_dir) -> str | None:
     """After an agent ran: if its logs report a usage limit, mark the provider. Returns the provider."""
     text = ""
-    for name in ("stderr.log", "stdout.log"):
+    for name in ("stderr.log",):                   # stdout is the model's own prose, which may discuss limits
         f = pathlib.Path(stage_dir) / name
         if f.exists():
             text += f.read_text(errors="replace")[-6000:]

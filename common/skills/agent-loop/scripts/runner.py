@@ -42,7 +42,7 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
         return "timeout", "stage timeout"
     if res is None:
         if any(__import__("re").search(p, stderr, __import__("re").I)
-               for p in (r"usage limit has been reached", r"insufficient_quota", r"overloaded")):
+               for p in (r"usage limit", r"insufficient_quota", r"overloaded")):   # providers word refusals many ways
             return "environment", "provider unavailable: worker model refused (usage limit/overload)"
         if stage.returncode and any(__import__("re").search(p, stderr, __import__("re").I)
                                     for p in (r"429", r"quota", r"rate.?limit", r"ECONNREFUSED",

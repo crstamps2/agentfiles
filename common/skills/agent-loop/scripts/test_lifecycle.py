@@ -227,6 +227,23 @@ class LifecycleTests(unittest.TestCase):
         cis = json.loads((self.cfg.ticket_dir("ZIP-7873") / "ci.json").read_text()); self.assertEqual(cis["bot_rounds"], 0)   # round not consumed
         import heal; self.assertEqual(heal.policy(t.reason)[0], "retry")
 
+    def test_a_capped_round_whose_agent_never_launched_is_reclaimed(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready", critic_vendor="openai/gpt-6-astra"))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 1, "bot_rounds": lifecycle.MAX_BOT_ROUNDS, "actions": []}))
+        failed = self.cfg.state_root / "botreview" / "ZIP-7873" / f"round-{lifecycle.MAX_BOT_ROUNDS}"
+        failed.mkdir(parents=True)
+        (failed / "stdout.log").write_text("")
+        (failed / "stderr.log").write_text("gate: line 0: exec: pi: not found\n")
+        self.comments = [{"kind": "inline", "id": 8, "path": "a.rb", "line": 1, "reply_to": None,
+                          "sha": "s", "body": "x", "body_hash": "h8"}]
+        _r, _steps, t = self.run_once(max_steps=1)
+        self.assertEqual(t.state, "paused")
+        self.assertIn("unavailable", t.reason)
+        self.assertEqual(json.loads((tdir / "ci.json").read_text())["bot_rounds"], lifecycle.MAX_BOT_ROUNDS - 1)
+        import providers
+        self.assertFalse(providers.is_exhausted(self.cfg.state_root, "openai"), "a missing binary is not a quota limit")
+
     def test_capped_missing_credential_round_is_reclaimed_as_a_provider_transient(self):
         tdir = self.cfg.ticket_dir("ZIP-7873")
         state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready",

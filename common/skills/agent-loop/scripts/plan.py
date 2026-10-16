@@ -218,6 +218,18 @@ PROVIDER_OUT = (r"usage limit", r"\b429\b", r"quota", r"rate.?limit", r"insuffic
                 r"overloaded", r"\b50[234]\b", r"account .* (suspended|disabled)", r"no api key found")
 
 
+LAUNCH_FAILURE = re.compile(r"exec: \S+: not found|command not found|No such file or directory: '?pi'?", re.I)
+
+
+def launch_failure(stage_dir: pathlib.Path) -> str:
+    """The launcher's own error when the agent process never started (empty stdout), else ''."""
+    stage_dir = pathlib.Path(stage_dir)
+    err = (stage_dir / "stderr.log").read_text(errors="replace") if (stage_dir / "stderr.log").exists() else ""
+    out = (stage_dir / "stdout.log").read_text(errors="replace") if (stage_dir / "stdout.log").exists() else ""
+    m = LAUNCH_FAILURE.search(err)
+    return m.group(0) if m and not out.strip() else ""
+
+
 def provider_exhausted(stage_dir: pathlib.Path) -> str:
     """Non-empty reason iff the agent could not run because the PROVIDER refused (usage limit, 429,
     overload). Distinct from a model that ran and produced nothing useful."""

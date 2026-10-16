@@ -302,6 +302,50 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("finished an interrupted rebase", msg)
         self.assertNotIn(["git", "rebase", "--abort"], calls)
 
+    def test_a_timed_out_git_probe_waits_a_tick_instead_of_crashing_the_runner(self):
+        """ZIP-8697 (and ZIP-8257): `bash -lc 'git rev-parse --git-dir'` timed out after 30 s on a thrashing machine,
+        the TimeoutExpired escaped step() and killed the supervised runner, and every restart hit the same first
+        call again. An unanswered probe leaves the worktree's state UNKNOWN, not clean: no stage may run on it,
+        the ticket is left as it was, and the next tick probes again."""
+        def unresponsive(argv, cwd, timeout):
+            if argv == ["git", "rev-parse", "--git-dir"]:
+                raise subprocess.TimeoutExpired(["bash", "-lc", "git rev-parse --git-dir"], 30)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with patch.object(lifecycle, "_sh", side_effect=unresponsive):
+            r, steps, t = self.run_once()
+        self.assertEqual(r.calls, [])                       # no task was dispatched into an unchecked worktree
+        self.assertEqual([s.wait for s in steps], [True])
+        self.assertIn("timed out after 30 seconds", steps[0].detail)
+        self.assertEqual((t.state, t.reason), ("implement", ""))
+        r, steps, t = self.run_once()                       # git answers again: the ticket carries on
+        self.assertEqual(r.calls, ["001", "002"])
+
+    def test_a_timeout_while_aborting_an_interrupted_rebase_is_retried_next_tick_not_skipped(self):
+        """The case that matters: a restart left a rebase half-done and git stalls while it is being aborted.
+        The tick must neither crash nor carry on as if the branch were fine; the abort is retried next tick."""
+        rebase_dir = self.wt / ".git" / "rebase-merge"; rebase_dir.mkdir(parents=True)
+        stalled = [True]
+        def sh(argv, cwd, timeout):
+            if argv[:3] == ["git", "diff", "--name-only"]:
+                return subprocess.CompletedProcess(argv, 0, "app/models/thing.rb\n", "")     # a hand-written conflict
+            if argv == ["git", "rebase", "--abort"]:
+                if stalled[0]:
+                    raise subprocess.TimeoutExpired(["bash", "-lc", "git rebase --abort"], 120)
+                rebase_dir.rmdir()
+            return subprocess.CompletedProcess(argv, 0, ".git" if argv == ["git", "rev-parse", "--git-dir"] else "", "")
+        log = self.cfg.ticket_dir("ZIP-7873") / "git-recovery.jsonl"
+        with patch.object(lifecycle, "_sh", side_effect=sh):
+            r, steps, t = self.run_once()
+            self.assertEqual(r.calls, [])
+            self.assertTrue(steps[-1].wait)
+            self.assertTrue(rebase_dir.exists())             # still interrupted, and nothing claims otherwise
+            self.assertFalse(log.exists())
+            stalled[0] = False
+            r, steps, t = self.run_once()                    # git answers again: the abort is finished, then the ticket carries on
+        self.assertFalse(rebase_dir.exists())
+        self.assertIn("aborted an interrupted rebase", log.read_text())
+        self.assertEqual(r.calls, ["001", "002"])
+
     def test_pre_commit_lint_rejection_becomes_a_bounded_fix_task(self):
         """ZIP-7875: the hook rejected the commit on Rails/FindEach + Metrics/AbcSize. Healing must send a
         worker to fix the offenses (allowlist = the offending files), not republish the same commit."""

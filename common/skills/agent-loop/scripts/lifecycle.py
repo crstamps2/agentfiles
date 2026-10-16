@@ -194,7 +194,13 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if not admitted:
             return Step(key, t.state, "not admitted to cohort", wait=True)
     if wt and pathlib.Path(wt).exists():
-        recovered = recover_interrupted_git_state(wt)
+        try:
+            recovered = recover_interrupted_git_state(wt)
+        except subprocess.TimeoutExpired as exc:
+            # git did not answer (a thrashing machine: ZIP-8257 and ZIP-8697 crashed the runner here, and every
+            # restart hit the same first call). Unknown is not clean -- no stage may read the branch before an
+            # interrupted rebase/merge is dealt with -- so leave the ticket alone; the next tick recovers afresh.
+            return Step(key, t.state, "git recovery timed out", detail=str(exc), wait=True)
         if recovered:
             print(f"{key}: {recovered}", flush=True)
             (tdir / "git-recovery.jsonl").open("a").write(json.dumps(

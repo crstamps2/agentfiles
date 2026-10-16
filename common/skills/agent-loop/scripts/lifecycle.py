@@ -57,7 +57,8 @@ def _pause(cfg, t, reason):
     return _save(cfg, t)
 
 
-OWNER_QUESTION = re.compile(r"need(?:s)? Cody|owner question|question for the owner|tier-[34]", re.I)
+# `^planning ceiling` is the spend stop in step(): only an owner ruling lifts it, so no repair or replan can answer it.
+OWNER_QUESTION = re.compile(r"need(?:s)? Cody|owner question|question for the owner|tier-[34]|^planning ceiling", re.I)
 RUNNER_TASK_BLOCK = re.compile(r"^task (\d{3}): (?:ladder exhausted|accepted history has no verified slug)$")
 GENERIC_BLOCK = re.compile(r"^(?:owner|blocked|unstructured owner block)?$", re.I)
 

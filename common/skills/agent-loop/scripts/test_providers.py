@@ -102,5 +102,13 @@ class NoteRunTests(unittest.TestCase):
             self.assertTrue(providers.is_exhausted(root, "openai-codex"))
             self.assertEqual(providers.resolve(root, "openai-codex/gpt-6-astra"), "anthropic/claude-fable-5-1")
 
+
+class LegacyProviderTests(unittest.TestCase):
+    def test_retired_openai_codex_ids_launch_on_the_openai_provider(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(providers.resolve(root, "openai-codex/gpt-6-astra"), "openai/gpt-6-astra")
+            providers.mark_exhausted(root, "openai", "usage limit")
+            self.assertEqual(providers.resolve(root, "openai-codex/gpt-6-astra"), "anthropic/claude-fable-5-1")
+
 if __name__ == "__main__":
     unittest.main()

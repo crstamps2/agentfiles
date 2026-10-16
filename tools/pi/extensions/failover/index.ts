@@ -4,8 +4,8 @@
  * Registers virtual models that run on their primary model and switch to the other vendor's
  * equivalent while the primary's provider is out of quota:
  *
- *   failover/sol   -> openai/gpt-5.6-sol, else anthropic/claude-opus-5-5
- *   failover/opus  -> anthropic/claude-opus-5-5, else openai/gpt-5.6-sol
+ *   failover/sol   -> openai/gpt-6.1-sol, else anthropic/claude-opus-5-5
+ *   failover/opus  -> anthropic/claude-opus-5-5, else openai/gpt-6.1-sol
  *
  * Provider health is shared with the agent loop through ~/.local/state/agent-loop/providers.json:
  * a usage-limit error in any session marks the provider until the reset time in the message
@@ -65,13 +65,13 @@ interface Pair {
 }
 
 const PAIRS: Pair[] = [
-	{ id: "sol", name: "Sol, Opus on OpenAI limit", primary: ["openai", "gpt-5.6-sol"], backup: ["anthropic", "claude-opus-5-5"] },
-	{ id: "opus", name: "Opus, Sol on Anthropic limit", primary: ["anthropic", "claude-opus-5-5"], backup: ["openai", "gpt-5.6-sol"] },
+	{ id: "sol", name: "Sol, Opus on OpenAI limit", primary: ["openai", "gpt-6.1-sol"], backup: ["anthropic", "claude-opus-5-5"] },
+	{ id: "opus", name: "Opus, Sol on Anthropic limit", primary: ["anthropic", "claude-opus-5-5"], backup: ["openai", "gpt-6.1-sol"] },
 ];
 
 // Tier family -> each vendor's model, matched on the id so newer releases (gpt-6.1-sol) still map.
 const FAMILIES: { match: RegExp; openai: [string, string]; anthropic: [string, string] }[] = [
-	{ match: /\bsol\b|opus/i, openai: ["openai", "gpt-5.6-sol"], anthropic: ["anthropic", "claude-opus-5-5"] },
+	{ match: /\bsol\b|opus/i, openai: ["openai", "gpt-6.1-sol"], anthropic: ["anthropic", "claude-opus-5-5"] },
 	{ match: /astra|fable/i, openai: ["openai", "gpt-6-astra"], anthropic: ["anthropic", "claude-fable-5-1"] },
 	{ match: /terra|sonnet/i, openai: ["openai", "gpt-5.6-terra"], anthropic: ["anthropic", "claude-sonnet-5-5"] },
 	{ match: /luna|haiku/i, openai: ["openai", "gpt-6-luna"], anthropic: ["anthropic", "claude-haiku-4-5"] },

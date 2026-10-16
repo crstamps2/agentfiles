@@ -70,5 +70,13 @@ class ProviderHealthTests(unittest.TestCase):
         self.assertIn("providers.note_run(", inspect.getsource(plan._run_agent))
 
 
+
+class Sol61FailoverTests(unittest.TestCase):
+    def test_gpt_6_1_sol_fails_over_to_opus(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(providers.resolve(root, "openai/gpt-6.1-sol"), "openai/gpt-6.1-sol")
+            providers.mark_exhausted(root, "openai", "usage limit")
+            self.assertEqual(providers.resolve(root, "openai/gpt-6.1-sol"), "anthropic/claude-opus-5-5")
+
 if __name__ == "__main__":
     unittest.main()

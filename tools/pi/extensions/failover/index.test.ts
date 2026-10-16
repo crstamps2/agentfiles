@@ -22,11 +22,14 @@ function harness(selected: { provider: string; id: string }, { authorized = true
 	let settle: (event: unknown, ctx: unknown) => Promise<unknown>;
 	const switched: string[] = [];
 	const notices: string[] = [];
+	const routers: Record<string, (request: unknown) => { model: { provider: string; id: string } }> = {};
 	const pi = {
 		on: (name: string, handler: typeof settle) => {
 			if (name === "agent_before_settle") settle = handler;
 		},
-		registerVirtualModel: () => {},
+		registerVirtualModel: (spec: { id: string; route: (request: unknown, ctx: unknown) => { model: { provider: string; id: string } } }) => {
+			routers[spec.id] = (request) => spec.route(request, ctx);
+		},
 		setModel: async (model: { provider: string; id: string }) => {
 			switched.push(`${model.provider}/${model.id}`);
 			return authorized;
@@ -40,10 +43,41 @@ function harness(selected: { provider: string; id: string }, { authorized = true
 	};
 	const fail = (provider: string, model: string, errorMessage = LIMIT_ERROR) =>
 		settle({ context: { contextMessages: [{ role: "assistant", stopReason: "error", provider, model, errorMessage }] } }, ctx);
-	return { fail, switched, notices };
+	const route = (id: string) => {
+		const { model } = routers[id]({ reason: "initial", thinkingLevel: "high" });
+		return `${model.provider}/${model.id}`;
+	};
+	return { fail, switched, notices, route };
 }
 
 beforeEach(() => fs.rmSync(health, { force: true }));
+
+function exhaust(provider: string) {
+	fs.mkdirSync(path.dirname(health), { recursive: true });
+	const data = fs.existsSync(health) ? JSON.parse(fs.readFileSync(health, "utf8")) : {};
+	data[provider] = { until: Date.now() / 1000 + 3600, message: "usage limit", marked: 0 };
+	fs.writeFileSync(health, JSON.stringify(data));
+}
+
+test("failover/sol runs on gpt-6.1-sol and moves to Opus while OpenAI is exhausted", () => {
+	const { route } = harness({ provider: "failover", id: "sol" });
+	assert.equal(route("sol"), "openai/gpt-6.1-sol");
+	exhaust("openai");
+	assert.equal(route("sol"), "anthropic/claude-opus-5-5");
+});
+
+test("failover/opus falls back to gpt-6.1-sol while Anthropic is exhausted", () => {
+	const { route } = harness({ provider: "failover", id: "opus" });
+	assert.equal(route("opus"), "anthropic/claude-opus-5-5");
+	exhaust("anthropic");
+	assert.equal(route("opus"), "openai/gpt-6.1-sol");
+});
+
+test("a concrete Opus session switches to gpt-6.1-sol on an Anthropic limit", async () => {
+	const { fail, switched } = harness({ provider: "anthropic", id: "claude-opus-5-5" });
+	await fail("anthropic", "claude-opus-5-5");
+	assert.deepEqual(switched, ["openai/gpt-6.1-sol"]);
+});
 
 test("a concrete-model session is switched to the other vendor before it continues", async () => {
 	const { fail, switched } = harness({ provider: "openai", id: "gpt-6.1-sol" });

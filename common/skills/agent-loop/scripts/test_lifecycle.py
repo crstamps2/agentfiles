@@ -1092,6 +1092,46 @@ class LifecycleTests(unittest.TestCase):
         active = state.load(tdir).recovery["active"]
         self.assertEqual(active["resume"], {"kind": "retry-task", "state": "implement", "task_id": "002", "task_slug": "b"})
 
+    def attempt_entries(self, *outcomes):
+        """state.json history of task 001 (slug a): one row per outcome, each on the next rung; `reset` is a recovery's operator-reset."""
+        import ladder
+        rungs = [("cloud-worker", "cheap", 1), ("cloud-worker", "cheap", 2), ("premium-worker", "premium", 1), ("premium-worker", "premium", 2)]
+        return [{"outcome": ladder.OPERATOR_RESET, "note": "automatic recovery x"} if outcome == "reset" else
+                {"n": n, "rung": dict(zip(("agent", "tier", "n"), rungs[(n - 1) % 4])), "outcome": outcome, "arm": "cloud", "slug": "a"}
+                for n, outcome in enumerate(outcomes, 1)]
+
+    def test_a_ladder_spent_by_its_final_attempt_is_retried_when_the_repair_resolves(self):
+        # ZIP-8697/8698/8699 (defect 2c968553b258): the yarn.lock rejections were fixed in 525b1c2, but the fourth one had spent task
+        # 001's ladder and blocked each ticket with ITS OWN reason, never `task 001: ladder exhausted`. Their resume-stage contracts
+        # re-entered implement, which re-blocked at once without running a worker and filed a second defect; the task was only
+        # retried after that one resolved too.
+        import ladder, recovery, repair, runner
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        reason = "verification introduced forbidden change: yarn.lock: not in allowed_files for task 001"
+        history = self.attempt_entries("rejected", "rejected", "blocked", "rejected", "environment", "rejected", "interrupted")   # ZIP-8697's
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason=reason, worktree=str(self.wt),
+                                      attempts={"ZIP-7873/001": history}))
+        lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(state.load(tdir).recovery["active"]["resume"], {"kind": "retry-task", "state": "implement", "task_id": "001", "task_slug": "a"})
+        defect = repair.open_defects(self.cfg)[0]
+        self.assertEqual(defect["summary"], reason)                  # the repair agent still sees the real cause
+        recovery.emit_event(self.cfg, defect, "not-needed")
+        recovery.consume_events(self.cfg, retry_task=runner.retry_task, ensure_supervisor=lambda *args: None)
+        resumed = state.load(tdir)
+        self.assertEqual(resumed.state, "implement")
+        self.assertEqual(ladder.since_reset(resumed.attempts["ZIP-7873/001"]), [])     # a rung is left: implement runs a worker
+
+    def test_a_block_with_rungs_left_keeps_its_resume_stage_contract(self):
+        for label, entries in (("two rejections, then a premium owner block", self.attempt_entries("rejected", "rejected", "blocked")),
+                               ("a ladder an earlier recovery already reset", self.attempt_entries("rejected", "rejected", "rejected", "rejected", "reset", "rejected", "blocked")),
+                               ("legacy rows that never recorded a rung", [{"n": n, "outcome": "rejected", "slug": "a"} for n in range(1, 5)])):
+            with self.subTest(label):
+                tdir = self.cfg.ticket_dir("ZIP-7873")
+                state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason="owner", worktree=str(self.wt),
+                                              attempts={"ZIP-7873/001": entries}))
+                lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+                self.assertEqual(state.load(tdir).recovery["active"]["resume"], {"kind": "resume-stage", "state": "implement"})
+
     def test_generic_blocks_on_different_tickets_get_separate_defects(self):
         import repair
         for key in ("ZIP-7873", "ZIP-7874"):

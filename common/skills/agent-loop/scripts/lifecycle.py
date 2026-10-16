@@ -112,6 +112,13 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
         if slug:
             action = {"kind": "retry-task", "state": "implement", "task_id": ladder.group(1), "task_slug": slug}
             checkpoint = {**checkpoint, "state": "implement", "task_id": ladder.group(1), "task_slug": slug}
+    elif target == "implement":
+        # The attempt that spends the last rung blocks the ticket with ITS OWN reason (reconcile.project_lifecycle); the text
+        # matched above is only what implement_task writes when re-entered. Resuming implement re-blocks at once here too.
+        spent = _spent_task(cfg, current, wt)
+        if spent:
+            action = {"kind": "retry-task", "state": "implement", "task_id": spent.id, "task_slug": spent.slug}
+            checkpoint = {**checkpoint, "state": "implement", "task_id": spent.id, "task_slug": spent.slug}
     # Generic reasons share text across tickets but not causes; one ticket must not spend another's landings.
     scope = current.key if (ladder or GENERIC_BLOCK.match(summary)) else None
     defect_id = repair.defect_id(source, summary, scope)
@@ -180,6 +187,24 @@ def _next_task(cfg, key, tasks):
     """First task in manifest order without an accepted attempt (by id AND slug)."""
     for task in tasks:
         if not _task_accepted(cfg, key, task):
+            return task
+    return None
+
+
+def _spent_task(cfg, t, wt):
+    """First unaccepted task whose ladder has no rung left -- what implement_task re-blocks on -- else None."""
+    import attempt
+    import ladder
+    for task in _manifest_identities(_manifest_path(wt, t.key)):
+        if _task_accepted(cfg, t.key, task):
+            continue
+        history = ladder.since_reset(attempt.history_for_task(cfg, t, task.id, task.slug))
+        arm = next((e.get("arm") for e in history if e.get("outcome") not in (None, "environment", "interrupted")), None)
+        try:
+            attempts = [ladder.Attempt(ladder.Rung(**e["rung"]), e["outcome"]) for e in history if e.get("outcome") in ladder.OUTCOMES]
+        except (KeyError, TypeError):
+            continue                                                 # unreadable history: not provably spent
+        if attempts and ladder.next_rung(attempts, arm) is None:
             return task
     return None
 

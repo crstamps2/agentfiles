@@ -292,17 +292,6 @@ def _reviewer_unavailable(cfg) -> str | None:
     return None
 
 
-LAUNCH_FAILURE = re.compile(r"exec: \S+: not found|command not found|No such file or directory: '?pi'?", re.I)
-
-
-def _launch_failure(stage: pathlib.Path) -> str:
-    """The launcher's own error when the agent process never started, else ''."""
-    err = (stage / "stderr.log").read_text(errors="replace") if (stage / "stderr.log").exists() else ""
-    out = (stage / "stdout.log").read_text(errors="replace") if (stage / "stdout.log").exists() else ""
-    m = LAUNCH_FAILURE.search(err)
-    return m.group(0) if m and not out.strip() else ""
-
-
 def _default_agent(cfg, name, prompt, stage, cwd, timeout):
     import plan as plan_mod
     return plan_mod._run_agent(cfg, name, prompt, stage, cwd, timeout)
@@ -494,7 +483,8 @@ def _repair_one(cfg, rec, scripts, run_agent, run_tests, notify, log) -> str:
             log("repair: the live branch moved during the repair; retrying on the new code next pass")
             return "skipped"                       # someone else landed a commit: not this attempt's fault
         marker = _marker(stage, "REPAIR")
-        launch = _launch_failure(stage)
+        import plan as plan_mod
+        launch = plan_mod.launch_failure(stage)
         if not marker and launch:
             # The agent never ran (missing binary, bad PATH): an environment fault, not a failed repair.
             note = _dir(cfg, "") / "launch-failure.json"

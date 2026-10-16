@@ -612,7 +612,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         rounds = cis.get("bot_rounds", 0)
         if rounds >= MAX_BOT_ROUNDS:
             failed = cfg.state_root / "botreview" / key / f"round-{rounds}"
-            out = "" if (failed / "adjudication.json").exists() else plan_mod.provider_exhausted(failed)
+            out = "" if (failed / "adjudication.json").exists() else (plan_mod.provider_exhausted(failed) or plan_mod.launch_failure(failed))
             if out:
                 model = (failed / "model.txt").read_text().strip() if (failed / "model.txt").exists() else t.critic_vendor
                 if model:

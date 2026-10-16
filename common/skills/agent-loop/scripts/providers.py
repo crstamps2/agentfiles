@@ -89,13 +89,19 @@ def mark_healthy(state_root, provider: str) -> bool:
     return True
 
 
+ALIASES = {"openai": ("openai", "openai-codex"), "openai-codex": ("openai", "openai-codex")}   # one ChatGPT account
+
+
 def is_exhausted(state_root, provider: str, now: float | None = None) -> bool:
     now = time.time() if now is None else now
-    return _load(state_root).get(provider, {}).get("until", 0) > now
+    data = _load(state_root)
+    return any(data.get(name, {}).get("until", 0) > now for name in ALIASES.get(provider, (provider,)))
 
 
 def resolve(state_root, model: str) -> str:
     """The model to launch: the equivalent on the other vendor while this one's provider is exhausted."""
+    if model and model.startswith("openai-codex/"):
+        model = "openai/" + model.split("/", 1)[1]    # retired provider id persisted by older tickets; no login exists for it
     alt = EQUIVALENT.get(model)
     if alt and is_exhausted(state_root, provider_of(model)) and not is_exhausted(state_root, provider_of(alt)):
         return alt

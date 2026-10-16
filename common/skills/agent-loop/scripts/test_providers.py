@@ -78,5 +78,21 @@ class Sol61FailoverTests(unittest.TestCase):
             providers.mark_exhausted(root, "openai", "usage limit")
             self.assertEqual(providers.resolve(root, "openai/gpt-6.1-sol"), "anthropic/claude-opus-5-5")
 
+
+class NoteRunTests(unittest.TestCase):
+    def test_an_agents_own_prose_about_usage_limits_marks_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            stage = pathlib.Path(root) / "stage"; stage.mkdir()
+            (stage / "stdout.log").write_text("The fix: _classify now treats any usage limit message as a refusal.\n")
+            (stage / "stderr.log").write_text("")
+            self.assertIsNone(providers.note_run(root, "anthropic/claude-sonnet-5-5", stage))
+            self.assertFalse(providers.is_exhausted(root, "anthropic"))
+
+    def test_a_provider_refusal_on_stderr_still_marks_the_provider(self):
+        with tempfile.TemporaryDirectory() as root:
+            stage = pathlib.Path(root) / "stage"; stage.mkdir()
+            (stage / "stderr.log").write_text("The ChatGPT user has reached their Subscription Sharing usage limit.\n")
+            self.assertEqual(providers.note_run(root, "openai/gpt-5.6-terra", stage), "openai")
+
 if __name__ == "__main__":
     unittest.main()

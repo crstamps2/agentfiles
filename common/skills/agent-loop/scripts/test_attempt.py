@@ -513,3 +513,25 @@ class TaskMdWordingTests(unittest.TestCase):
             task = contracts.Task(id="1", slug="s", summary="x", allowed_files=["a/new.rb"], verification_commands=["true"], acceptance=["x"])
             self.assertIn("expected to CREATE", attempt.task_md(task, pathlib.Path(d), pathlib.Path(d)))
 
+    def test_a_visual_task_says_screenshots_are_not_the_workers_to_capture(self):
+        """ZIP-4289/002 was `visual = true` with screenshot criteria (AC-4/AC-5), and its task.md said only
+        "Visual evidence required: yes". The worker finished the move (tests, lint and `yarn build` green), could not
+        capture them -- no browser session, dev server or signed-in org -- and reported STATUS: fail / REASON:
+        environment four times (NEXT: "Run bin/wt dev --start and capture before/after screenshots for AC-4/AC-5
+        with an authorized org."). An environment attempt keeps its rung and its tree, so the same impossible attempt
+        re-ran until heal's budget was spent. The worker must be told who owns the screenshots and what to report."""
+        with tempfile.TemporaryDirectory() as d:
+            d = pathlib.Path(d)
+            visual = make_task(id="002", visual=True, verification_commands=["yarn build"],
+                               acceptance=["AC-4: `yarn build` compiles. Screenshot (browser gate): /system/front_end/tables is unchanged"])
+            header = attempt.task_md(visual, d, d).split("Stage timeout")[0]
+            self.assertIn("Visual evidence required: yes", header)
+            self.assertIn("browser gate", header)                         # whose job the screenshots are
+            self.assertIn("not yours", header)
+            self.assertIn("REASON: environment", header)                   # ... and that missing them is not an environment failure
+            self.assertIn("UNVERIFIED", header)                            # ... but a gap to list, with the rest of the work still passing
+            self.assertIn("STATUS: pass", header)
+            plain = attempt.task_md(make_task(visual=False), d, d)
+            self.assertIn("Visual evidence required: no", plain)
+            self.assertNotIn("browser gate", plain)
+

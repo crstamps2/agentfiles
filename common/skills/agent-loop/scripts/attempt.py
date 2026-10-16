@@ -154,6 +154,15 @@ def safe_mkdir(path) -> None:
 
 READ_FIRST_RE = re.compile(r"Read first:\s*([^\s#]+)(?:#([A-Za-z0-9._-]+))?")
 EXCERPT_MAX_CHARS = 7000
+# `visual = true` is how a plan routes screenshots to the runner's browser gate, but task.md only told the worker
+# "Visual evidence required: yes". A worker with no browser session, dev server or signed-in org took that as its own
+# job and answered the screenshot criteria with `REASON: environment` four times (ZIP-4289/002). That outcome keeps
+# the rung, so the same impossible attempt re-ran. The criteria stand; the gate and the review judge them.
+VISUAL_EVIDENCE_NOTE = (
+    "Screenshots are the runner's browser gate's job and the human review's, not yours: you have no browser session, "
+    "dev server or signed-in org, so never report `REASON: environment` for a screenshot criterion. The criterion "
+    "still stands: list it under UNVERIFIED, check everything else, and report `STATUS: pass` only once every other "
+    "criterion and every verification command holds.")
 
 
 def _slug(h: str) -> str:
@@ -200,10 +209,11 @@ def required_reading(task: contracts.Task, wt: pathlib.Path) -> str:
 
 def task_md(task: contracts.Task, task_dir: pathlib.Path, wt: pathlib.Path) -> str:
     def bl(items): return "\n".join(f"- {i}" for i in items) or "- (none)"
+    visual = f"yes\n{VISUAL_EVIDENCE_NOTE}" if task.visual else "no"
     return f"""# Task {task.id}: {task.summary}
 Task directory: {task_dir}
 Worktree: {wt}
-Visual evidence required: {"yes" if task.visual else "no"}
+Visual evidence required: {visual}
 Stage timeout: {task.timeout_s // 60} minutes
 May edit tests/fixtures: {"yes" if task.may_edit_tests else "no"}
 

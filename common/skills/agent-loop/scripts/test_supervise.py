@@ -73,6 +73,17 @@ class PlistTests(unittest.TestCase):
         self.assertEqual(payload["StartInterval"], 60)
         self.assertEqual(payload["ProgramArguments"][-1], "cohort-reconcile")
 
+    def test_every_launch_agent_can_find_pi(self):
+        # pi installs itself to ~/.pi/agent/bin (2026-10-16); launchd has no login shell to add it.
+        with patch.object(supervise, "_launchctl", return_value=type("Result", (), {"returncode": 0})()):
+            paths = [plistlib.loads(supervise.write_plist("ZIP-1", "/wt/a", self.state_root).read_bytes()),
+                     plistlib.loads((supervise.AGENTS_DIR / (supervise.start_periodic(self.state_root, "repair", 300) + ".plist")).read_bytes()),
+                     plistlib.loads((supervise.AGENTS_DIR / (supervise.start_drip(self.state_root) + ".plist")).read_bytes())]
+        for plist in paths:
+            entries = plist["EnvironmentVariables"]["PATH"].split(":")
+            self.assertIn(os.path.expanduser("~/.pi/agent/bin"), entries)
+            self.assertIn(os.path.expanduser("~/.local/bin"), entries)
+
     def test_label_and_active_roundtrip(self):
         supervise.write_plist("ZIP-1", "/wt/a", self.state_root); supervise.write_plist("ZIP-2", "/wt/b", self.state_root)
         self.assertEqual(supervise.active(), ["ZIP-1", "ZIP-2"])

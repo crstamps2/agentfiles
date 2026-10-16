@@ -105,8 +105,17 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
     action = {"kind": "replan", "state": "plan"} if target in ("plan", "plan-review") else {"kind": "resume-stage", "state": target}
     checkpoint = {"state": target, "head_sha": _head(wt) if pathlib.Path(wt).exists() else "unknown"}
     summary = current.reason or "unstructured owner block"
+    evidence = f"state={current.state} previous={current.previous} reason={summary}"
+    lost = _lost_task(cfg, current, wt) if target == "implement" else None
     ladder = RUNNER_TASK_BLOCK.match(summary)
-    if ladder:
+    if lost:
+        # An accepted task's output is gone from the worktree: the task that needs it fails, the block says only `owner`, and resuming
+        # implement dispatches that task over the same tree again (ZIP-4285). Retry the lost task first, as cohort migration does.
+        task, missing = lost
+        action = {"kind": "retry-task", "state": "implement", "task_id": task.id, "task_slug": task.slug}
+        checkpoint = {**checkpoint, "state": "implement", "task_id": task.id, "task_slug": task.slug}
+        evidence += f"; task {task.id} was accepted but its output is missing from the worktree: {', '.join(missing)}"
+    elif ladder:
         # A runner-written ladder block: resuming implement would re-block at once; reset that task's ladder.
         slug = next((task.slug for task in _manifest_identities(_manifest_path(wt, current.key)) if task.id == ladder.group(1)), None)
         if slug:
@@ -129,7 +138,7 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
         current.key,
         source,
         summary,
-        f"state={current.state} previous={current.previous} reason={summary}",
+        evidence,
         recovery_ref={"ticket": current.key, "recovery_id": contract["id"],
                       "contract_fingerprint": recovery.fingerprint(contract)},
         scope=scope,
@@ -206,6 +215,19 @@ def _spent_task(cfg, t, wt):
             continue                                                 # unreadable history: not provably spent
         if attempts and ladder.next_rung(attempts, arm) is None:
             return task
+    return None
+
+
+def _lost_task(cfg, t, wt):
+    """First accepted task whose output is gone from the worktree, with the paths that went -- else None."""
+    import cohort_migration
+    accepted = {task_id: (record, adir) for task_id, record, adir in cohort_migration._accepted_tasks(cfg, t)}
+    for task in _manifest_identities(_manifest_path(wt, t.key)):
+        record, adir = accepted.get(task.id, ({}, None))
+        if record.get("slug") == task.slug and _task_accepted(cfg, t.key, task):
+            missing = cohort_migration._missing_outputs(types.SimpleNamespace(worktree=str(wt)), record, adir)
+            if missing:
+                return task, missing
     return None
 
 

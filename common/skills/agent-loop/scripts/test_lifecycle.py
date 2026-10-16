@@ -1132,6 +1132,75 @@ class LifecycleTests(unittest.TestCase):
                 lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
                 self.assertEqual(state.load(tdir).recovery["active"]["resume"], {"kind": "resume-stage", "state": "implement"})
 
+    def accept_task_001(self, *observed_files):
+        """Task 001 accepted in attempt 1. The tree that attempt observed held `observed_files`; the working copy has none of them."""
+        import attempt as attempt_mod, contracts
+        git = lambda *a: subprocess.run(["git", "-C", str(self.wt), *a], capture_output=True, text=True, check=True).stdout.strip()
+        git("init", "-q")
+        for path in observed_files:
+            (self.wt / path).parent.mkdir(parents=True, exist_ok=True); (self.wt / path).write_text("work")
+            git("add", "--", path)
+        tree = git("write-tree")
+        for path in observed_files:
+            (self.wt / path).unlink()
+        task = contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")[0]
+        d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True, exist_ok=True)
+        (d / "task.toml").write_text(attempt_mod.task_toml(task))
+        (d / "attempt.json").write_text(json.dumps({"outcome": "accepted", "observed_tree": tree}))
+
+    def block_on_task_002(self, tdir):
+        """Blocked `owner` after task 002's cheap rungs were spent and its premium rung blocked (ZIP-4285's shape)."""
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason="owner", worktree=str(self.wt),
+                                      attempts={"ZIP-7873/001": self.attempt_entries("accepted"),
+                                                "ZIP-7873/002": [{**e, "slug": "b"} for e in self.attempt_entries("rejected", "rejected", "blocked")]}))
+
+    def test_accepted_output_missing_from_the_worktree_is_restored_before_the_dependent_task_runs_again(self):
+        # ZIP-4285 (defect 2ed39f7f3799): task 001 was accepted but its output was never committed and later vanished from the worktree.
+        # Task 002 then ran over a tree without it: every worker reported the missing prerequisite and the premium report was `blocked/owner`,
+        # so the ticket blocked with the bare reason `owner`. Its resume-stage contract resumes implement, which dispatches task 002's
+        # premium rung over the same tree again, and the repair agent sees nothing but `owner`.
+        import contracts, recovery, repair, runner
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        self.accept_task_001("app/a.rb")
+        self.block_on_task_002(tdir)
+        lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(state.load(tdir).recovery["active"]["resume"], {"kind": "retry-task", "state": "implement", "task_id": "001", "task_slug": "a"})
+        defect = repair.open_defects(self.cfg)[0]
+        self.assertEqual(defect["summary"], "owner")
+        self.assertIn("app/a.rb", defect["evidence"])                 # the repair agent sees the real cause, not just `owner`
+        recovery.emit_event(self.cfg, defect, "not-needed")
+        recovery.consume_events(self.cfg, retry_task=runner.retry_task, ensure_supervisor=lambda *args: None)
+        tasks = contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")
+        self.assertEqual(state.load(tdir).state, "implement")
+        self.assertEqual(lifecycle._next_task(self.cfg, "ZIP-7873", tasks).id, "001")      # the prerequisite runs again, not task 002
+
+    def test_a_lost_prerequisite_is_retried_before_the_ladder_that_ran_out_over_it(self):
+        # Retrying the dependent task first would spend a fresh ladder over the same missing output and block again.
+        spent = [{**e, "slug": "b"} for e in self.attempt_entries("rejected", "rejected", "rejected", "rejected")]
+        for reason in ("task 002: ladder exhausted", "owner"):
+            with self.subTest(reason):
+                tdir = self.cfg.ticket_dir("ZIP-7873")
+                self.accept_task_001("app/a.rb")
+                state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason=reason, worktree=str(self.wt),
+                                              attempts={"ZIP-7873/001": self.attempt_entries("accepted"), "ZIP-7873/002": spent}))
+                lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+                self.assertEqual(state.load(tdir).recovery["active"]["resume"], {"kind": "retry-task", "state": "implement", "task_id": "001", "task_slug": "a"})
+
+    def test_accepted_output_still_in_the_worktree_keeps_the_resume_stage_contract(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        self.accept_task_001("app/a.rb")
+        (self.wt / "app" / "a.rb").write_text("work")
+        self.block_on_task_002(tdir)
+        lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(state.load(tdir).recovery["active"]["resume"], {"kind": "resume-stage", "state": "implement"})
+
+    def test_a_task_that_deleted_its_file_is_not_treated_as_lost_output(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        self.accept_task_001()                       # the tree it observed has no app/a.rb: the task removed it
+        self.block_on_task_002(tdir)
+        lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(state.load(tdir).recovery["active"]["resume"], {"kind": "resume-stage", "state": "implement"})
+
     def test_generic_blocks_on_different_tickets_get_separate_defects(self):
         import repair
         for key in ("ZIP-7873", "ZIP-7874"):

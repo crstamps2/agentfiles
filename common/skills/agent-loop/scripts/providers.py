@@ -17,6 +17,7 @@ import time
 # Equivalent model on the other vendor, per direction. Only models a ChatGPT-account Codex login accepts.
 EQUIVALENT = {
     "openai/gpt-5.6-sol": "anthropic/claude-opus-5-5",
+    "openai/gpt-6.1-sol": "anthropic/claude-opus-5-5",
     "openai/gpt-6-astra": "anthropic/claude-fable-5-1",
     "openai/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
     "openai/gpt-6-luna": "anthropic/claude-haiku-4-5",

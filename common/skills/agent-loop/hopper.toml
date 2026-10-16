@@ -28,7 +28,7 @@ exclude = "Martin's epic audit: replace with Card secondary; PR #47894 at Human 
 
 [drip]
 epics = ["ZIP-6774", "ZIP-6775", "ZIP-6776", "ZIP-6777", "ZIP-6778", "ZIP-6779", "ZIP-6780", "ZIP-6781"]   # ZUI phases 3-10, drained in this order (Cody 2026-10-07)
-max_in_flight = 4            # run 4 at a time (Cody 2026-10-08); 7 is the hard cap, enforced in config.py and drip.py
+max_in_flight = 2            # legacy drip count before cohort.json exists; 7 is the hard cap (config.py, drip.py)
 issue_types = ["Story", "Task", "Bug"]
 skip_assigned_to_others = false   # Cody: "assigned to me or not" -- but ONLY tickets in the ready column (Selected for Work); In Progress = a person owns it
 jql_extra = ""               # appended to the epic JQL if needed
@@ -81,3 +81,6 @@ alternate = ["cloud", "cloud"]   # "cloud" arm = gpt-5.6-terra. size = "small" s
 # Pre-registered before the first real run; the dashboard shows these verbatim.
 primary = "first-attempt acceptance rate per arm (cloud, small, premium)"
 secondary = ["wall time per accepted task per arm", "escalation rate per arm", "estimated cost per accepted ticket", "human-wait time per approval class"]
+
+[cohort]
+capacity = 2                 # tickets actively worked at once (Cody 2026-10-15: usage limits); release only at Human Gate 1

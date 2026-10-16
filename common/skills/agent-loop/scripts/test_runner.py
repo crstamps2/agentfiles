@@ -43,7 +43,7 @@ class RunnerHarness(unittest.TestCase):
         (self.wt / "app" / "components").mkdir(parents=True); (self.wt / "app" / "components" / ".keep").write_text("")
         git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "init")
         agents = root / "agents"; agents.mkdir()
-        toml_source = (HERE.parent / "hopper.toml").read_text()
+        toml_source = (HERE.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
         # Production no longer configures a [local] model (retired 2026-10-06), but the opt-in [local]
         # plumbing stays covered: the fixture supplies one, and local-worker must render it.
         self.local_model_default = "ollama-local/gpt-oss-ctx32k:20b"
@@ -979,7 +979,7 @@ after = ["001"]
         # Red admission test: dry-run without --skip-admission should pause when admission is red.
         # Create a hopper.toml copy with compressor_pct_max = 0.0 (forces red: all machines are > 0%).
         root = self.cfg.state_root.parent
-        toml = (HERE.parent / "hopper.toml").read_text()
+        toml = (HERE.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{self.cfg.state_root}"')
         toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}/agents"')
         toml = toml.replace("heavy_stage_s = 4500", "heavy_stage_s = 3")
@@ -1340,7 +1340,7 @@ class FenceBlastRadiusTests(unittest.TestCase):
         import reconcile, state, config, tempfile
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
-            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
             toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
             toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
             (root / "hopper.toml").write_text(toml)
@@ -1360,7 +1360,7 @@ class FenceBlastRadiusTests(unittest.TestCase):
         import reconcile, state, config, tempfile, os
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
-            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
             toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
             toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
             (root / "hopper.toml").write_text(toml)
@@ -1381,7 +1381,7 @@ class LiveAttemptCreationTests(unittest.TestCase):
         import reconcile, state, config, tempfile, os, locks
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
-            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
             toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
             toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
             (root / "hopper.toml").write_text(toml)

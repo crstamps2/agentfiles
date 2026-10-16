@@ -79,6 +79,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(loaded.cohort_capacity, 4)
         self.assertEqual(loaded.hard_capacity, 7)
 
+    def test_cohort_capacity_comes_from_hopper_and_never_exceeds_seven(self):
+        self.path.write_text(MINI.format(root=self.tmp.name + "/state") + "\n[cohort]\ncapacity = 2\n")
+        self.assertEqual(config.load(self.path).cohort_capacity, 2)
+        self.path.write_text(MINI.format(root=self.tmp.name + "/state") + "\n[cohort]\ncapacity = 8\n")
+        with self.assertRaises(config.ConfigError):
+            config.load(self.path)
+
+    def test_production_runs_two_workspaces_at_a_time(self):
+        # Cody, 2026-10-15: usage limits -- at most 2 tickets actively in the works.
+        self.assertEqual(config.load().cohort_capacity, 2)
+        self.assertEqual(config.load().drip["max_in_flight"], 2)
+
     def test_more_than_seven_tickets_in_flight_is_refused(self):
         # Cody, 2026-10-08: never more than 7 tickets processing.
         self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[drip]\nmax_in_flight = 8\n')

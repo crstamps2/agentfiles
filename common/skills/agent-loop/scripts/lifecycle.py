@@ -159,6 +159,15 @@ def _ci_state_path(cfg, key) -> pathlib.Path:
     return cfg.ticket_dir(key) / "ci.json"
 
 
+def _reclaim_provider_round(cfg, key, cis, rnd, stage) -> None:
+    """Keep failed provider logs while making their logical round retryable."""
+    for failed in (stage, stage.with_name(stage.name + "-failover")):
+        if failed.exists():
+            failed.rename(failed.with_name(f"{failed.name}-provider-{time.time_ns()}"))
+    cis["bot_rounds"] = max(0, rnd - 1)
+    _ci_state_path(cfg, key).write_text(json.dumps(cis))
+
+
 def _load_json(p: pathlib.Path, default):
     return json.loads(p.read_text()) if p.exists() else default
 
@@ -600,11 +609,21 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                                    + ", ".join(f"comment {cid} -> task {tid}" for cid, tid in unmet.items()))
             t = state.transition(t, "human-gate-1"); _save(cfg, t)
             return Step(key, "bot-loop", "all bot comments adjudicated; CI green", detail="HUMAN GATE 1", wait=True)
-        if cis.get("bot_rounds", 0) >= MAX_BOT_ROUNDS:
+        rounds = cis.get("bot_rounds", 0)
+        if rounds >= MAX_BOT_ROUNDS:
+            failed = cfg.state_root / "botreview" / key / f"round-{rounds}"
+            out = "" if (failed / "adjudication.json").exists() else plan_mod.provider_exhausted(failed)
+            if out:
+                model = (failed / "model.txt").read_text().strip() if (failed / "model.txt").exists() else t.critic_vendor
+                if model:
+                    import providers
+                    providers.note_run(cfg.state_root, model, failed)
+                _reclaim_provider_round(cfg, key, cis, rounds, failed)
+                return _pause_step(cfg, t, "bot-loop", f"provider unavailable: {out}")
             return _pause_step(cfg, t, "bot-loop", f"{len(todo)} bot comments outstanding after {MAX_BOT_ROUNDS} rounds")
         # Reuse a paid-for adjudication if the previous round's file already covers every open comment
         # (a later step failed after the critic ran -- do not pay the critic twice for the same comments).
-        rnd = cis.get("bot_rounds", 0)
+        rnd = rounds
         prev = cfg.state_root / "botreview" / key / f"round-{rnd}" / "adjudication.json" if rnd else None
         decisions = None
         if prev and prev.exists():
@@ -639,7 +658,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             if out:
                 # The provider refused to run the model (usage limit / 429 / overload). Nothing is wrong
                 # with the plan, the PR or the comments: wait and try again (heal: retry).
-                cis["bot_rounds"] = max(0, rnd - 1); _ci_state_path(cfg, key).write_text(json.dumps(cis))
+                _reclaim_provider_round(cfg, key, cis, rnd, stage)
                 return _pause_step(cfg, t, "bot-loop", f"provider unavailable: {out}")
             try:
                 decisions = botreview.parse_adjudication(stage / "adjudication.json")

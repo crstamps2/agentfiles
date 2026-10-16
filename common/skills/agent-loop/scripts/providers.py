@@ -1,9 +1,10 @@
 """Provider health for every agent the loop launches.
 
-When a provider reports a usage limit, record it with its reset time (`Try again in ~8405 min`) in
-`<state_root>/providers.json`. Every launch then resolves its model through `resolve()`: while the
-model's provider is exhausted it runs the other vendor's equivalent from the start, instead of failing
-and waiting out a cool-off per agent (2026-10-08: a ChatGPT plan limit stalled every Codex-backed role).
+When a provider is unavailable (for example, from a usage limit or missing credentials), record it
+with its reset time (`Try again in ~8405 min`) in `<state_root>/providers.json`. Every launch then
+resolves its model through `resolve()`: while the model's provider is unavailable it runs the other
+vendor's equivalent from the start, instead of failing and waiting out a cool-off per agent
+(2026-10-08: a ChatGPT plan limit stalled every Codex-backed role).
 The pi `failover` extension reads the same file for the interactive panes.
 """
 from __future__ import annotations
@@ -32,7 +33,7 @@ EQUIVALENT = {
     "openai-codex/gpt-6-luna": "anthropic/claude-haiku-4-5",
 }
 DEFAULT_COOL_OFF_S = 30 * 60
-LIMIT = re.compile(r"usage limit|insufficient_quota|rate_limit_error|quota exceeded|\b429\b", re.I)
+LIMIT = re.compile(r"usage limit|insufficient_quota|rate_limit_error|quota exceeded|\b429\b|no api key found", re.I)
 RESET = re.compile(r"try again in ~?\s*(\d+)\s*(min|minute|hour|h\b|sec|s\b)", re.I)
 
 
@@ -52,7 +53,7 @@ def provider_of(model: str) -> str:
 
 
 def exhausted_provider(text: str, model: str) -> str | None:
-    """The provider that refused, if `text` (agent stderr/stdout) reports a usage limit."""
+    """The provider that refused, if `text` (agent stderr/stdout) reports an unavailable provider."""
     return provider_of(model) if model and LIMIT.search(text or "") else None
 
 
@@ -102,7 +103,7 @@ def resolve(state_root, model: str) -> str:
 
 
 def note_run(state_root, model: str, stage_dir) -> str | None:
-    """After an agent ran: if its logs report a usage limit, mark the provider. Returns the provider."""
+    """After an agent ran: if its logs report an unavailable provider, mark it. Returns the provider."""
     text = ""
     for name in ("stderr.log",):                   # stdout is the model's own prose, which may discuss limits
         f = pathlib.Path(stage_dir) / name

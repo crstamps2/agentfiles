@@ -94,5 +94,13 @@ class NoteRunTests(unittest.TestCase):
             (stage / "stderr.log").write_text("The ChatGPT user has reached their Subscription Sharing usage limit.\n")
             self.assertEqual(providers.note_run(root, "openai/gpt-5.6-terra", stage), "openai")
 
+    def test_missing_legacy_credentials_mark_that_provider_unavailable(self):
+        with tempfile.TemporaryDirectory() as root:
+            stage = pathlib.Path(root) / "stage"; stage.mkdir()
+            (stage / "stderr.log").write_text("No API key found for openai-codex.\n")
+            self.assertEqual(providers.note_run(root, "openai-codex/gpt-6-astra", stage), "openai-codex")
+            self.assertTrue(providers.is_exhausted(root, "openai-codex"))
+            self.assertEqual(providers.resolve(root, "openai-codex/gpt-6-astra"), "anthropic/claude-fable-5-1")
+
 if __name__ == "__main__":
     unittest.main()

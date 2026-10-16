@@ -72,7 +72,8 @@ def vendor_of(model: str) -> str:
 
 
 def sibling_model(model: str) -> str | None:
-    """The other vendor's model of the same TIER. Used only when the assigned vendor is exhausted."""
+    """The other vendor's model of the same tier when the assigned provider is unavailable."""
+    model = model.replace("openai-codex/", "openai/", 1)
     for table in (AUTHOR_MODELS, CRITIC_MODELS):
         if model in table.values():
             other = [m for v, m in table.items() if v != vendor_of(model)]
@@ -214,7 +215,7 @@ def _run_agent(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt: p
 
 
 PROVIDER_OUT = (r"usage limit", r"\b429\b", r"quota", r"rate.?limit", r"insufficient_quota",
-                r"overloaded", r"\b50[234]\b", r"account .* (suspended|disabled)")
+                r"overloaded", r"\b50[234]\b", r"account .* (suspended|disabled)", r"no api key found")
 
 
 def provider_exhausted(stage_dir: pathlib.Path) -> str:

@@ -21,6 +21,11 @@ import subprocess
 import sys
 
 LABEL_PREFIX = "com.cody.agent-loop"
+# launchd has no login shell: list every place a tool the loop launches can live. mise shims first (the
+# repo's pinned ruby/node); pi installs itself to ~/.pi/agent/bin, with a ~/.local/bin link.
+LAUNCH_PATH = ":".join([os.path.expanduser("~/.local/share/mise/shims"), os.path.expanduser("~/.pi/agent/bin"),
+                        os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+                        "/usr/sbin", "/sbin"])
 AGENTS_DIR = pathlib.Path("~/Library/LaunchAgents").expanduser()
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 PYTHON = "/opt/homebrew/bin/python3"
@@ -58,7 +63,7 @@ def write_plist(key: str, worktree: str, state_root: pathlib.Path, throttle_s: i
         # mise shims FIRST: under launchd there is no login shell, so `bundle`/`ruby`/`node` must
         # resolve to the repo's pinned versions via the shims, not /usr/bin (system Ruby 2.6 broke
         # `bin/wt prepare` for a premium worker on ZIP-4294, 2026-09-15).
-        "EnvironmentVariables": {"PATH": os.path.expanduser("~/.local/share/mise/shims") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "EnvironmentVariables": {"PATH": LAUNCH_PATH,
                                  "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8", "MISE_YES": "1"},
         "RunAtLoad": True,
         # restart whenever the job exits non-zero (waiting / paused / fenced); a zero exit (gate reached) unloads
@@ -149,7 +154,7 @@ def start_drip(state_root: pathlib.Path, interval_s: int = 900) -> str:
     plist = {"Label": DRIP_LABEL,
              "ProgramArguments": [ensure_launcher(), str(SCRIPTS / "runner.py"), "drip"],
              "WorkingDirectory": str(SCRIPTS),
-             "EnvironmentVariables": {"PATH": os.path.expanduser("~/.local/share/mise/shims") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+             "EnvironmentVariables": {"PATH": LAUNCH_PATH,
                                       "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8", "MISE_YES": "1"},
              "RunAtLoad": True, "StartInterval": interval_s, "ProcessType": "Background", "Nice": 5,
              "StandardOutPath": str(logs / "drip.out.log"), "StandardErrorPath": str(logs / "drip.err.log")}
@@ -180,7 +185,7 @@ def start_periodic(state_root: pathlib.Path, verb: str, interval_s: int, *, extr
     logs = state_root / "launchd"; logs.mkdir(parents=True, exist_ok=True)
     plist = {"Label": label, "ProgramArguments": [ensure_launcher(), str(SCRIPTS / "runner.py"), verb, *extra_args],
              "WorkingDirectory": str(SCRIPTS),
-             "EnvironmentVariables": {"PATH": os.path.expanduser("~/.local/share/mise/shims") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+             "EnvironmentVariables": {"PATH": LAUNCH_PATH,
                                       "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8", "MISE_YES": "1"},
              "RunAtLoad": True, "StartInterval": interval_s, "ProcessType": "Background", "Nice": 5,
              "StandardOutPath": str(logs / f"{verb}.out.log"), "StandardErrorPath": str(logs / f"{verb}.err.log")}

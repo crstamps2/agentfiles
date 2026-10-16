@@ -60,7 +60,7 @@ def ensure_dev_server(wt) -> str:
         # prepare (deps + migrations), start the server if it is down, re-probe with patience. (ZIP-4294's
         # gate false-failed on a 500 that `bin/wt prepare` cleared in seconds, 2026-09-16.)
         subprocess.run(["bash", "-lc", "bin/wt prepare --for rails"], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
-        if code == 0:
+        if code in (0, 502, 503, 504):              # refused, or the puma-dev proxy reporting a stopped app
             subprocess.run(["bash", "-lc", "bin/wt dev --start"], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
         import time
         for _ in range(6):

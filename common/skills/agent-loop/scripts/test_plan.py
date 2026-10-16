@@ -205,6 +205,16 @@ class FailoverTests(unittest.TestCase):
             self.assertEqual(runner.Runner.worker_alternate(model), plan.sibling_model(model))
         self.assertIsNone(plan.sibling_model("something/unknown"))
 
+    def test_subscription_sharing_wording_is_a_provider_refusal_but_prose_is_not(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            stage = pathlib.Path(d)
+            (stage / "stderr.log").write_text("The ChatGPT user has reached their Subscription Sharing usage limit.\n")
+            self.assertTrue(plan.provider_exhausted(stage))
+            (stage / "stderr.log").write_text("")
+            (stage / "stdout.log").write_text("Root cause: the classifier missed the usage limit wording and a 429.\n")
+            self.assertEqual(plan.provider_exhausted(stage), "")
+
     def test_provider_exhaustion_retries_on_the_other_vendor_and_records_it(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

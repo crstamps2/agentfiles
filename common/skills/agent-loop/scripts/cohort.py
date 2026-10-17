@@ -368,6 +368,11 @@ def reconcile(cfg, *, dry_run=False, pr_lookup=None, supervisor=None, head_looku
             report.errors.append(f"admission: {type(exc).__name__}: {exc}")
         finally:
             admission.release()
+    try:
+        import sidebar
+        sidebar.sync(cfg)                          # cosmetic; never affects the report
+    except Exception:  # noqa: BLE001
+        pass
     return report
 
 

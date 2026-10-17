@@ -70,6 +70,26 @@ class EnsureDevServerTests(unittest.TestCase):
             with self.assertRaises(screenshots.VisualGateError):
                 screenshots.ensure_dev_server("/wt/zip-x")
 
+    def test_a_slow_first_preview_render_is_given_time_and_one_retry(self):
+        # A cold Lookbook preview took 32 s on ZIP-4287 (asset compile); a 20 s probe called it a failure.
+        import pathlib, tempfile
+        seen = []
+        replies = iter([(0, "timed out"), (200, "<html>ok</html>")])
+        def get(url, timeout=20):
+            seen.append(timeout); return next(replies)
+        def chrome(argv, **k):
+            pathlib.Path(argv[-2].split("=", 1)[1]).write_bytes(b"x" * 2000)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        import subprocess
+        with tempfile.TemporaryDirectory() as d, patch.object(screenshots, "_get", side_effect=get), \
+             patch.object(screenshots, "preview_path", return_value="zui/list"), \
+             patch.object(screenshots, "scenarios", return_value=["playground"]), \
+             patch.object(screenshots, "chrome_binary", return_value="chrome"), \
+             patch.object(screenshots.subprocess, "run", side_effect=chrome):
+            shots = screenshots.capture("https://admin.x.test", "list", pathlib.Path(d))
+        self.assertIn("playground", shots)
+        self.assertGreaterEqual(min(seen), 90)
+
     def test_a_proxy_502_for_a_stopped_server_starts_it(self):
         # puma-dev answers 502 when the worktree's app is down (ZIP-4275 gate, 2026-10-16).
         cmds = []

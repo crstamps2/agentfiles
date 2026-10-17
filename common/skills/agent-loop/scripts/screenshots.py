@@ -98,12 +98,17 @@ def scenarios(base: str, component: str) -> list[str]:
     return names
 
 
+PREVIEW_TIMEOUT_S = 90                                   # first render after a restart took 32 s (ZIP-4287)
+
+
 def capture(base: str, component: str, out_dir: pathlib.Path, width=1280, height=720) -> dict[str, pathlib.Path]:
     out_dir.mkdir(parents=True, exist_ok=True); chrome = chrome_binary(); shots = {}
     path = preview_path(base, component)
     for name in scenarios(base, component):
         url = f"{base}/lookbook/preview/{path}/{name}"
-        code, body = _get(url)
+        code, body = _get(url, timeout=PREVIEW_TIMEOUT_S)
+        if code == 0:                                   # a cold render compiles assets; one patient retry
+            code, body = _get(url, timeout=PREVIEW_TIMEOUT_S)
         if code != 200 or "Action Controller: Exception caught" in body:
             raise VisualGateError(f"{url} -> {code}" + (" (exception page)" if "Exception caught" in body else ""))
         png = out_dir / f"{component}-{name}.png"

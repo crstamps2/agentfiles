@@ -64,7 +64,9 @@ def _cmux() -> str | None:
 
 def _workspaces(run, binary) -> dict[str, str]:
     out = run([binary, "workspace", "list"], capture_output=True, text=True, timeout=TIMEOUT_S).stdout
-    return {m.group(2).strip(): m.group(1) for m in re.finditer(r"(workspace:\S+)\s+(.+)$", out or "", re.M)}
+    # Names may carry annotations such as "  [selected]".
+    return {re.sub(r"\s+\[[^\]]*\]$", "", m.group(2)).strip(): m.group(1)
+            for m in re.finditer(r"(workspace:\S+)\s+(.+)$", out or "", re.M)}
 
 
 def _desired(cfg) -> dict[str, Label]:

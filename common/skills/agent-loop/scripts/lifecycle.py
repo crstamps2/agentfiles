@@ -527,17 +527,20 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         return Step(key, "gates", "passed", detail=f"evidence_sha={t.evidence_sha[:10]}")
 
     if t.state == "draft-pr":
-        branch = publish.guard_branch(wt, key); publish.push(wt, branch)
-        pr = publish.existing_pr(wt, branch)
-        title, body = _pr_house_style(cfg, key, wt, t)
-        if not pr:
-            pr = publish.ensure_draft_pr(wt, branch, title, body)
-            publish.record_pr_on_worktree(wt, pr["number"])
-        else:
-            publish.github_write("pr-edit-body", ["gh", "pr", "edit", str(pr["number"]), "--repo", publish.REPO, "--title", title, "--body", body], wt)
-        cis = _load_json(_ci_state_path(cfg, key), {}); cis["pr"] = pr["number"]; _ci_state_path(cfg, key).write_text(json.dumps(cis))
-        t = state.transition(t, "ready"); _save(cfg, t)
-        return Step(key, "draft-pr", "draft PR present", detail=f"#{pr['number']}")
+        try:
+            branch = publish.guard_branch(wt, key); publish.push(wt, branch)
+            pr = publish.existing_pr(wt, branch)
+            title, body = _pr_house_style(cfg, key, wt, t)
+            if not pr:
+                pr = publish.ensure_draft_pr(wt, branch, title, body)
+                publish.record_pr_on_worktree(wt, pr["number"])
+            else:
+                publish.github_write("pr-edit-body", ["gh", "pr", "edit", str(pr["number"]), "--repo", publish.REPO, "--title", title, "--body", body], wt)
+            cis = _load_json(_ci_state_path(cfg, key), {}); cis["pr"] = pr["number"]; _ci_state_path(cfg, key).write_text(json.dumps(cis))
+            t = state.transition(t, "ready"); _save(cfg, t)
+            return Step(key, "draft-pr", "draft PR present", detail=f"#{pr['number']}")
+        except publish.PublishError as e:
+            return _pause_step(cfg, t, "draft-pr", f"publish failed: {e}")
 
     if t.state == "ready":
         cis = _load_json(_ci_state_path(cfg, key), {}); pr = cis.get("pr") or pr_number

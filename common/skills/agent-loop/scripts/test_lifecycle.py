@@ -205,6 +205,17 @@ class LifecycleTests(unittest.TestCase):
             r, steps, t = self.run_once()
         self.assertEqual(t.state, "paused"); self.assertIn("reply failed", t.reason)
 
+    def test_draft_pr_push_error_pauses_instead_of_crashing(self):
+        """ZIP-4287: a failed push escaped the draft-PR stage and killed the supervised runner."""
+        state.save(self.cfg.ticket_dir("ZIP-7873"), state.Ticket(key="ZIP-7873", state="draft-pr", previous="gates"))
+        error = lifecycle.publish.PublishError("push-rebased failed rc=1: bash: command not found: atuin")
+        with patch.object(lifecycle.publish, "push", side_effect=error):
+            _r, steps, t = self.run_once(max_steps=1)
+        self.assertEqual((t.state, t.previous), ("paused", "draft-pr"))
+        self.assertIn("publish failed: push-rebased failed rc=1: bash: command not found: atuin", t.reason)
+        self.assertEqual(steps[0].action, "paused"); self.assertTrue(steps[0].wait)
+        import heal; self.assertEqual(heal.policy(t.reason)[0], "republish")
+
     def test_existing_adjudication_is_reused_not_repaid(self):
         self.comments = [{"kind": "inline", "id": 5, "path": "a.rb", "line": 3, "reply_to": None, "sha": "s", "body": "x", "body_hash": "h5"}]
         stage = self.cfg.state_root / "botreview" / "ZIP-7873" / "round-1"; stage.mkdir(parents=True)

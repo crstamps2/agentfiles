@@ -9,7 +9,7 @@ import config
 import sidebar
 import state
 
-WORKSPACES = "  workspace:11  zip-1\n  workspace:12  zip-2\n* workspace:13  zip-3\n  workspace:14  other\n"
+WORKSPACES = "  workspace:11  zip-1\n  workspace:12  zip-2\n* workspace:13  zip-3  [selected]\n  workspace:14  other\n"
 
 
 class FakeCmux:
@@ -73,6 +73,12 @@ class SidebarTests(unittest.TestCase):
         self.assertIn(["workspace", "loading", "on", "--id", "agent-loop", "--workspace", "workspace:11"], cmux.calls)
         self.assertTrue(any(c[:3] == ["set-status", "agent-loop", "implementing"] and c[-1] == "workspace:11" for c in cmux.calls))
         self.assertFalse(any("ZIP-9" in " ".join(c) or "zip-9" in " ".join(c) for c in cmux.calls))
+
+    def test_the_selected_workspace_is_still_found(self):
+        self.ticket("ZIP-3", "implement")
+        cmux = FakeCmux()
+        sidebar.sync(self.cfg, run=cmux, force=True)
+        self.assertTrue(any(c[-1] == "workspace:13" for c in cmux.calls))
 
     def test_unchanged_state_sends_nothing_on_the_next_pass(self):
         self.ticket("ZIP-1", "implement")

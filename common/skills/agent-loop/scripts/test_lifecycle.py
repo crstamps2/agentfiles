@@ -352,6 +352,16 @@ class LifecycleTests(unittest.TestCase):
             err = lifecycle._rebase_onto_main(self.cfg, "ZIP-7873", self.wt)
         self.assertTrue(err); self.assertNotIn("human", err); self.assertEqual(aborted, [True])
 
+    def test_a_question_cody_answered_is_not_asked_again(self):
+        # ZIP-4275: the answered comment was never added to the ledger, so every resume replayed the
+        # cached question and re-paused at the round cap (2026-10-17).
+        tdir = self.bot_loop_ticket(bot_rounds=lifecycle.MAX_BOT_ROUNDS, owner_answered=["42"])
+        self.comments = [{"kind": "inline", "id": 42, "path": "a.rb", "line": 1, "reply_to": None,
+                          "sha": "s", "body": "filled or outlined?", "body_hash": "h42"}]
+        step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(state.load(tdir).state, "human-gate-1")
+        self.assertEqual(json.loads((tdir / "bot-ledger.json").read_text())["42"], "h42")
+
     def test_a_capped_round_whose_agent_never_launched_is_reclaimed(self):
         tdir = self.cfg.ticket_dir("ZIP-7873")
         state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready", critic_vendor="openai/gpt-6-astra"))

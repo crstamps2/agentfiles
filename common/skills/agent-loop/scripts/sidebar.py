@@ -47,6 +47,8 @@ def stalled_hours(t: state.Ticket) -> int:
 
 def label(cfg, t: state.Ticket, queued: int | None = None) -> Label:
     tdir = cfg.ticket_dir(t.key)
+    if (tdir / "INTERACTIVE.json").exists():
+        return Label(False, "interactive", BLUE, "person.circle")
     if t.state in PAST_REVIEW:
         try:
             pr = json.loads((tdir / "ci.json").read_text()).get("pr")
@@ -89,10 +91,10 @@ def _desired(cfg) -> dict[str, Label]:
     root = cfg.state_root / "tickets"
     tickets = {d.name: state.load(d) for d in sorted(root.iterdir()) if (d / "state.json").is_file()} if root.exists() else {}
     members = set(cohort.members(cfg)) if drip.cohort_enabled(cfg) else set(tickets)
-    order = {key: n for n, key in enumerate(drip.parked(cfg), 1)}
+    order = {key: n for n, key in enumerate((key for key in drip.parked(cfg) if not state.human_owned(cfg.ticket_dir(key))), 1)}
     want = {}
     for key, t in tickets.items():
-        if t.state in PAST_REVIEW or key in members:
+        if t.state in PAST_REVIEW or key in members or (cfg.ticket_dir(key) / "INTERACTIVE.json").exists():
             want[key] = label(cfg, t)
         elif key in order:
             want[key] = label(cfg, t, queued=order[key])

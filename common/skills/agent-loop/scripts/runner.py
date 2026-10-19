@@ -841,6 +841,7 @@ def main(argv=None) -> int:
     ra.add_argument("--defect", required=True); ra.add_argument("--sha", default=None)
     an = sub.add_parser("answer", help="record Cody's answer to a ticket's owner question and resume it")
     an.add_argument("--ticket", required=True); an.add_argument("--guidance", required=True)
+    an.add_argument("--comment", action="append", default=[], metavar="ID", help="a review comment id this answers (repeatable)")
     da = sub.add_parser("decision-answer", help="record Cody's guidance and resume a ticket waiting on a product decision")
     da.add_argument("--ticket", required=True); da.add_argument("--guidance", required=True)
     pk = sub.add_parser("park", help="hold a ticket back (supervisor stopped, state kept); the drip resumes it first when a slot frees")
@@ -966,8 +967,9 @@ def main(argv=None) -> int:
     if a.cmd == "answer":
         import heal, lifecycle, supervise
         tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
-        if t.state not in ("paused", "blocked") or not lifecycle.OWNER_QUESTION.search(t.reason or ""):
-            ap.error(f"{a.ticket} is not waiting on an owner question (state={t.state})")
+        waiting = t.state in ("paused", "blocked") and lifecycle.OWNER_QUESTION.search(t.reason or "")
+        if not waiting and not a.comment:
+            ap.error(f"{a.ticket} is not waiting on an owner question (state={t.state}); pass --comment ID to record an answered review comment")
         question = re.sub(r"^.*?(need(?:s)? Cody|owner question|question for the owner)[:\s]*", "", t.reason, flags=re.I) or t.reason
         root = pathlib.Path(t.worktree) / "planning" / a.ticket.lower()
         root.mkdir(parents=True, exist_ok=True)
@@ -976,12 +978,14 @@ def main(argv=None) -> int:
         with (root / "transcript.md").open("a") as handle:
             handle.write(f"\n## {_now()} owner answer\n\nQuestion: {question}\nAnswer: {a.guidance}\n")
         target = t.previous if t.previous in state.RESUMABLE_STATES else "implement"
-        ids = re.findall(r"comment (\d+):", t.reason or "")
+        ids = (re.findall(r"comment (\d+):", t.reason or "") if waiting else []) + list(a.comment)
         if ids:
             ci_path = tdir / "ci.json"
             cis = json.loads(ci_path.read_text()) if ci_path.exists() else {}
             cis["owner_answered"] = sorted(set(cis.get("owner_answered", [])) | set(ids))
             ci_path.write_text(json.dumps(cis))
+        if not waiting:
+            print(f"{a.ticket}: answer recorded for comment(s) {', '.join(a.comment)}; state unchanged ({t.state})"); return 0
         t = state.resume_target(t, target, reason=f"owner answered: {a.guidance}"[:200]); state.save(tdir, t)
         heal.mark_operator_resume(tdir, "owner answered")
         if not (tdir / "PARKED").exists():

@@ -294,6 +294,50 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertEqual(agents, ["premium-worker"])
 
+    def test_a_rebase_that_moves_dependency_manifests_reinstalls_them(self):
+        # main added a JS dependency; the rebased branch pushed with stale node_modules and the
+        # pre-push typecheck failed (ZIP-4288, 2026-10-19).
+        cmds = []
+        def sh(cmd, cwd, timeout):
+            cmds.append(cmd)
+            if cmd[:3] == ["git", "diff", "--name-only"] and "ORIG_HEAD" in cmd[-1]:
+                return subprocess.CompletedProcess(cmd, 0, "package.json\nyarn.lock\napp/x.rb\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(lifecycle, "_sh", side_effect=sh):
+            self.assertEqual(lifecycle._rebase_onto_main(self.cfg, "ZIP-7873", self.wt), "")
+        self.assertIn(["bash", "-lc", "bin/wt prepare --for rails"], cmds)
+
+    def test_a_rebase_with_unchanged_dependencies_skips_prepare(self):
+        cmds = []
+        def sh(cmd, cwd, timeout):
+            cmds.append(cmd)
+            if cmd[:3] == ["git", "diff", "--name-only"]:
+                return subprocess.CompletedProcess(cmd, 0, "app/x.rb\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(lifecycle, "_sh", side_effect=sh):
+            lifecycle._rebase_onto_main(self.cfg, "ZIP-7873", self.wt)
+        self.assertNotIn(["bash", "-lc", "bin/wt prepare --for rails"], cmds)
+
+    def test_a_rejected_push_after_a_conflict_rebase_pauses_instead_of_crashing(self):
+        tdir = self.bot_loop_ticket()
+        with patch.object(lifecycle.ci, "pr_mergeable", return_value="CONFLICTING"), \
+             patch.object(lifecycle, "_rebase_onto_main", return_value=""), \
+             patch.object(lifecycle.publish, "push_rebased", side_effect=lifecycle.publish.PublishError("push-rebased failed rc=1")):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertTrue(step.wait)
+        self.assertIn("publish failed", state.load(tdir).reason)
+
+    def test_a_rejected_push_after_a_ci_rebase_pauses_instead_of_crashing(self):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="ready", previous="draft-pr", worktree=str(self.wt)))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 47888, "actions": []}))
+        with patch.object(lifecycle.ci, "classify", return_value=type("V", (), {"action": "rebase", "reason": "behind", "failing": ()})()), \
+             patch.object(lifecycle, "_rebase_onto_main", return_value=""), \
+             patch.object(lifecycle.publish, "push_rebased", side_effect=lifecycle.publish.PublishError("push-rebased failed rc=1")):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertTrue(step.wait)
+        self.assertIn("publish failed", state.load(tdir).reason)
+
     def test_an_unresolved_rebase_is_aborted_and_never_asks_a_human(self):
         aborted = []
         def sh(cmd, cwd, timeout):

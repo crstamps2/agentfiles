@@ -66,6 +66,13 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
     return "rejected", f"{res.status}/{res.reason}: {res.next}"
 
 
+def _owner_requests_unallowed_edit(res: contracts.Result, task: contracts.Task) -> bool:
+    if "edit" not in (res.next or "").lower():
+        return False
+    return any("/" in path and not any(worktree._match(path, allowed) for allowed in task.allowed_files)
+               for path in re.findall(r"`([^`]+)`", res.next))
+
+
 def _harden_lint_cmd(cmd: str) -> str:
     """rubocop/reek given explicit paths lint files the repo EXCLUDES (linters/** carries 13 pre-existing
     offenses on main); CI never sees them because it runs with exclusions. Add --force-exclusion so a
@@ -608,7 +615,13 @@ class Runner:
             outcome, reason = _classify(res, stage, violations, stderr)
             if outcome == "environment" and "provider unavailable" in reason:
                 providers.note_run(self.cfg.state_root, agent.model, rec.path)   # every later launch switches vendor up front
-            if res is not None and res.status == "blocked" and res.reason not in ("owner", "environment") and rung.tier == "premium":
+            owner_boundary = (
+                outcome == "blocked" and res is not None and res.status == "blocked"
+                and res.reason == "owner" and _owner_requests_unallowed_edit(res, task)
+            )
+            if owner_boundary and rung.tier == "premium":
+                outcome, reason = "environment", f"contract complaint (owner): {(res.next or res.unverified or '')[:300]}"
+            if res is not None and res.status == "blocked" and (res.reason not in ("owner", "environment") or owner_boundary) and rung.tier == "premium":
                 # Premium workers' contract complaints are trusted enough to trigger a manifest repair.
                 self._flag_contract_complaint(t, task, res)
             # A CHEAP worker's `blocked/owner` is a claim, not a verdict: twice today the 20B model

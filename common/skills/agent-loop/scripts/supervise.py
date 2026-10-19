@@ -87,7 +87,11 @@ def _launchctl(*args) -> subprocess.CompletedProcess:
 
 
 def start(key: str, worktree: str, state_root: pathlib.Path) -> str:
-    if (pathlib.Path(state_root) / "tickets" / key / "PARKED").exists():
+    import state
+    tdir = pathlib.Path(state_root) / "tickets" / key
+    if state.human_owned(tdir):
+        return "interactive"
+    if (tdir / "PARKED").exists():
         return "parked"                        # the drip resumes parked tickets when a slot frees
     p = write_plist(key, worktree, state_root)
     uid = os.getuid()
@@ -105,7 +109,8 @@ def start(key: str, worktree: str, state_root: pathlib.Path) -> str:
 
 def ensure_running(key: str, worktree: str, state_root: pathlib.Path) -> bool:
     tdir = pathlib.Path(state_root) / "tickets" / key
-    if (pathlib.Path(state_root) / "PAUSE").exists() or (tdir / "HUMAN").exists() or (tdir / "PARKED").exists():
+    import state
+    if (pathlib.Path(state_root) / "PAUSE").exists() or state.human_owned(tdir) or (tdir / "PARKED").exists():
         return False
     if status(key) != "not loaded":
         return False

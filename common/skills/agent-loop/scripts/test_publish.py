@@ -1,4 +1,5 @@
 import pathlib
+import pathlib
 import subprocess
 import tempfile
 import unittest
@@ -119,6 +120,20 @@ class PushRebasedTests(unittest.TestCase):
     def test_plain_push_verb_still_refuses_any_lease(self):
         with self.assertRaises(publish.PublishError):
             publish.github_write("push", ["git", "push", "--force-with-lease=internal/x:" + "a" * 40, "origin", "HEAD"], ".")
+
+
+class BuildCacheTests(unittest.TestCase):
+    def test_a_push_discards_the_incremental_typecheck_cache_first(self):
+        # A tsconfig.tsbuildinfo from before a rebase failed the pre-push typecheck on a module main
+        # had added (ZIP-4287, 2026-10-17); a non-incremental check passed.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d); cache = wt / "tsconfig.tsbuildinfo"; cache.write_text("{}")
+            seen = []
+            with patch.object(publish, "_sh", side_effect=lambda argv, cwd, *a, **k: subprocess.CompletedProcess(argv, 0, "a" * 40, "")), \
+                 patch.object(publish, "github_write", side_effect=lambda verb, argv, cwd: seen.append(cache.exists())):
+                publish.push_rebased(wt, "internal/x")
+            self.assertEqual(seen, [False])
 
 
 class CommitMessageTests(unittest.TestCase):

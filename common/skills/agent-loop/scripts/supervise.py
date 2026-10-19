@@ -22,9 +22,10 @@ import sys
 
 LABEL_PREFIX = "com.cody.agent-loop"
 # launchd has no login shell: list every place a tool the loop launches can live. mise shims first (the
-# repo's pinned ruby/node); pi installs itself to ~/.pi/agent/bin, with a ~/.local/bin link.
+# repo's pinned ruby/node); pi installs itself to ~/.pi/agent/bin, with a ~/.local/bin link. Git hooks run
+# bash, which sources ~/.bashrc, so every tool it initialises (atuin) must resolve too.
 LAUNCH_PATH = ":".join([os.path.expanduser("~/.local/share/mise/shims"), os.path.expanduser("~/.pi/agent/bin"),
-                        os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+                        os.path.expanduser("~/.local/bin"), os.path.expanduser("~/.atuin/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
                         "/usr/sbin", "/sbin"])
 AGENTS_DIR = pathlib.Path("~/Library/LaunchAgents").expanduser()
 SCRIPTS = pathlib.Path(__file__).resolve().parent

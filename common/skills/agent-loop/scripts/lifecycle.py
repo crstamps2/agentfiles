@@ -37,6 +37,7 @@ import screenshots
 import state
 
 MAX_BOT_ROUNDS = 3
+BOT_WAIT_S = 45 * 60          # bot review normally comments within minutes of ready_for_review
 
 
 class Step:
@@ -457,10 +458,9 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         # premium worker then rightly refuses to hand-edit generated output (ZIP-7872/005 x3).
         behind = ci.behind_base(wt)
         if behind and _tree_clean(wt):
-            r = _sh(["git", "rebase", "origin/main"], wt, 600)
-            if r.returncode and not _resolve_generated_conflicts(wt):
-                _sh(["git", "rebase", "--abort"], wt, 60)
-                return _pause_step(cfg, t, "implement", f"rebase onto origin/main conflicted before task {task.id}; needs a human")
+            err = _rebase_onto_main(cfg, key, wt)
+            if err:
+                return _pause_step(cfg, t, "implement", f"{err} (before task {task.id})")
             try:
                 publish.push_rebased(wt, publish.current_branch(wt))
             except publish.PublishError:
@@ -575,9 +575,9 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 elif c.name in verdict.failing and "circleci.com" in c.link: ci.rerun_circleci(c.link)
             return Step(key, "ready", "CI rerun requested", detail=verdict.reason, wait=True)
         if verdict.action == "rebase":
-            r = _sh(["git", "rebase", "origin/main"], wt, 600)
-            if r.returncode:
-                _sh(["git", "rebase", "--abort"], wt, 60); return _pause_step(cfg, t, "ready", "rebase conflict; needs a human")
+            err = _rebase_onto_main(cfg, key, wt)
+            if err:
+                return _pause_step(cfg, t, "ready", err)
             publish.push_rebased(wt, publish.current_branch(wt))
             t = state.transition(t, "gates"); _save(cfg, t)
             return Step(key, "ready", "rebased onto origin/main; re-running gates")
@@ -597,6 +597,16 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
     if t.state == "bot-loop":
         cis = _load_json(_ci_state_path(cfg, key), {}); pr = cis.get("pr") or pr_number
         checks = ci.fetch_checks(pr, publish.REPO, wt)
+        if ci.pr_mergeable(pr, wt) == "CONFLICTING":
+            err = _rebase_onto_main(cfg, key, wt)
+            if err:
+                return _pause_step(cfg, t, "bot-loop", err)
+            publish.push_rebased(wt, publish.current_branch(wt))
+            for stale in ("ready_marked_sha", "bot_wait_since", "bot_retriggered"):
+                cis.pop(stale, None)
+            _ci_state_path(cfg, key).write_text(json.dumps(cis))
+            t = state.transition(t, "gates"); _save(cfg, t)
+            return Step(key, "bot-loop", "PR conflicted with main; rebased, re-running gates")
         if not checks or any(c.bucket == "pending" for c in checks):
             return Step(key, "bot-loop", "checks (incl. claude-review) still running", wait=True)
         ledger_p = _ledger_path(cfg, key); seen_comments = botreview.load_ledger(ledger_p)   # NOT `ledger`: shadows the ledger module for the whole function
@@ -604,7 +614,20 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if not todo:
             rounds = cis.get("bot_rounds", 0)
             if rounds == 0 and not comments:
-                return Step(key, "bot-loop", "no bot comments yet", wait=True)
+                since = cis.setdefault("bot_wait_since", time.time())
+                if time.time() - since < BOT_WAIT_S:
+                    _ci_state_path(cfg, key).write_text(json.dumps(cis))
+                    return Step(key, "bot-loop", "no bot comments yet", wait=True)
+                if not cis.get("bot_retriggered"):
+                    try:
+                        botreview.retrigger(pr, wt)
+                    except publish.PublishError as e:
+                        print(f"{key}: bot review retrigger failed: {e}", flush=True)
+                    cis["bot_retriggered"] = True; cis["bot_wait_since"] = time.time()
+                    _ci_state_path(cfg, key).write_text(json.dumps(cis))
+                    return Step(key, "bot-loop", "no bot review after the deadline; re-requested it", wait=True)
+                cis["bot_review"] = "did not run"                # advisory; Cody's review is the gate
+                _ci_state_path(cfg, key).write_text(json.dumps(cis))
             unmet = _unmet_review_promises(cfg, key, wt)
             if unmet:
                 return _pause_step(cfg, t, "bot-loop",
@@ -1042,6 +1065,54 @@ def _validate_or_revert(manifest: pathlib.Path, before: str) -> None:
     if viol:
         manifest.write_text(before)
         raise ValueError(f"generated task rejected by the schema (manifest unchanged): {viol[:3]}")
+
+
+def _rebase_finished(wt) -> bool:
+    """No rebase in progress, no conflict markers staged, and origin/main is an ancestor of HEAD."""
+    gitdir = _sh(["git", "rev-parse", "--git-dir"], wt, 60).stdout.strip()
+    gitdir = pathlib.Path(gitdir if pathlib.Path(gitdir).is_absolute() else pathlib.Path(wt) / gitdir)
+    if (gitdir / "rebase-merge").exists() or (gitdir / "rebase-apply").exists():
+        return False
+    if _sh(["git", "diff", "--name-only", "--diff-filter=U"], wt, 60).stdout.strip():
+        return False
+    if _sh(["git", "grep", "-l", "-E", "^(<<<<<<<|>>>>>>>) ", "HEAD"], wt, 120).stdout.strip():
+        return False
+    return _sh(["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"], wt, 60).returncode == 0
+
+
+REBASE_PROMPT = """# Finish a rebase for {key}
+
+A `git rebase origin/main` is in progress in `{wt}` and stopped on conflicts in hand-written files.
+Resolve every conflict so that BOTH sides' intent survives: main's change and this ticket's change.
+Then `git add` the files and `git -c core.editor=true rebase --continue`; repeat until the rebase completes.
+Touch only conflicted files. Do not abort, skip commits, push, or edit anything else.
+Conflicted now: {files}
+End with `REBASE: done` or `REBASE: blocked — <one line>`."""
+
+
+def _rebase_onto_main(cfg, key: str, wt) -> str:
+    """Rebase onto origin/main. Generated files regenerate; hand-written conflicts go to a worker.
+    Returns "" on success, else a reason (the rebase is aborted). Never a human question."""
+    r = _sh(["git", "rebase", "origin/main"], wt, 600)
+    if r.returncode == 0:
+        publish.clear_build_caches(wt)
+        return ""
+    if _resolve_generated_conflicts(wt) and _rebase_finished(wt):
+        publish.clear_build_caches(wt)
+        return ""
+    files = _sh(["git", "diff", "--name-only", "--diff-filter=U"], wt, 60).stdout.split()
+    stage = cfg.state_root / "rebase" / key / time.strftime("%Y%m%dT%H%M%S")
+    stage.mkdir(parents=True, exist_ok=True)
+    try:
+        plan_mod._run_agent(cfg, "premium-worker", REBASE_PROMPT.format(key=key, wt=wt, files=", ".join(files) or "see git status"),
+                            stage, pathlib.Path(wt), 1800)
+    except Exception as exc:  # noqa: BLE001
+        print(f"{key}: rebase worker failed to run: {exc}", flush=True)
+    if _rebase_finished(wt):
+        publish.clear_build_caches(wt)
+        return ""
+    _sh(["git", "rebase", "--abort"], wt, 60)
+    return f"rebase onto origin/main left conflicts the worker could not resolve: {', '.join(files)[:200]}"
 
 
 def recover_interrupted_git_state(wt, sh=None) -> str:

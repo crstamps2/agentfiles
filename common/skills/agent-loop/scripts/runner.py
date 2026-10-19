@@ -4,6 +4,7 @@ in attempt.py; `implement_task` requires a `reconcile.RunContext` obtained from 
 that lives entirely in reconcile.py (Plan 1c Tasks 4/5)."""
 from __future__ import annotations
 import argparse
+import re
 import dataclasses
 import datetime as dt
 import os
@@ -838,6 +839,8 @@ def main(argv=None) -> int:
     rc.add_argument("--ticket", required=True); rc.add_argument("--resume-from", default=None, choices=sorted(state.RESUMABLE_STATES))
     ra = sub.add_parser("repair-approved", help="after applying a protected-path repair by hand: wake the tickets waiting on it")
     ra.add_argument("--defect", required=True); ra.add_argument("--sha", default=None)
+    an = sub.add_parser("answer", help="record Cody's answer to a ticket's owner question and resume it")
+    an.add_argument("--ticket", required=True); an.add_argument("--guidance", required=True)
     da = sub.add_parser("decision-answer", help="record Cody's guidance and resume a ticket waiting on a product decision")
     da.add_argument("--ticket", required=True); da.add_argument("--guidance", required=True)
     pk = sub.add_parser("park", help="hold a ticket back (supervisor stopped, state kept); the drip resumes it first when a slot frees")
@@ -959,6 +962,25 @@ def main(argv=None) -> int:
         print("supervisor", supervise.start(a.ticket, wt, cfg.state_root))
         if admitted_now:
             cohort.activate(cfg, a.ticket)
+        return 0
+    if a.cmd == "answer":
+        import heal, lifecycle, supervise
+        tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
+        if t.state not in ("paused", "blocked") or not lifecycle.OWNER_QUESTION.search(t.reason or ""):
+            ap.error(f"{a.ticket} is not waiting on an owner question (state={t.state})")
+        question = re.sub(r"^.*?(need(?:s)? Cody|owner question|question for the owner)[:\s]*", "", t.reason, flags=re.I) or t.reason
+        root = pathlib.Path(t.worktree) / "planning" / a.ticket.lower()
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / "plan.md").open("a") as handle:
+            handle.write(f"\n## Owner rulings\n\n- Question: {question}\n- Answer: {a.guidance}\n")
+        with (root / "transcript.md").open("a") as handle:
+            handle.write(f"\n## {_now()} owner answer\n\nQuestion: {question}\nAnswer: {a.guidance}\n")
+        target = t.previous if t.previous in state.RESUMABLE_STATES else "implement"
+        t = state.resume_target(t, target, reason=f"owner answered: {a.guidance}"[:200]); state.save(tdir, t)
+        heal.mark_operator_resume(tdir, "owner answered")
+        if not (tdir / "PARKED").exists():
+            supervise.ensure_running(a.ticket, t.worktree, cfg.state_root)
+        print(f"{a.ticket}: answer recorded; resumed {target}" + (" (parked; resumes when a slot frees)" if (tdir / "PARKED").exists() else ""))
         return 0
     if a.cmd == "recovery-clear":
         import heal, recovery, supervise

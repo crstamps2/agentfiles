@@ -799,6 +799,17 @@ class RunnerHarness(unittest.TestCase):
         outcome, rows = self.run_task("fail", "fail", "owner")
         self.assertEqual(outcome, "blocked"); self.assertEqual(rows[2]["outcome"], "blocked")
 
+    def test_premium_owner_request_for_an_unallowed_path_is_a_contract_complaint(self):
+        """ZIP-8697: a task-boundary block must replan, not strand the ticket as bare `owner`."""
+        outcome, rows = self.run_task("fail", "fail", "owner_boundary", "owner_boundary")
+        self.assertEqual(outcome, "paused")
+        self.assertEqual([r["outcome"] for r in rows[2:]], ["environment", "environment"])
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertEqual(t.state, "paused"); self.assertTrue(t.reason.startswith("contract complaint (owner):"))
+        import heal; self.assertEqual(heal.policy(t.reason)[0], "repair")
+        bad = self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md"
+        self.assertIn("app/views/components/zui/ai_feedback/ai_feedback.rb", bad.read_text())
+
     def test_parallel_implement_lands_independent_tasks_in_manifest_order(self):
         """workers_parallel > 1: independent tasks run concurrently in their own worktrees; accepted diffs
         land on the ticket worktree in manifest order and each is published; dependent tasks wait."""

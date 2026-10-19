@@ -354,6 +354,41 @@ class RunnerHarness(unittest.TestCase):
                 self.assertEqual(outcome, "environment")
                 self.assertIn("provider unavailable", reason)
 
+    def owner_question_ticket(self):
+        tdir = self.cfg.ticket_dir("ZIP-9")
+        (self.wt / "planning" / "zip-9").mkdir(parents=True, exist_ok=True)
+        t = state.Ticket(key="ZIP-9", state="bot-loop", previous="ready", worktree=str(self.wt))
+        t = state.transition(t, "paused", reason="reviewer questions need Cody: comment 42: filled or outlined badge?")
+        t.needs_operator = "owner question"; state.save(tdir, t)
+        return tdir
+
+    def test_answer_records_the_ruling_and_resumes_the_paused_stage(self):
+        tdir = self.owner_question_ticket()
+        with patch("supervise.ensure_running", return_value=True) as ensure:
+            self.assertEqual(self.cli("answer", "--ticket", "ZIP-9", "--guidance", "Use the filled primary badge."), 0)
+        t = state.load(tdir)
+        self.assertEqual((t.state, t.needs_operator), ("bot-loop", ""))
+        plan = (self.wt / "planning" / "zip-9" / "plan.md").read_text()
+        self.assertIn("## Owner rulings", plan); self.assertIn("Use the filled primary badge.", plan)
+        self.assertIn("filled or outlined badge?", plan)
+        self.assertIn("Use the filled primary badge.", (self.wt / "planning" / "zip-9" / "transcript.md").read_text())
+        ensure.assert_called_once()
+
+    def test_answer_for_a_parked_ticket_keeps_it_parked(self):
+        import cohort
+        self.full_cohort()
+        tdir = self.owner_question_ticket(); (tdir / "PARKED").touch()
+        with patch("supervise.ensure_running") as ensure, patch("supervise.start") as start:
+            self.assertEqual(self.cli("answer", "--ticket", "ZIP-9", "--guidance", "Outlined."), 0)
+        self.assertEqual(state.load(tdir).state, "bot-loop")
+        self.assertTrue((tdir / "PARKED").exists()); ensure.assert_not_called(); start.assert_not_called()
+        self.assertNotIn("ZIP-9", cohort.members(self.cfg))
+
+    def test_answer_refuses_a_ticket_that_is_not_waiting_on_cody(self):
+        state.save(self.cfg.ticket_dir("ZIP-9"), state.Ticket(key="ZIP-9", state="implement", worktree=str(self.wt)))
+        with self.assertRaises(SystemExit):
+            self.cli("answer", "--ticket", "ZIP-9", "--guidance", "x")
+
     def test_decision_answer_cli_persists_guidance_and_resumes_ticket(self):
         import decision
         tdir = self.cfg.ticket_dir("ZIP-7873")

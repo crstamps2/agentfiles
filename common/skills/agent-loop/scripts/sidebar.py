@@ -6,6 +6,7 @@ missing cmux, a dead socket or a renamed workspace can never affect the loop.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import pathlib
@@ -20,7 +21,8 @@ KEY = "agent-loop"
 PRODUCTION_ROOT = pathlib.Path("~/.local/state/agent-loop").expanduser()
 CMUX_FALLBACK = "/Applications/cmux.app/Contents/Resources/bin/cmux"
 TIMEOUT_S = 5
-GREEN, YELLOW, ORANGE, BLUE, GRAY = "#34C759", "#FFCC00", "#FF9500", "#4C8DFF", "#8E8E93"
+GREEN, YELLOW, ORANGE, BLUE, GRAY, RED = "#34C759", "#FFCC00", "#FF9500", "#4C8DFF", "#8E8E93", "#FF3B30"
+STALL_S = 4 * 3600            # no state change this long while the machine owns the ticket
 STAGE_TEXT = {"queued": "starting", "spinup": "starting", "plan": "planning", "plan-review": "planning",
               "implement": "implementing", "gates": "gates", "draft-pr": "CI", "ready": "CI", "bot-loop": "bot review"}
 PAST_REVIEW = frozenset(("human-gate-1", "colleague-loop", "human-gate-2", "done"))
@@ -32,6 +34,15 @@ class Label(typing.NamedTuple):
     text: str
     color: str
     icon: str
+
+
+def stalled_hours(t: state.Ticket) -> int:
+    try:
+        then = dt.datetime.fromisoformat((t.updated_utc or "").replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    age = (dt.datetime.now(dt.timezone.utc) - then).total_seconds()
+    return int(age // 3600) if age >= STALL_S else 0
 
 
 def label(cfg, t: state.Ticket, queued: int | None = None) -> Label:
@@ -46,6 +57,9 @@ def label(cfg, t: state.Ticket, queued: int | None = None) -> Label:
         return Label(False, f"queued #{queued}", GRAY, "clock")
     if (tdir / "HUMAN").exists() or t.state == "decision-required" or OWNER_QUESTION.search(t.reason or ""):
         return Label(False, "needs Cody", ORANGE, "exclamationmark.bubble")
+    hours = stalled_hours(t)
+    if hours:
+        return Label(False, f"stalled {hours}h", RED, "exclamationmark.triangle")
     active = t.recovery.get("active") if isinstance(t.recovery, dict) else None
     if isinstance(active, dict):
         if active.get("status") == "waiting-provider":
@@ -116,4 +130,23 @@ def sync(cfg, *, run=subprocess.run, force: bool = False) -> None:
         tmp.write_text(json.dumps(cache, indent=2))
         os.replace(tmp, cache_path)
     except Exception:  # noqa: BLE001 -- the sidebar must never affect the loop
+        return
+
+
+def watchdog(cfg) -> None:
+    """Notify Cody when a ticket the machine owns has made no progress for STALL_S. Best-effort."""
+    try:
+        import cohort
+        import drip
+        import lifecycle
+        keys = cohort.members(cfg) if drip.cohort_enabled(cfg) else []
+        for key in keys:
+            tdir = cfg.ticket_dir(key)
+            if not (tdir / "state.json").is_file():
+                continue
+            t = state.load(tdir)
+            got = label(cfg, t)
+            if got.text.startswith("stalled"):
+                lifecycle._notify_once(tdir, key, f"{key} {got.text}", (t.reason or t.state)[:160])
+    except Exception:  # noqa: BLE001 -- observability must never affect the loop
         return

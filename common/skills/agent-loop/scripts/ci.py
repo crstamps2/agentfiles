@@ -68,6 +68,23 @@ def fetch_checks(pr_number: int, repo: str, cwd) -> list[Check]:
     return out
 
 
+def pr_mergeable(pr_number: int, cwd) -> str:
+    """GitHub's MERGEABLE / CONFLICTING / UNKNOWN for the PR. GitHub runs no pull_request workflows
+    on a conflicting PR, so CI and bot review silently never start (ZIP-4288)."""
+    import json, time
+    for attempt in range(3):
+        r = subprocess.run(["gh", "pr", "view", str(pr_number), "--repo", "retailzipline/zipline-app", "--json", "mergeable"],
+                           cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        try:
+            value = json.loads(r.stdout or "{}").get("mergeable", "UNKNOWN")
+        except ValueError:
+            value = "UNKNOWN"
+        if value != "UNKNOWN":
+            return value
+        time.sleep(3)                                  # GitHub computes mergeability lazily
+    return "UNKNOWN"
+
+
 def behind_base(cwd, base: str = "main") -> int:
     subprocess.run(["git", "fetch", "-q", "origin", base], cwd=str(cwd), capture_output=True, timeout=300)
     r = subprocess.run(["git", "rev-list", "--count", f"HEAD..origin/{base}"], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace")

@@ -162,8 +162,20 @@ def push(wt, branch: str) -> bool:
         if behind and int(behind) > 0:
             push_rebased(wt, branch)
             return True
+    clear_build_caches(wt)
     github_write("push", GITHUB_ALLOW["push"], wt)
     return True
+
+
+STALE_BUILD_CACHES = ("tsconfig.tsbuildinfo",)
+
+
+def clear_build_caches(wt) -> None:
+    """Drop ignored incremental caches that a rebase can leave describing the old tree; the
+    pre-push typecheck then failed on modules main had added (ZIP-4287)."""
+    import pathlib
+    for name in STALE_BUILD_CACHES:
+        (pathlib.Path(wt) / name).unlink(missing_ok=True)
 
 
 def push_rebased(wt, branch: str) -> None:
@@ -174,6 +186,7 @@ def push_rebased(wt, branch: str) -> None:
     if r.returncode:
         raise PublishError(f"no remote ref for {branch}; cannot lease")
     expected = r.stdout.strip()
+    clear_build_caches(wt)
     github_write("push-rebased", ["git", "push", f"--force-with-lease={branch}:{expected}", "origin", "HEAD"], wt)
 
 

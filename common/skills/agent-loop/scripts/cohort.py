@@ -371,6 +371,7 @@ def reconcile(cfg, *, dry_run=False, pr_lookup=None, supervisor=None, head_looku
     try:
         import sidebar
         sidebar.sync(cfg)                          # cosmetic; never affects the report
+        sidebar.watchdog(cfg)
     except Exception:  # noqa: BLE001
         pass
     return report

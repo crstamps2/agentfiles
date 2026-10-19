@@ -55,6 +55,8 @@ if scenario == "transport_429":
     sys.exit(1)
 if scenario == "owner":
     result("blocked", "owner", [], "Is the close control part of the header slot?"); sys.exit(0)
+if scenario == "owner_boundary":
+    result("blocked", "owner", [], "Permit an edit to `app/views/components/zui/ai_feedback/ai_feedback.rb` outside allowed_files"); sys.exit(0)
 if scenario == "env":
     result("fail", "environment", [], "dev DB unreachable"); sys.exit(0)
 if scenario == "env_partial":

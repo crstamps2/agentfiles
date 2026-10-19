@@ -102,6 +102,43 @@ class SidebarTests(unittest.TestCase):
         self.assertEqual(cmux.calls, [])
 
 
+class StallTests(SidebarTests):
+    def stale(self, key, stage="paused", reason="waiting for automatic recovery", hours=6):
+        import datetime as dt
+        t = self.ticket(key, stage, reason)
+        raw = json.loads((self.cfg.ticket_dir(key) / "state.json").read_text())
+        raw["updated_utc"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        (self.cfg.ticket_dir(key) / "state.json").write_text(json.dumps(raw))
+        return state.load(self.cfg.ticket_dir(key))
+
+    def test_a_member_with_no_progress_for_hours_is_labelled_stalled(self):
+        got = sidebar.label(self.cfg, self.stale("ZIP-1", hours=54))
+        self.assertEqual((got.spinner, got.text, got.color), (False, "stalled 54h", sidebar.RED))
+
+    def test_waiting_on_cody_or_review_is_not_a_stall(self):
+        self.assertEqual(sidebar.label(self.cfg, self.stale("ZIP-1", reason="reviewer questions need Cody: x")).text, "needs Cody")
+        self.assertTrue(sidebar.label(self.cfg, self.stale("ZIP-2", stage="human-gate-1")).text.startswith("ready"))
+
+    def test_the_watchdog_notifies_once_per_stall(self):
+        import cohort
+        cohort.initialize(self.cfg); cohort.reserve(self.cfg, "ZIP-1", "t"); cohort.activate(self.cfg, "ZIP-1")
+        self.stale("ZIP-1", hours=6)
+        sent = []
+        with patch("lifecycle._notify_once", side_effect=lambda tdir, key, title, body: sent.append(title)):
+            sidebar.watchdog(self.cfg)
+            sidebar.watchdog(self.cfg)
+        self.assertEqual(len(sent), 2)              # _notify_once itself dedupes; the watchdog calls it each pass
+        self.assertIn("stalled", sent[0])
+
+    def test_a_fresh_member_raises_nothing(self):
+        import cohort
+        cohort.initialize(self.cfg); cohort.reserve(self.cfg, "ZIP-1", "t"); cohort.activate(self.cfg, "ZIP-1")
+        self.ticket("ZIP-1", "implement")
+        with patch("lifecycle._notify_once") as notify:
+            sidebar.watchdog(self.cfg)
+        notify.assert_not_called()
+
+
 class ReconcileIsolationTests(unittest.TestCase):
     def test_a_sidebar_crash_does_not_change_the_reconcile_result(self):
         import cohort

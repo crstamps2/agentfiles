@@ -41,6 +41,12 @@ def mark_ready(pr_number: int, cwd) -> None:
     publish.github_write("pr-ready", ["gh", "pr", "ready", str(pr_number), "--repo", publish.REPO], cwd)
 
 
+def retrigger(pr_number: int, cwd) -> None:
+    """Bot review runs on ready_for_review; toggling draft re-fires it after a rebase or a missed run."""
+    publish.github_write("pr-ready", ["gh", "pr", "ready", str(pr_number), "--repo", publish.REPO, "--undo"], cwd)
+    mark_ready(pr_number, cwd)
+
+
 def head_sha(cwd) -> str:
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
 

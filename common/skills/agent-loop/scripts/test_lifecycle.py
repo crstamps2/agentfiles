@@ -67,6 +67,7 @@ class LifecycleTests(unittest.TestCase):
             patch.object(lifecycle.publish, "push", return_value=True),
             patch.object(lifecycle.publish, "existing_pr", return_value={"number": 47888, "isDraft": True}),
             patch.object(lifecycle.ci, "behind_base", return_value=0),
+            patch.object(lifecycle.ci, "pr_mergeable", return_value="MERGEABLE"),
             patch.object(lifecycle.publish, "push_rebased"),
             patch.object(lifecycle.ci, "fetch_checks", side_effect=lambda *a: self.checks),
             patch.object(lifecycle.botreview, "mark_ready", side_effect=lambda pr, wt: self.marked.append(pr)),
@@ -237,6 +238,75 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(t.state, "paused"); self.assertIn("provider unavailable", t.reason)
         cis = json.loads((self.cfg.ticket_dir("ZIP-7873") / "ci.json").read_text()); self.assertEqual(cis["bot_rounds"], 0)   # round not consumed
         import heal; self.assertEqual(heal.policy(t.reason)[0], "retry")
+
+    def bot_loop_ticket(self, **ci):
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="bot-loop", previous="ready", worktree=str(self.wt)))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 47888, "actions": [], "ready_marked_sha": "h" * 40, **ci}))
+        return tdir
+
+    def test_a_pr_that_conflicts_with_main_is_rebased_and_regated(self):
+        # GitHub runs no workflows on a conflicting PR, so bot review never came (ZIP-4288 waited 54 h).
+        tdir = self.bot_loop_ticket()
+        with patch.object(lifecycle.ci, "pr_mergeable", return_value="CONFLICTING"), \
+             patch.object(lifecycle, "_rebase_onto_main", return_value="") as rebase:
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        rebase.assert_called_once()
+        self.assertEqual(state.load(tdir).state, "gates")
+        self.assertNotIn("ready_marked_sha", json.loads((tdir / "ci.json").read_text()))
+        self.assertIn("rebased", step.action)
+
+    def test_no_bot_review_retriggers_once_then_reaches_the_gate(self):
+        import time as _time
+        tdir = self.bot_loop_ticket(bot_wait_since=_time.time() - lifecycle.BOT_WAIT_S - 60)
+        retriggers = []
+        with patch.object(lifecycle.ci, "pr_mergeable", return_value="MERGEABLE"), \
+             patch.object(lifecycle.botreview, "retrigger", side_effect=lambda pr, wt: retriggers.append(pr)):
+            first = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+            self.assertTrue(first.wait); self.assertEqual(retriggers, [47888])
+            cis = json.loads((tdir / "ci.json").read_text())
+            cis["bot_wait_since"] = _time.time() - lifecycle.BOT_WAIT_S - 60
+            (tdir / "ci.json").write_text(json.dumps(cis))
+            lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(retriggers, [47888])
+        self.assertEqual(state.load(tdir).state, "human-gate-1")
+
+    def test_waiting_for_bot_review_inside_the_deadline_just_waits(self):
+        tdir = self.bot_loop_ticket()
+        with patch.object(lifecycle.ci, "pr_mergeable", return_value="MERGEABLE"), \
+             patch.object(lifecycle.botreview, "retrigger") as retrigger:
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertTrue(step.wait); retrigger.assert_not_called()
+        self.assertIn("bot_wait_since", json.loads((tdir / "ci.json").read_text()))
+
+    def test_a_hand_written_rebase_conflict_goes_to_a_worker_not_a_human(self):
+        agents = []
+        results = iter([subprocess.CompletedProcess([], 1, "", "CONFLICT (content)")])
+        def sh(cmd, cwd, timeout):
+            if cmd[:2] == ["git", "rebase"] and len(cmd) == 3:
+                return next(results)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch.object(lifecycle, "_sh", side_effect=sh), \
+             patch.object(lifecycle, "_resolve_generated_conflicts", return_value=False), \
+             patch.object(lifecycle, "_rebase_finished", return_value=True), \
+             patch.object(lifecycle.plan_mod, "_run_agent", side_effect=lambda cfg, name, *a, **k: agents.append(name)):
+            err = lifecycle._rebase_onto_main(self.cfg, "ZIP-7873", self.wt)
+        self.assertEqual(err, "")
+        self.assertEqual(agents, ["premium-worker"])
+
+    def test_an_unresolved_rebase_is_aborted_and_never_asks_a_human(self):
+        aborted = []
+        def sh(cmd, cwd, timeout):
+            if cmd == ["git", "rebase", "--abort"]:
+                aborted.append(True)
+            rc = 1 if cmd[:2] == ["git", "rebase"] and len(cmd) == 3 else 0
+            return subprocess.CompletedProcess(cmd, rc, "", "")
+        with patch.object(lifecycle, "_sh", side_effect=sh), \
+             patch.object(lifecycle, "_resolve_generated_conflicts", return_value=False), \
+             patch.object(lifecycle, "_rebase_finished", return_value=False), \
+             patch.object(lifecycle.plan_mod, "_run_agent"):
+            err = lifecycle._rebase_onto_main(self.cfg, "ZIP-7873", self.wt)
+        self.assertTrue(err); self.assertNotIn("human", err); self.assertEqual(aborted, [True])
 
     def test_a_capped_round_whose_agent_never_launched_is_reclaimed(self):
         tdir = self.cfg.ticket_dir("ZIP-7873")
@@ -814,9 +884,11 @@ class LifecycleTests(unittest.TestCase):
             if cmd[:2] == ["git", "rebase"] and "--continue" not in cmd: return subprocess.CompletedProcess(cmd, 1, "", "CONFLICT")
             if "--diff-filter=U" in " ".join(cmd): return subprocess.CompletedProcess(cmd, 0, "app/views/components/zui/x.rb\n", "")
             return subprocess.CompletedProcess(cmd, 0, "", "")
-        with patch.object(lifecycle.ci, "behind_base", return_value=2), patch.object(lifecycle, "_sh", side_effect=sh):
-            r, steps, t = self.run_once(outcomes=("rejected",))
-        self.assertEqual(t.state, "paused"); self.assertIn("needs a human", t.reason); self.assertEqual(r.calls, [])
+        with patch.object(lifecycle.ci, "behind_base", return_value=2), patch.object(lifecycle, "_sh", side_effect=sh), \
+             patch.object(lifecycle.plan_mod, "_run_agent") as worker:
+            r, steps, t = self.run_once(outcomes=("rejected",), max_steps=1)
+        worker.assert_called_once()                                      # a worker tries first
+        self.assertEqual(t.state, "paused"); self.assertNotIn("human", t.reason); self.assertEqual(r.calls, [])
 
     def test_rebase_conflict_in_en_yml_resolved_by_taking_head_and_normalizing(self):
         """config/locales/en.yml conflicts during rebase are resolved by keeping HEAD for each

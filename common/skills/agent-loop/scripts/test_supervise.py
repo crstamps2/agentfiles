@@ -84,6 +84,15 @@ class PlistTests(unittest.TestCase):
             self.assertIn(os.path.expanduser("~/.pi/agent/bin"), entries)
             self.assertIn(os.path.expanduser("~/.local/bin"), entries)
 
+    @unittest.skipUnless(pathlib.Path("~/.bashrc").expanduser().exists(), "needs this machine's shell rc")
+    def test_a_login_shell_under_the_launch_path_starts_cleanly(self):
+        # Git hooks run bash, which sources ~/.bashrc; `atuin init` there failed every push from
+        # launchd with "command not found: atuin" (ZIP-4287 stalled 54 h, 2026-10-17).
+        import subprocess
+        r = subprocess.run(["bash", "-lc", "true"], capture_output=True, text=True, timeout=60,
+                           env={"HOME": os.path.expanduser("~"), "PATH": supervise.LAUNCH_PATH})
+        self.assertNotIn("command not found", r.stderr)
+
     def test_label_and_active_roundtrip(self):
         supervise.write_plist("ZIP-1", "/wt/a", self.state_root); supervise.write_plist("ZIP-2", "/wt/b", self.state_root)
         self.assertEqual(supervise.active(), ["ZIP-1", "ZIP-2"])

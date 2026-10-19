@@ -634,6 +634,14 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             return Step(key, "bot-loop", "checks (incl. claude-review) still running", wait=True)
         ledger_p = _ledger_path(cfg, key); seen_comments = botreview.load_ledger(ledger_p)   # NOT `ledger`: shadows the ledger module for the whole function
         comments = botreview.fetch_bot_comments(pr, wt); todo = botreview.unhandled(comments, seen_comments)
+        answered = {str(i) for i in cis.get("owner_answered", [])}
+        if any(str(c["id"]) in answered for c in todo):
+            # Cody answered these questions (`runner.py answer`); never ask them again.
+            for c in todo:
+                if str(c["id"]) in answered:
+                    seen_comments[str(c["id"])] = c["body_hash"]
+            botreview.save_ledger(ledger_p, seen_comments)
+            todo = botreview.unhandled(comments, seen_comments)
         if not todo:
             rounds = cis.get("bot_rounds", 0)
             if rounds == 0 and not comments:

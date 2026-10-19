@@ -976,6 +976,12 @@ def main(argv=None) -> int:
         with (root / "transcript.md").open("a") as handle:
             handle.write(f"\n## {_now()} owner answer\n\nQuestion: {question}\nAnswer: {a.guidance}\n")
         target = t.previous if t.previous in state.RESUMABLE_STATES else "implement"
+        ids = re.findall(r"comment (\d+):", t.reason or "")
+        if ids:
+            ci_path = tdir / "ci.json"
+            cis = json.loads(ci_path.read_text()) if ci_path.exists() else {}
+            cis["owner_answered"] = sorted(set(cis.get("owner_answered", [])) | set(ids))
+            ci_path.write_text(json.dumps(cis))
         t = state.resume_target(t, target, reason=f"owner answered: {a.guidance}"[:200]); state.save(tdir, t)
         heal.mark_operator_resume(tdir, "owner answered")
         if not (tdir / "PARKED").exists():

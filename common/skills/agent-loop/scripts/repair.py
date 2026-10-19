@@ -327,6 +327,9 @@ Never remove a test or an assertion. Do not commit, push or touch anything outsi
 Write a commit message (subject line, blank line, why) to `{commit_msg}`.
 Change only what the fix needs: no import reordering, reformatting or renaming elsewhere. A reviewer
 rejects any unrelated change, however harmless.
+Never resolve a defect by pausing a ticket for Cody, notifying him, or marking it `needs operator`: the loop
+must self-heal to a PR. Only a genuine product/API question may wait on Cody. Fix the cause, or route the
+failure to an automatic action (retry, fix task, rebase, re-plan).
 If the defect is already fixed on this code, say so with evidence and end `REPAIR: not-needed`.
 End with `REPAIR: fixed`, `REPAIR: not-needed` or `REPAIR: blocked — <one line>`.
 {earlier}"""
@@ -341,6 +344,8 @@ Approve only if ALL hold: the change fixes the root cause shown in the evidence;
 reproduces that defect rather than asserting the new code's behaviour; nothing unrelated changed;
 no check, limit, allowlist or safety behaviour got looser; no new capability (network, shell,
 GitHub writes, file access outside the worktree) was added.
+Reject a change that makes a ticket wait on Cody (pause for an operator, notify, `needs Cody`) for anything but a
+genuine product/API question: the loop must self-heal to a PR.
 Write `{review}` whose first line is `VERDICT: approve` or `VERDICT: reject`, then your reasons.
 End with `REVIEW: approve` or `REVIEW: reject`.
 """

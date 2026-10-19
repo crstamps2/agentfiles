@@ -36,6 +36,7 @@ POLICIES = [
     (r"^gates failed: pre-commit lint", "fix-task", 3),   # offenses in OUR work: a worker fixes them
     (r"^gates failed: yarn build", "prepare-retry", 3),
     (r"^gates failed: rails test", "prepare-retry", 2),
+    (r"^visual gate failed: .* -> 500 \(", "preview-fix", 3),   # the preview raised: OUR code, a worker fixes it
     (r"^visual gate failed", "prepare-retry", 3),
     (r"^guard failed on the BASE tree|contract complaint|guard disagreement", "repair", 4),
     (r"^guard repair left the manifest invalid", "repair", 2),

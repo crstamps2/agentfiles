@@ -578,7 +578,10 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             err = _rebase_onto_main(cfg, key, wt)
             if err:
                 return _pause_step(cfg, t, "ready", err)
-            publish.push_rebased(wt, publish.current_branch(wt))
+            try:
+                publish.push_rebased(wt, publish.current_branch(wt))
+            except publish.PublishError as e:
+                return _pause_step(cfg, t, "ready", f"publish failed: {e}")
             t = state.transition(t, "gates"); _save(cfg, t)
             return Step(key, "ready", "rebased onto origin/main; re-running gates")
         # fix: write a scoped task and go back to implement
@@ -601,7 +604,10 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             err = _rebase_onto_main(cfg, key, wt)
             if err:
                 return _pause_step(cfg, t, "bot-loop", err)
-            publish.push_rebased(wt, publish.current_branch(wt))
+            try:
+                publish.push_rebased(wt, publish.current_branch(wt))
+            except publish.PublishError as e:
+                return _pause_step(cfg, t, "bot-loop", f"publish failed: {e}")
             for stale in ("ready_marked_sha", "bot_wait_since", "bot_retriggered"):
                 cis.pop(stale, None)
             _ci_state_path(cfg, key).write_text(json.dumps(cis))
@@ -1090,15 +1096,27 @@ Conflicted now: {files}
 End with `REBASE: done` or `REBASE: blocked — <one line>`."""
 
 
+DEPENDENCY_MANIFESTS = ("package.json", "yarn.lock", "Gemfile", "Gemfile.lock", ".ruby-version", ".node-version")
+
+
+def _after_rebase(wt) -> None:
+    """A rebase can move dependency manifests (main added a JS package) and leaves incremental build
+    caches describing the old tree; both failed the pre-push typecheck (ZIP-4287, ZIP-4288)."""
+    publish.clear_build_caches(wt)
+    moved = _sh(["git", "diff", "--name-only", "ORIG_HEAD..HEAD"], wt, 60).stdout.split()
+    if any(path in DEPENDENCY_MANIFESTS for path in moved):
+        _sh(["bash", "-lc", "bin/wt prepare --for rails"], wt, 1800)
+
+
 def _rebase_onto_main(cfg, key: str, wt) -> str:
     """Rebase onto origin/main. Generated files regenerate; hand-written conflicts go to a worker.
     Returns "" on success, else a reason (the rebase is aborted). Never a human question."""
     r = _sh(["git", "rebase", "origin/main"], wt, 600)
     if r.returncode == 0:
-        publish.clear_build_caches(wt)
+        _after_rebase(wt)
         return ""
     if _resolve_generated_conflicts(wt) and _rebase_finished(wt):
-        publish.clear_build_caches(wt)
+        _after_rebase(wt)
         return ""
     files = _sh(["git", "diff", "--name-only", "--diff-filter=U"], wt, 60).stdout.split()
     stage = cfg.state_root / "rebase" / key / time.strftime("%Y%m%dT%H%M%S")
@@ -1109,7 +1127,7 @@ def _rebase_onto_main(cfg, key: str, wt) -> str:
     except Exception as exc:  # noqa: BLE001
         print(f"{key}: rebase worker failed to run: {exc}", flush=True)
     if _rebase_finished(wt):
-        publish.clear_build_caches(wt)
+        _after_rebase(wt)
         return ""
     _sh(["git", "rebase", "--abort"], wt, 60)
     return f"rebase onto origin/main left conflicts the worker could not resolve: {', '.join(files)[:200]}"

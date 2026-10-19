@@ -60,7 +60,6 @@ def _pause(cfg, t, reason):
 
 # `^planning ceiling` is the spend stop in step(): only an owner ruling lifts it, so no repair or replan can answer it.
 OWNER_QUESTION = re.compile(r"need(?:s)? Cody|owner question|question for the owner|tier-[34]|^planning ceiling", re.I)
-PREVIEW_500 = re.compile(r"^visual gate failed: .*/lookbook/preview/.* -> 500(?:\s|$)", re.I)
 RUNNER_TASK_BLOCK = re.compile(r"^task (\d{3}): (?:ladder exhausted|accepted history has no verified slug)$")
 GENERIC_BLOCK = re.compile(r"^(?:owner|blocked|unstructured owner block)?$", re.I)
 
@@ -88,13 +87,6 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
             candidate.rename(candidate.with_name(f"decision-candidate.accepted-{decided.decision_request['id']}.json"))
             return Step(t.key, decided.state, "product decision required", detail=decided.decision_request["question"], wait=True)
     current = state.load(tdir)
-    if PREVIEW_500.search(current.reason or ""):
-        # The component endpoint answered, but its 500 does not identify code versus worktree state.
-        waited = _waiting_since(tdir, current)
-        _notify_once(tdir, current.key, f"{current.key} needs Cody{waited}", current.reason[:160])
-        if current.needs_operator != "visual preview failure":
-            current.needs_operator = "visual preview failure"; state.save(tdir, current)
-        return Step(current.key, current.state, "needs Cody: investigate Lookbook preview", detail=current.reason, wait=True)
     if OWNER_QUESTION.search(current.reason or ""):
         # A genuine question for Cody: keep the slot and ask him. It is not a runner defect, and its text
         # (often a third-party PR comment) must never become repair-agent evidence.
@@ -298,6 +290,16 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                             "Use ABSOLUTE paths when writing. End with `REVISION: applied <n> blockers` or `REVISION: blocked — <one line>`."])
         plan_mod._run_agent(cfg, plan_mod.WRITER_DEF, prompt, stage, wt, 900)
         viol = plan_mod.validate_manifest(_manifest_path(wt, key))
+        for n in range(2, GUARD_FIX_PASSES + 1):
+            if not viol:
+                break
+            # Tell the writer what the schema rejected; without it ZIP-4288 rewrote the same `ruby -e`.
+            fix = prompt + ("\n\nYour last edit left the manifest INVALID; the runner rejected it with:\n"
+                            + "\n".join(f"- {v}" for v in viol[:6])
+                            + "\nRewrite only those commands with the repository's tools (grep, test, bin/rails test, "
+                              "rubocop, reek, yarn lint) -- never inline interpreter code such as `ruby -e` or `node -e`.")
+            plan_mod._run_agent(cfg, plan_mod.WRITER_DEF, fix, stage.with_name(f"{stage.name}-fix{n}"), wt, 900)
+            viol = plan_mod.validate_manifest(_manifest_path(wt, key))
         if viol:
             return _pause_step(cfg, t, "implement", f"guard repair left the manifest invalid: {viol[:2]}")
         bad.rename(bad.with_name(f"bad-guards.repaired-{time.strftime('%Y%m%dT%H%M%S')}.md"))
@@ -320,6 +322,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             heal.record(tdir, action, t.reason, t.state)
             t.state = "implement"; t.reason = f"queued lint fix task {ft}"; state.save(tdir, t)
             return Step(key, "implement", f"queued lint fix task {ft} for the pre-commit offenses")
+        if action == "preview-fix":
+            ft = _preview_fix_task(tdir, t.reason, _manifest_path(wt, key), wt)
+            heal.record(tdir, action, t.reason, t.state)
+            t.state = "implement"; t.reason = f"queued preview fix task {ft}"; state.save(tdir, t)
+            return Step(key, "implement", f"queued preview fix task {ft} for the preview exception")
         if action == "wait":
             return Step(key, "paused", why, detail=t.reason, wait=True)          # no state change, no notification
         heal.record(tdir, action, t.reason, t.previous or "?", why)
@@ -530,6 +537,8 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 shots = screenshots.capture(base, component, tdir / "screenshots" / _head(wt)[:10])
                 (tdir / "screenshots.json").write_text(json.dumps({k: str(v) for k, v in shots.items()}))
             except screenshots.VisualGateError as e:
+                if e.detail:
+                    (tdir / "preview-error.txt").write_text(_preview_error_text(e.detail))
                 return _pause_step(cfg, t, "gates", f"visual gate failed: {e}")
         t.evidence_sha = _head(wt); t = state.transition(t, "draft-pr"); _save(cfg, t)
         return Step(key, "gates", "passed", detail=f"evidence_sha={t.evidence_sha[:10]}")
@@ -1055,6 +1064,7 @@ def _ruling_baseline(cfg, key: str, wt) -> str:
 
 
 ADJUDICATION_FIX_PASSES = 2
+GUARD_FIX_PASSES = 3
 
 
 def _fix_task_violations(manifest: pathlib.Path, decisions: list) -> list:
@@ -1185,6 +1195,40 @@ def recover_interrupted_git_state(wt, sh=None) -> str:
 
 def _is_locale(path: str) -> bool:
     return path.startswith("config/locales/") and path.endswith((".yml", ".yaml"))
+
+
+def _preview_error_text(page: str) -> str:
+    """The exception and the app-frame backtrace lines from a Rails error page."""
+    import html as _html
+    text = _html.unescape(re.sub(r"<[^>]+>", "\n", page or ""))
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    keep = [ln for ln in lines if re.search(r"Error|Exception|uninitialized|undefined|^(app|test|lib|config)/\S+:\d+", ln)]
+    return (screenshots.exception_summary(page) + "\n\n" + "\n".join(dict.fromkeys(keep))[:3000]).strip()
+
+
+def _preview_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, wt) -> str:
+    """A Lookbook preview raised: one bounded worker task over the ticket's own files, with the
+    exception as evidence. The visual gate re-renders it when gates run again."""
+    error = (tdir / "preview-error.txt").read_text() if (tdir / "preview-error.txt").exists() else reason
+    files = [f for f in _sh(["git", "diff", "--name-only", "origin/main...HEAD"], wt, 60).stdout.split()
+             if f.startswith(("app/", "test/", "config/locales/"))]
+    if not files:
+        raise ValueError("the ticket has no changed application files to fix")
+    tid = _next_runner_task_id(manifest)
+    tests = sorted({f for f in files if f.startswith("test/") and f.endswith("_test.rb")})
+    cmd = "bin/rails test " + (" ".join(tests) if tests else "test/views/components/zui/")
+    _append_task(manifest, {
+        "id": tid, "slug": f"preview-fix-{tid}",
+        "summary": "Fix the exception the component's Lookbook preview raised",
+        "allowed_files": files, "may_edit_tests": True, "visual": False,
+        "verification_commands": [cmd],
+        "acceptance": ["AC-1: the preview renders without raising (the visual gate re-checks it)",
+                       f"AC-2: `{cmd}` passes"],
+        "invariants": ["The Lookbook preview raised:\n" + error[:1500],
+                       "Fix the cause in the component or preview code; add a test that would have caught it.",
+                       "Do not weaken or delete existing tests."],
+    })
+    return tid
 
 
 def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=None, key: str = "") -> str:

@@ -820,22 +820,33 @@ class LifecycleTests(unittest.TestCase):
             r, steps, t = self.run_once()
         self.assertEqual(t.state, "paused"); self.assertIn("visual gate failed", t.reason)
 
-    def test_spent_preview_500_recovery_budget_needs_cody_not_a_runner_repair(self):
-        """ZIP-4287: a persistent preview response can be application code or the environment, not runner evidence."""
-        import heal, repair
+    def test_a_preview_exception_becomes_a_worker_fix_task_not_a_question(self):
+        # ZIP-4287: the List preview raised `uninitialized constant ZUI::List::List` -- the ticket's own
+        # code. A worker fixes that; asking Cody stalled the ticket (2026-10-19).
+        import heal
         tdir = self.cfg.ticket_dir("ZIP-7873")
-        reason = "visual gate failed: https://admin.zip-7873.test/lookbook/preview/zui/list/playground -> 500"
-        for _ in range(3):
-            heal.record(tdir, "prepare-retry", reason, "gates")
-        ticket = state.transition(state.load(tdir), "gates")
-        ticket = state.transition(ticket, "paused", reason=reason); state.save(tdir, ticket)
-        step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
-        current = state.load(tdir)
-        self.assertTrue(step.wait); self.assertEqual(step.action, "needs Cody: investigate Lookbook preview")
-        self.assertEqual(current.state, "paused"); self.assertEqual(current.needs_operator, "visual preview failure")
-        self.assertIsNone(current.recovery["active"])
-        self.assertEqual(repair.open_defects(self.cfg), [])
-        self.assertTrue(any("needs Cody" in title for title in self.notified), self.notified)
+        reason = ("visual gate failed: https://admin.zip-7873.test/lookbook/preview/zui/list/playground -> 500 "
+                  "(ActionView::Template::Error: uninitialized constant ZUI::List::List)")
+        self.assertEqual(heal.policy(reason)[0], "preview-fix")
+        tt = state.transition(state.load(tdir), "gates")
+        tt = state.transition(tt, "paused", reason=reason); state.save(tdir, tt)
+        (tdir / "preview-error.txt").write_text("ActionView::Template::Error: uninitialized constant ZUI::List::List\n"
+                                                "app/views/components/zui/list/list.rb:60:in 'block in <class:List>'\n")
+        with patch.object(lifecycle, "_sh", side_effect=lambda cmd, cwd, timeout: subprocess.CompletedProcess(
+                cmd, 0, "app/views/components/zui/list/list.rb\ntest/views/components/zui/list/list_test.rb\n" if "origin/main...HEAD" in cmd else "", "")):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        t = state.load(tdir)
+        self.assertEqual(t.state, "implement"); self.assertNotIn("Cody", step.action)
+        manifest = (self.wt / "planning" / "zip-7873" / "tasks.toml").read_text()
+        self.assertIn("preview-fix-", manifest)
+        self.assertIn("uninitialized constant ZUI::List::List", manifest)
+        self.assertIn("app/views/components/zui/list/list.rb", manifest)
+
+    def test_the_visual_gate_names_the_exception_a_preview_raised(self):
+        page = ("<html><h1>ActionView::Template::Error</h1>"
+                "<div class=\"exception-message\"><div class=\"message\">uninitialized constant ZUI::List::List</div></div></html>")
+        self.assertEqual(lifecycle.screenshots.exception_summary(page),
+                         "ActionView::Template::Error: uninitialized constant ZUI::List::List")
 
     def test_accepted_task_is_recognised_from_real_attempt_layout(self):
         """Live 2026-09-14: slug lives in task.toml (attempt.py writes both); checking task.md never matched,
@@ -864,6 +875,21 @@ class LifecycleTests(unittest.TestCase):
             step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
         self.assertIn("repaired", step.action); self.assertEqual(state.load(tdir).state, "implement")
         self.assertFalse((tdir / "bad-guards.md").exists())
+
+    def test_a_guard_repair_that_breaks_the_schema_gets_the_violations_and_a_second_pass(self):
+        # ZIP-4288: the task-writer kept writing `ruby -e` guards the schema forbids, never told why,
+        # and the ticket cycled on "guard repair left the manifest invalid" (2026-10-19).
+        tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
+        tt = state.transition(tt, "paused", reason="guard failed on the BASE tree too: grep -q x app/a.rb"); state.save(tdir, tt)
+        (tdir / "bad-guards.md").write_text("bad: grep -q x app/a.rb\n")
+        prompts = []
+        verdicts = iter([["tasks[0].verification_commands: inline interpreter code in 'ruby -e ...'"], []])
+        with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=lambda cfg, agent, prompt, *a, **k: prompts.append(prompt)), \
+             patch.object(lifecycle.plan_mod, "validate_manifest", side_effect=lambda path: next(verdicts)):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("inline interpreter code", prompts[1])
+        self.assertIn("bad verification guard repaired", step.action)
 
     def test_bad_guard_repair_from_plan_rechecks_plan_approval(self):
         tdir = self.cfg.ticket_dir("ZIP-7873")

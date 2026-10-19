@@ -373,6 +373,7 @@ class RunnerHarness(unittest.TestCase):
         self.assertIn("filled or outlined badge?", plan)
         self.assertIn("Use the filled primary badge.", (self.wt / "planning" / "zip-9" / "transcript.md").read_text())
         ensure.assert_called_once()
+        self.assertEqual(json.loads((tdir / "ci.json").read_text())["owner_answered"], ["42"])
 
     def test_answer_for_a_parked_ticket_keeps_it_parked(self):
         import cohort

@@ -267,6 +267,8 @@ class Runner:
         return self.pi_launcher or procs.run_stage
 
     def _stop(self, tdir, t):
+        if (tdir / "INTERACTIVE.json").exists():
+            return "paused"  # Yield the worker without changing the saved lifecycle checkpoint.
         if state.paused(self.cfg.state_root):
             if t.state != "paused": state.save(tdir, state.transition(t, "paused", reason="PAUSE file present"))
             return "paused"
@@ -283,6 +285,8 @@ class Runner:
         if t.state == "blocked":
             return "blocked"
         stop = self._stop(tdir, t)
+        if stop:
+            return stop
         if t.state == "paused":
             if stop: return "paused"
             if t.previous != "implement":
@@ -346,6 +350,8 @@ class Runner:
                     # All slots busy (other tickets' tasks). Wait -- do NOT pause the ticket: with several
                     # runners each dispatching N tasks, a momentary slot shortage is normal, and pausing here
                     # cancelled the sibling tasks of the same ticket (live, 2026-09-15).
+                    if (tdir / "INTERACTIVE.json").exists():
+                        return "paused"
                     if waited >= SLOT_WAIT_MAX_S or state.paused(self.cfg.state_root) or (tdir / "HUMAN").exists():
                         t = state.transition(t, "paused", reason="heavy lane held by a live owner")   # transient wording; callers retry
                         state.save(tdir, t); return "paused"
@@ -813,6 +819,9 @@ def resume_all(cfg, log=print) -> dict:
         wt = t.worktree or str(drip.WORKTREES / t.key.lower())
         if not pathlib.Path(wt).is_dir():
             continue
+        if (tdir / "INTERACTIVE.json").exists():
+            log(f"{t.key}: interactive control (outside cohort); not restarting")
+            continue
         if (tdir / "HUMAN").exists() or t.state == "blocked":
             log(f"{t.key}: needs operator ({'HUMAN takeover' if (tdir / 'HUMAN').exists() else t.reason or 'blocked'})")
             out["needs_operator"].append(t.key); continue
@@ -827,6 +836,10 @@ def resume_all(cfg, log=print) -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="agent-loop"); ap.add_argument("--config", default=None)
     sub = ap.add_subparsers(dest="cmd", required=True); sub.add_parser("status")
+    it = sub.add_parser("interactive", help="foreground Pi ownership, outside the autonomous cohort limit")
+    it.add_argument("action", choices=["enter", "check", "status", "return"])
+    it.add_argument("--worktree", required=True)
+    it.add_argument("--session", default=None)
     ro = sub.add_parser("run-once", help="advance one ticket through plan -> implement -> gates -> draft PR -> CI -> ready -> bot review -> Human Gate 1")
     ro.add_argument("--ticket", required=True); ro.add_argument("--worktree", required=True)
     ro.add_argument("--max-steps", type=int, default=12); ro.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES")
@@ -883,6 +896,18 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
     if a.cmd == "status":
         return Runner(cfg).status()
+    if a.cmd == "interactive":
+        import interactive
+        try:
+            if a.action in ("enter", "check"):
+                result = interactive.enter(cfg, a.worktree, session=a.session or "", claim=a.action == "enter")
+            elif a.action == "return":
+                result = interactive.return_to_loop(cfg, a.worktree, session=a.session)
+            else:
+                result = interactive.status(cfg, a.worktree)
+        except (OSError, ValueError, reconcile.FenceExit) as exc:
+            print(f"interactive handoff failed: {exc}", file=sys.stderr); return 2
+        print(json.dumps(result)); return 0
     if a.cmd == "cohort-migrate":
         import cohort_migration
         try:
@@ -921,6 +946,8 @@ def main(argv=None) -> int:
             ap.error("--max-in-flight does not apply in cohort mode; capacity is owned by cohort.json")
     if a.cmd == "resume":
         import heal, supervise
+        if state.human_owned(cfg.ticket_dir(a.ticket)):
+            ap.error(f"{a.ticket} is under foreground control; use interactive return --worktree PATH to queue it for autonomy")
         a.from_state = a.from_state or "plan"
         tdir = cfg.ticket_dir(a.ticket); t = state.load(tdir)
         active = t.recovery.get("active") if isinstance(t.recovery, dict) else None
@@ -1115,6 +1142,8 @@ def main(argv=None) -> int:
                   (" (SKIPPED)" if a.skip_admission else ""), file=sys.stderr)
         r = Runner(cfg, pi_launcher=launcher, admission_override=admission_override)
     else: r = Runner(cfg)
+    if a.cmd in ("run-once", "dry-run") and state.human_owned(cfg.ticket_dir(a.ticket)):
+        print(f"{a.ticket}: foreground control; background runner yielding"); return 0
     # Every subcommand except `status` and `clear-fence` (handled above) reconciles first,
     # under the global runner lease, before any ticket selection or dispatch.
     try:

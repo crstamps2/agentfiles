@@ -131,7 +131,7 @@ def in_flight(cfg) -> list[str]:
         if not (td / "state.json").exists():
             continue
         t = state.load(td)
-        if (td / "PARKED").exists():
+        if (td / "PARKED").exists() or state.human_owned(td):
             continue                              # held back by the 4-at-a-time throttle; resumed first when a slot frees
         if t.state in IN_FLIGHT_STATES and (WORKTREES / t.key.lower()).exists():
             out.append(t.key)
@@ -154,7 +154,7 @@ def candidates(cfg, log=print) -> list[dict]:
         spec = cfg.tickets.get(r["key"])
         if spec and spec.exclude:
             log(f"  skip {r['key']}: excluded ({spec.exclude})"); continue
-        if r["key"] in flight or r["key"] in gated:
+        if r["key"] in flight or r["key"] in gated or state.human_owned(cfg.ticket_dir(r["key"])):
             continue
         if spec and any(d not in done for d in spec.deps):
             log(f"  skip {r['key']}: deps not Done in Jira: {[d for d in spec.deps if d not in done]}"); continue
@@ -263,7 +263,7 @@ def spinup_retries(cfg) -> list[state.Ticket]:
     out = []
     root = cfg.state_root / "tickets"
     for tdir in sorted(root.iterdir()) if root.exists() else []:
-        if not (tdir / "state.json").exists() or (tdir / "HUMAN").exists():
+        if not (tdir / "state.json").exists() or state.human_owned(tdir):
             continue
         t = state.load(tdir)
         if (t.state == "blocked" and t.reason.startswith("spinup failed")
@@ -376,7 +376,7 @@ def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list
     if enabled:
         for slot in reserved:
             key = slot.ticket
-            if (cfg.ticket_dir(key) / "HUMAN").exists() or _spinup_waiting(cfg, key):
+            if state.human_owned(cfg.ticket_dir(key)) or _spinup_waiting(cfg, key):
                 continue
             log(f"drip: retrying reserved {key}")
             if dry_run:
@@ -409,7 +409,7 @@ def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list
 
     occupied = set(flight)
     parked_started = 0
-    for key in [candidate for candidate in parked(cfg) if candidate not in occupied and not (cfg.ticket_dir(candidate) / "HUMAN").exists()][:free]:
+    for key in [candidate for candidate in parked(cfg) if candidate not in occupied and not state.human_owned(cfg.ticket_dir(candidate))][:free]:
         log(f"drip: resuming parked {key}")
         if not dry_run:
             if enabled:

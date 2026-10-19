@@ -588,7 +588,7 @@ def _ticket_runner_live(cfg, key: str) -> bool:
     return locks.is_held(pathlib.Path(cfg.state_root) / "locks" / f"runner-{key.lower()}")
 
 
-def _sweep(cfg, ticket: str | None = None) -> None:
+def _sweep(cfg, ticket: str | None = None, *, include_interactive: bool = False) -> None:
     """Step 2 of recovery: every attempt leaf dir under `attempts/`, all tickets, all tasks,
     sorted by leaf mtime. A record this recovery cannot understand (unreadable/corrupt/
     legacy), or a leaf directory with no `attempt.json` at all (or a non-regular one -- e.g.
@@ -601,6 +601,9 @@ def _sweep(cfg, ticket: str | None = None) -> None:
             return
     leaves = _leaf_dirs(attempts_root)
     all_root = pathlib.Path(cfg.state_root) / "attempts"
+    if not include_interactive:
+        leaves = [leaf for leaf in leaves
+                  if not state_mod.human_owned(cfg.ticket_dir(leaf.relative_to(all_root).parts[0]))]
     live_other = set()
     for leaf in list(leaves):
         # A dir without a record may be another live runner between mkdir and its first write

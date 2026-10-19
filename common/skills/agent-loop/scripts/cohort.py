@@ -202,6 +202,8 @@ def reserve(cfg, key: str, source: str) -> Slot:
         if not acquired:
             raise CohortError("cohort lease is already held")
         value = _load_unlocked(cfg)
+        if state.human_owned(cfg.ticket_dir(key)):
+            raise CohortError(f"{key} is under foreground control")
         existing = _find(value, key)
         if existing:
             return existing
@@ -405,7 +407,7 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
 
     def can_resume(key):
         tdir = cfg.ticket_dir(key)
-        return _find(value, key) is not None and not (tdir / "HUMAN").exists() and not (tdir / "PARKED").exists()
+        return _find(value, key) is not None and not state.human_owned(tdir) and not (tdir / "PARKED").exists()
 
     if not dry_run:
         try:
@@ -422,6 +424,19 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
         if not key:
             continue
         tdir = cfg.ticket_dir(key)
+        import interactive
+        if interactive.owned(tdir):
+            if not dry_run:
+                try:
+                    result = interactive._settle_locked(cfg, key, supervisor)
+                    value = _load_unlocked(cfg)
+                    if result["mode"] == "interactive":
+                        report.released.append(key)
+                        continue
+                except (ValueError, OSError) as exc:
+                    report.errors.append(f"{key}: interactive handoff: {exc}")
+            report.retained.append(key); report.waits[key] = "interactive handoff: runner yielding"
+            continue
         if (tdir / "PARKED").exists():
             _park_slot(value, slot)
             if not dry_run:
@@ -518,7 +533,7 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
     else:
         free = sum(row.ticket is None for row in value.slots)
         occupied = {row.ticket for row in value.slots if row.ticket}
-        waiting = [key for key in drip.parked(cfg) if key not in occupied and not (cfg.ticket_dir(key) / "HUMAN").exists()]
+        waiting = [key for key in drip.parked(cfg) if key not in occupied and not state.human_owned(cfg.ticket_dir(key))]
         if len(waiting) < free:
             waiting.extend(row["key"] for row in drip.candidates(cfg, log=lambda message: None) if row["key"] not in occupied and row["key"] not in waiting)
         report.admitted.extend(waiting[:free])

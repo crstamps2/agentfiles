@@ -115,7 +115,8 @@ def paused(state_root) -> bool:
 
 
 def human_owned(ticket_dir) -> bool:
-    return (pathlib.Path(ticket_dir) / "HUMAN").exists()
+    root = pathlib.Path(ticket_dir)
+    return (root / "HUMAN").exists() or (root / "INTERACTIVE.json").exists()
 
 
 def assign_vendors(index: int) -> tuple:

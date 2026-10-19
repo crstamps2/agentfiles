@@ -820,6 +820,23 @@ class LifecycleTests(unittest.TestCase):
             r, steps, t = self.run_once()
         self.assertEqual(t.state, "paused"); self.assertIn("visual gate failed", t.reason)
 
+    def test_spent_preview_500_recovery_budget_needs_cody_not_a_runner_repair(self):
+        """ZIP-4287: a persistent preview response can be application code or the environment, not runner evidence."""
+        import heal, repair
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        reason = "visual gate failed: https://admin.zip-7873.test/lookbook/preview/zui/list/playground -> 500"
+        for _ in range(3):
+            heal.record(tdir, "prepare-retry", reason, "gates")
+        ticket = state.transition(state.load(tdir), "gates")
+        ticket = state.transition(ticket, "paused", reason=reason); state.save(tdir, ticket)
+        step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        current = state.load(tdir)
+        self.assertTrue(step.wait); self.assertEqual(step.action, "needs Cody: investigate Lookbook preview")
+        self.assertEqual(current.state, "paused"); self.assertEqual(current.needs_operator, "visual preview failure")
+        self.assertIsNone(current.recovery["active"])
+        self.assertEqual(repair.open_defects(self.cfg), [])
+        self.assertTrue(any("needs Cody" in title for title in self.notified), self.notified)
+
     def test_accepted_task_is_recognised_from_real_attempt_layout(self):
         """Live 2026-09-14: slug lives in task.toml (attempt.py writes both); checking task.md never matched,
         so task 001 was re-run/re-published in a loop until max_steps."""

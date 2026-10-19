@@ -60,6 +60,7 @@ def _pause(cfg, t, reason):
 
 # `^planning ceiling` is the spend stop in step(): only an owner ruling lifts it, so no repair or replan can answer it.
 OWNER_QUESTION = re.compile(r"need(?:s)? Cody|owner question|question for the owner|tier-[34]|^planning ceiling", re.I)
+PREVIEW_500 = re.compile(r"^visual gate failed: .*/lookbook/preview/.* -> 500(?:\s|$)", re.I)
 RUNNER_TASK_BLOCK = re.compile(r"^task (\d{3}): (?:ladder exhausted|accepted history has no verified slug)$")
 GENERIC_BLOCK = re.compile(r"^(?:owner|blocked|unstructured owner block)?$", re.I)
 
@@ -87,6 +88,13 @@ def _decision_or_recovery(cfg, t, wt, *, source="lifecycle") -> Step:
             candidate.rename(candidate.with_name(f"decision-candidate.accepted-{decided.decision_request['id']}.json"))
             return Step(t.key, decided.state, "product decision required", detail=decided.decision_request["question"], wait=True)
     current = state.load(tdir)
+    if PREVIEW_500.search(current.reason or ""):
+        # The component endpoint answered, but its 500 does not identify code versus worktree state.
+        waited = _waiting_since(tdir, current)
+        _notify_once(tdir, current.key, f"{current.key} needs Cody{waited}", current.reason[:160])
+        if current.needs_operator != "visual preview failure":
+            current.needs_operator = "visual preview failure"; state.save(tdir, current)
+        return Step(current.key, current.state, "needs Cody: investigate Lookbook preview", detail=current.reason, wait=True)
     if OWNER_QUESTION.search(current.reason or ""):
         # A genuine question for Cody: keep the slot and ask him. It is not a runner defect, and its text
         # (often a third-party PR comment) must never become repair-agent evidence.

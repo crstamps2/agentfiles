@@ -183,17 +183,21 @@ def fleet(cfg, *, pr_lookup=None, sup_status=None) -> str:
         lines.append(f"{row.slot}  {row.ticket}  #{row.admission_sequence}  {row.phase}  state={t.state if t else 'missing'}  "
                      f"{detail}  progress={t.updated_utc if t else '?'}  slot retained")
     occupied = {row.ticket for row in members}
-    waiting = [key for key in drip.parked(cfg) if key not in occupied]
+    waiting = [key for key in drip.parked(cfg) if key not in occupied and not state.human_owned(cfg.ticket_dir(key))]
     lines += ["", "WAITING ADMISSION"]
     for key in waiting:
         meta = cfg.ticket_dir(key) / "PARKED.json"
         sequence = json.loads(meta.read_text()).get("admission_sequence", "?") if meta.exists() else "?"
         lines.append(f"{key} #{sequence}")
     lines.append(f"next: {waiting[0] if waiting else 'first eligible Jira board candidate'}")
-    lines += ["", "REVIEW READY"]
     root = cfg.state_root / "tickets"
+    lines += ["", "INTERACTIVE (outside cohort)"]
+    for marker in sorted(root.glob("*/INTERACTIVE.json")):
+        record = json.loads(marker.read_text())
+        lines.append(f"{marker.parent.name}  {record['mode']}")
+    lines += ["", "REVIEW READY"]
     for tdir in sorted(root.iterdir()) if root.exists() else []:
-        if tdir.name in occupied or not (tdir / "state.json").exists():
+        if tdir.name in occupied or (tdir / "INTERACTIVE.json").exists() or not (tdir / "state.json").exists():
             continue
         t = state.load(tdir)
         if t.state != "human-gate-1":

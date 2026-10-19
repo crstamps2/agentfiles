@@ -243,6 +243,8 @@ def _lost_task(cfg, t, wt):
 
 def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | None = None) -> Step:
     tdir = cfg.ticket_dir(key); t = state.load(tdir); t.worktree = str(wt)
+    if (tdir / "INTERACTIVE.json").exists():
+        return Step(key, t.state, "interactive control; background runner yielding", wait=True)
     if (cfg.state_root / "cohort.json").exists():
         try:
             admitted = key in cohort.members(cfg)

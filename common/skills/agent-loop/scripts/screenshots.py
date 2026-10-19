@@ -106,8 +106,10 @@ PREVIEW_TIMEOUT_S = 90                                   # first render after a 
 def exception_summary(page: str) -> str:
     """`Class: message` from a Rails exception page, else ""."""
     import html
-    title = re.search(r"<h1>(.*?)</h1>", page or "", re.S)
-    message = re.search(r'class="message"[^>]*>(.*?)</div>', page or "", re.S) or \
+    lookbook = "lookbook/errors" in (page or "")      # Lookbook's own error template: <h2> class, <pre> message
+    title = re.search(r"<h2[^>]*>(.*?)</h2>" if lookbook else r"<h1>(.*?)</h1>", page or "", re.S)
+    message = (re.search(r"<pre[^>]*>(.*?)</pre>", page or "", re.S) if lookbook else None) or \
+        re.search(r'class="message"[^>]*>(.*?)</div>', page or "", re.S) or \
         re.search(r'class="exception-message"[^>]*>(.*?)</div>', page or "", re.S)
     clean = lambda m: re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", m.group(1)))).strip() if m else ""
     head, body = clean(title), clean(message)

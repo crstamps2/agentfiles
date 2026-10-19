@@ -842,6 +842,13 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("uninitialized constant ZUI::List::List", manifest)
         self.assertIn("app/views/components/zui/list/list.rb", manifest)
 
+    def test_the_visual_gate_reads_lookbooks_own_error_page(self):
+        page = ('<!-- views/lookbook/errors/default.html.erb--><header class="px-8 py-6">\n'
+                '<h2 class="text-xl font-bold text-red-700">ActionView::Template::Error</h2>\n</header>\n'
+                '<div class="px-8"><pre class="whitespace-pre-wrap font-ui">uninitialized constant ZUI::List::List</pre></div>')
+        self.assertEqual(lifecycle.screenshots.exception_summary(page),
+                         "ActionView::Template::Error: uninitialized constant ZUI::List::List")
+
     def test_the_visual_gate_names_the_exception_a_preview_raised(self):
         page = ("<html><h1>ActionView::Template::Error</h1>"
                 "<div class=\"exception-message\"><div class=\"message\">uninitialized constant ZUI::List::List</div></div></html>")

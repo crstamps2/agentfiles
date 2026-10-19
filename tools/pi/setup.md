@@ -237,6 +237,20 @@ Codex CLI consume) and runs its `SessionStart` scripts once per session and `Sto
 the agent settles, injecting each script's stdout into the conversation as context. It discovers
 the repo root from its own file location, so no extra configuration is needed.
 
+### 5c. Foreground interactive lane
+
+On macOS, when the agent-loop runner and `~/.local/bin/agent-loop-python` launcher are installed, link:
+
+```
+$PI_DIR/extensions/interactive-lane  ->  $AF_REPO/tools/pi/extensions/interactive-lane
+```
+
+A direct user message in a TUI pane takes foreground ownership of its tracked worktree, outside
+cohort capacity. Coordinator startup, extension wakeups, RPC and headless workers never claim it.
+The workspace stays interactive across reloads and exits; `/agent-loop-auto` explicitly returns it
+to the background queue. Existing panes need `/reload` once after installing this extension.
+If the launcher is absent, report this extension as skipped rather than installing a broken hook.
+
 ## 6. MCP servers (via `pi-mcp-adapter`)
 
 pi has **no built-in MCP support** by design (it favors CLI tools + skills). The
@@ -386,6 +400,8 @@ Before reporting done, check:
 - No secret or internal hostname was written into `$PI_DIR/mcp.json` or `common/`; any such server
   is in `~/.config/mcp/mcp.json` (local, `chmod 600`) or was left to the user to import.
 - `$PI_DIR/extensions/agentfiles-hooks` resolves and contains an `index.ts`.
+- When the agent-loop launcher is installed on macOS, `$PI_DIR/extensions/interactive-lane` resolves
+  and contains an `index.ts`.
 - `$PI_DIR/settings.json` is valid JSON with `defaultModel` / `defaultThinkingLevel` set from the
   `orchestrator` tier.
 

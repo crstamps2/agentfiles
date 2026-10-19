@@ -385,6 +385,14 @@ class RunnerHarness(unittest.TestCase):
         self.assertTrue((tdir / "PARKED").exists()); ensure.assert_not_called(); start.assert_not_called()
         self.assertNotIn("ZIP-9", cohort.members(self.cfg))
 
+    def test_answer_can_name_an_already_answered_review_comment(self):
+        tdir = self.cfg.ticket_dir("ZIP-9")
+        state.save(tdir, state.Ticket(key="ZIP-9", state="bot-loop", worktree=str(self.wt)))
+        (self.wt / "planning" / "zip-9").mkdir(parents=True, exist_ok=True)
+        self.assertEqual(self.cli("answer", "--ticket", "ZIP-9", "--comment", "77", "--guidance", "Filled badge."), 0)
+        self.assertEqual(json.loads((tdir / "ci.json").read_text())["owner_answered"], ["77"])
+        self.assertEqual(state.load(tdir).state, "bot-loop")
+
     def test_answer_refuses_a_ticket_that_is_not_waiting_on_cody(self):
         state.save(self.cfg.ticket_dir("ZIP-9"), state.Ticket(key="ZIP-9", state="implement", worktree=str(self.wt)))
         with self.assertRaises(SystemExit):

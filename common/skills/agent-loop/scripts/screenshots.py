@@ -24,7 +24,9 @@ import ssl
 
 
 class VisualGateError(RuntimeError):
-    pass
+    def __init__(self, message: str, detail: str = ""):
+        super().__init__(message)
+        self.detail = detail                         # the failing page, for the worker who fixes it
 
 
 def chrome_binary() -> str:
@@ -101,6 +103,17 @@ def scenarios(base: str, component: str) -> list[str]:
 PREVIEW_TIMEOUT_S = 90                                   # first render after a restart took 32 s (ZIP-4287)
 
 
+def exception_summary(page: str) -> str:
+    """`Class: message` from a Rails exception page, else ""."""
+    import html
+    title = re.search(r"<h1>(.*?)</h1>", page or "", re.S)
+    message = re.search(r'class="message"[^>]*>(.*?)</div>', page or "", re.S) or \
+        re.search(r'class="exception-message"[^>]*>(.*?)</div>', page or "", re.S)
+    clean = lambda m: re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", m.group(1)))).strip() if m else ""
+    head, body = clean(title), clean(message)
+    return f"{head}: {body}" if head and body else head or body
+
+
 def capture(base: str, component: str, out_dir: pathlib.Path, width=1280, height=720) -> dict[str, pathlib.Path]:
     out_dir.mkdir(parents=True, exist_ok=True); chrome = chrome_binary(); shots = {}
     path = preview_path(base, component)
@@ -110,7 +123,8 @@ def capture(base: str, component: str, out_dir: pathlib.Path, width=1280, height
         if code == 0:                                   # a cold render compiles assets; one patient retry
             code, body = _get(url, timeout=PREVIEW_TIMEOUT_S)
         if code != 200 or "Action Controller: Exception caught" in body:
-            raise VisualGateError(f"{url} -> {code}" + (" (exception page)" if "Exception caught" in body else ""))
+            error = exception_summary(body)
+            raise VisualGateError(f"{url} -> {code}" + (f" ({error[:240]})" if error else ""), detail=body)
         png = out_dir / f"{component}-{name}.png"
         r = subprocess.run([chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--ignore-certificate-errors",
                             "--virtual-time-budget=8000", f"--window-size={width},{height}", f"--screenshot={png}", url],

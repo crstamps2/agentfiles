@@ -731,7 +731,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                     break
                 fix_prompt = prompt + ("\n\n## Schema violations in your fix tasks (rewrite the tasks, keep the decisions)\n"
                                        + "\n".join(f"- {v}" for v in viol))
-                plan_mod.run_agent_with_failover(cfg, "review-adjudicator", fix_prompt, stage, wt, 1800,
+                plan_mod.run_agent_with_failover(cfg, "review-adjudicator", fix_prompt, stage / f"fix-{n}", wt, 1800,
                                                  model=t.critic_vendor or None, log=lambda m: print(m, flush=True))
                 try:
                     decisions = botreview.parse_adjudication(stage / "adjudication.json")

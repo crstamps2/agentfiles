@@ -55,7 +55,7 @@ require_ac_power = false   # Cody, 2026-10-08: keep running on battery
 defer_max_s = 1800
 
 [budgets]                    # USD; premium + total ENFORCE, others alert (Plan 2 wires alerts)
-preimplementation_usd = 30.0   # a ticket that has spent this much with NO accepted task stops for an owner ruling
+preimplementation_usd = 30.0   # warn at this spend with no accepted task; never pause for cost alone
 premium_daily_usd = 5.0
 premium_monthly_usd = 40.0
 total_unattended_daily_usd = 15.0

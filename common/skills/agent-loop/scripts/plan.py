@@ -178,7 +178,7 @@ WRITER_FIX_PASSES = 2
 def _run_writer(cfg, key: str, wt: pathlib.Path, stage_root: pathlib.Path, name: str, manifest: pathlib.Path) -> tuple[str, list[str]]:
     """Task-writer applies the review; schema violations go back to it, like the author's do.
     Returns (REVISION marker, remaining violations)."""
-    _run_agent(cfg, WRITER_DEF, _writer_prompt(key, wt), stage_root / name, wt, 900)
+    _run_agent(cfg, WRITER_DEF, _writer_prompt(key, wt, validate_manifest(manifest)), stage_root / name, wt, 900)
     marker = _last_marker(stage_root / name, "REVISION")
     violations = [] if marker.lower().startswith("blocked") else validate_manifest(manifest)
     for n in range(1, WRITER_FIX_PASSES + 1):
@@ -191,7 +191,7 @@ def _run_writer(cfg, key: str, wt: pathlib.Path, stage_root: pathlib.Path, name:
 
 def _writer_prompt(key: str, wt: pathlib.Path, schema_violations=()) -> str:
     plan_dir = wt / "planning" / key.lower()
-    fix = ("\n## Schema violations in tasks.toml after your edit (fix all, change nothing else)\n"
+    fix = ("\n## Schema violations in current tasks.toml (fix all, change nothing else)\n"
            + "\n".join(f"- {v}" for v in schema_violations)) if schema_violations else ""
     return "\n".join([
         f"# Apply the critic's blockers for {key}\n",

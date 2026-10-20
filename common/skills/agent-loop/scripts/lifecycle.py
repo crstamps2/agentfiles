@@ -58,8 +58,7 @@ def _pause(cfg, t, reason):
     return _save(cfg, t)
 
 
-# `^planning ceiling` is the spend stop in step(): only an owner ruling lifts it, so no repair or replan can answer it.
-OWNER_QUESTION = re.compile(r"need(?:s)? Cody|owner question|question for the owner|tier-[34]|^planning ceiling", re.I)
+OWNER_QUESTION = re.compile(r"need(?:s)? Cody|owner question|question for the owner|tier-[34]", re.I)
 RUNNER_TASK_BLOCK = re.compile(r"^task (\d{3}): (?:ladder exhausted|accepted history has no verified slug)$")
 GENERIC_BLOCK = re.compile(r"^(?:owner|blocked|unstructured owner block)?$", re.I)
 
@@ -415,20 +414,14 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             t = state.transition(t, "implement"); _save(cfg, t)
             return Step(key, "plan-review", "approved manifest present", detail=str(manifest))
         stage_root = cfg.state_root / "plans" / key / time.strftime("%Y%m%dT%H%M%S")
-        # Hard ceiling on planning for a ticket that has produced NO accepted task yet. Dropzone spent
-        # $55 across 7 plan runs and 3 heal replans before anyone noticed (2026-09-17/18). Past the
-        # ceiling the ticket stops and asks for a human ruling instead of buying another critic round.
-        # Spend measured SINCE the last owner ruling: a ruling is new evidence, and the budget that
-        # protects against "another round of the same argument" must not block the round the ruling
-        # authorises. `ruling-baseline.json` is written when an `## Owner rulings` section appears.
+        # Spend is advisory; repeated mechanical failures use the bounded recovery path, not an owner ruling.
         rows = [r for r in ledger.collect(cfg.state_root) if r.get("ticket") == key]
         baseline = _ruling_baseline(cfg, key, wt)
         spent = sum(r["billed_usd"] for r in rows if (r.get("first_ts") or "") >= baseline)
         has_work = any(_task_accepted(cfg, key, tk) for tk in _manifest_identities(manifest))
-        ceiling = float(getattr(cfg.budgets, "preimplementation_usd", 30.0))
-        if not has_work and spent >= ceiling:
-            _notify_once(tdir, key, f"{key} planning ceiling", f"${spent:.0f} spent with no accepted task")
-            return _pause_step(cfg, t, "plan", f"planning ceiling: ${spent:.2f} spent before any task was accepted (limit ${ceiling:.0f}); the plan needs an owner ruling, not another round")
+        warning = float(getattr(cfg.budgets, "preimplementation_usd", 30.0))
+        if not has_work and spent >= warning:
+            _notify_once(tdir, key, f"{key} planning spend warning", f"${spent:.2f} spent with no accepted task; continuing automatic plan repair")
         repairs_file = tdir / "plan-repairs.n"
         repairs = int(repairs_file.read_text() or 0) if repairs_file.exists() else 0
         if manifest.exists() and plan_mod.review_verdict(review) == "revise" and repairs < 2:
@@ -1075,8 +1068,7 @@ def _notify_once(tdir, key: str, title: str, body: str) -> None:
 
 
 def _ruling_baseline(cfg, key: str, wt) -> str:
-    """UTC timestamp from which pre-implementation spend counts. Advances when plan.md gains a new
-    `## Owner rulings` section (the operator has ruled; the argument is settled, not repeated)."""
+    """UTC baseline for spend warnings, refreshed when the owner supplies new planning evidence."""
     import hashlib
     plan_p = _manifest_path(wt, key).with_name("plan.md")
     marker = cfg.ticket_dir(key) / "ruling-baseline.json"

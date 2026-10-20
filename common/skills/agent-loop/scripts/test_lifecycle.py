@@ -125,6 +125,34 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("ZIP-7873 ready for review", self.notified)      # existing PR gets the plan-derived title/body
         self.assertTrue(self.replies[0][1].endswith("on his behalf"))
 
+    def test_serial_execution_runs_a_later_prerequisite_before_its_dependent(self):
+        manifest = self.wt / "planning/zip-7873/tasks.toml"
+        manifest.write_text(MANIFEST.replace('slug = "b"', 'slug = "b"\nafter = ["001", "003"]') + '''
+[[tasks]]
+id = "003"
+slug = "preview"
+summary = "Build the preview required by task 002"
+allowed_files = ["app/preview.rb"]
+verification_commands = ["true"]
+acceptance = ["AC-1"]
+after = ["001"]
+''')
+        r, steps, t = self.run_once(outcomes=("accepted", "accepted", "accepted"), max_steps=3)
+        self.assertEqual(r.calls, ["001", "003", "002"])
+
+    def test_unsatisfied_dependencies_repair_the_manifest_instead_of_dispatching_or_passing_gates(self):
+        manifest = self.wt / "planning/zip-7873/tasks.toml"
+        for dependencies in (("002", "001"), ("missing", "001")):
+            with self.subTest(dependencies=dependencies):
+                manifest.write_text(MANIFEST.replace('slug = "a"', f'slug = "a"\nafter = ["{dependencies[0]}"]')
+                                   .replace('slug = "b"', f'slug = "b"\nafter = ["{dependencies[1]}"]'))
+                state.save(self.cfg.ticket_dir("ZIP-7873"), state.Ticket(key="ZIP-7873", state="implement"))
+                r, steps, t = self.run_once(outcomes=("rejected",), max_steps=1)
+                self.assertEqual(r.calls, [])
+                self.assertEqual(t.state, "paused")
+                self.assertTrue(t.reason.startswith("contract complaint: task dependencies"))
+                self.assertIn(dependencies[0], (self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md").read_text())
+
     def test_rejected_task_waits_and_does_not_advance(self):
         r, steps, t = self.run_once(outcomes=("rejected",))
         self.assertEqual(t.state, "implement"); self.assertTrue(steps[-1].wait); self.assertEqual(r.calls, ["001"])

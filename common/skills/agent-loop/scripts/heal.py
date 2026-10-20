@@ -44,7 +44,7 @@ POLICIES = [
     (r"^plan failed|budget exceeded|task-writer left the manifest invalid", "replan", 3),   # -> plan stage; it repairs from the revise review when one exists
     (r"^publish failed|^finalize failed|^mark ready failed|^reply failed|^adjudication unusable|^adjudication is not valid", "republish", 3),
     (r"^rebase (onto origin/main )?conflict", "human", 0),
-    (r"^planning ceiling", "human", 0),
+    (r"^planning ceiling", "replan", 3),              # legacy spend holds are not product decisions
     (r"need Cody|NEEDS CODY|^HUMAN file|owner question|tier-3", "human", 0),
 ]
 

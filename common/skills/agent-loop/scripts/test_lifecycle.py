@@ -1270,42 +1270,38 @@ after = ["001"]
         repair_plan.assert_called_once()
         self.assertEqual(step.action, "approved")
 
-    def test_planning_ceiling_stops_a_ticket_that_never_produced_code(self):
-        """ZIP-7874: $55 across 7 plan runs and 3 heal replans, no accepted task, nobody notified."""
+    def test_high_planning_spend_warns_but_still_repairs_the_existing_plan(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
         (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")
         (self.wt / "planning" / "zip-7873" / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
-        with patch.object(lifecycle, "_task_accepted", return_value=False), \
-             patch.object(lifecycle.ledger, "collect", return_value=[{"ticket": "ZIP-7873", "billed_usd": 31.0}]), \
-             patch.object(lifecycle.plan_mod, "repair_plan") as rep, patch.object(lifecycle.plan_mod, "plan_ticket") as pl:
+        with patch.object(lifecycle.ledger, "collect", return_value=[{"ticket": "ZIP-7873", "billed_usd": 55.0}]), \
+             patch.object(lifecycle.plan_mod, "repair_plan", return_value={"result": "approved", "rounds": [], "author_model": "A", "critic_model": "C"}), \
+             patch.object(lifecycle.plan_mod, "plan_ticket", side_effect=AssertionError("repair the existing review, do not restart planning")):
             step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
-        rep.assert_not_called(); pl.assert_not_called()
-        self.assertTrue(step.wait); self.assertIn("planning ceiling", state.load(tdir).reason)
-        self.assertIn("ZIP-7873 planning ceiling", self.notified)
-        import heal; self.assertEqual(heal.policy(state.load(tdir).reason)[0], "human")   # never auto-retried
+        self.assertEqual(state.load(tdir).state, "implement")
+        self.assertFalse(step.wait)
+        self.assertEqual(state.load(tdir).needs_operator, "")
+        self.assertIn("ZIP-7873 planning spend warning", self.notified)
 
-    def test_planning_ceiling_asks_cody_and_never_becomes_a_runner_defect(self):
-        """ZIP-8882: the ceiling says the plan needs an owner ruling, but the supervisor's next tick filed that
-        pause as a runner defect with a replan contract: a repair agent was spent on it, `resume` refused
-        Cody's ruling, and the landed repair would only have re-planned into the same ceiling."""
+    def test_legacy_planning_ceiling_pause_automatically_repairs_without_an_owner_ruling(self):
         import repair
-        tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup", worktree=str(self.wt)))
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        reason = "planning ceiling: $30.30 spent before any task was accepted (limit $30); the plan needs an owner ruling, not another round"
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="paused", previous="plan", worktree=str(self.wt),
+                                     reason=reason, needs_operator="owner question"))
         (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")
         (self.wt / "planning" / "zip-7873" / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")
-        with patch.object(lifecycle, "_task_accepted", return_value=False), \
-             patch.object(lifecycle.ledger, "collect", return_value=[{"ticket": "ZIP-7873", "billed_usd": 30.3}]):
-            lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)     # hits the ceiling
-            self.assertIn("planning ceiling", state.load(tdir).reason)
-            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)   # the next tick
-        self.assertTrue(step.wait)
-        self.assertEqual(state.load(tdir).state, "paused")
-        self.assertIsNone(state.load(tdir).recovery["active"])
+        with patch.object(lifecycle.ledger, "collect", return_value=[{"ticket": "ZIP-7873", "billed_usd": 30.3}]), \
+             patch.object(lifecycle.plan_mod, "repair_plan", return_value={"result": "approved", "rounds": [], "author_model": "A", "critic_model": "C"}):
+            steps = lifecycle.run_once(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2, max_steps=2)
+        current = state.load(tdir)
+        self.assertEqual(current.state, "implement")
+        self.assertEqual(current.needs_operator, "")
+        self.assertIsNone(current.recovery["active"])
         self.assertEqual(repair.open_defects(self.cfg), [])
-        self.assertTrue(any("needs Cody" in title for title in self.notified), self.notified)
+        self.assertFalse(any("needs Cody" in title for title in self.notified), self.notified)
 
-    def test_owner_ruling_resets_the_planning_ceiling_baseline(self):
-        """A ruling is new evidence: the budget that stops repeated arguments must not block the round the
-        ruling authorises. Spend BEFORE the ruling no longer counts."""
+    def test_owner_ruling_starts_a_fresh_planning_spend_warning_window(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
         pd = self.wt / "planning" / "zip-7873"
         pd.joinpath("plan.md").write_text("# plan\n\n## Owner rulings\n\n- do the thing\n")

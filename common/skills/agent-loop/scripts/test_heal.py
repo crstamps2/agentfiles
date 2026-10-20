@@ -12,6 +12,7 @@ class PolicyTests(unittest.TestCase):
             "gates failed: yarn build rc=1": "prepare-retry", "visual gate failed: https://x/lookbook/ answered 500": "prepare-retry",
             "guard failed on the BASE tree too (independent of the work): ! grep x": "repair", "contract complaint (stale-todo): ...": "repair",
             "plan failed: critic verdict 'revise' after 2 rounds": "replan",
+            "planning ceiling: $30.30 spent; the plan needs an owner ruling": "replan",
             "publish failed: PublishError: accepted task 002 left allowlisted paths uncommitted": "republish",
             "adjudication is not valid JSON: Invalid \\escape": "republish", "mark ready failed: x": "republish",
             "rebase onto origin/main conflicted before task 901; needs a human": "human",

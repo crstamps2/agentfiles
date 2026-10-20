@@ -57,6 +57,8 @@ if scenario == "owner":
     result("blocked", "owner", [], "Is the close control part of the header slot?"); sys.exit(0)
 if scenario == "owner_boundary":
     result("blocked", "owner", [], "Permit an edit to `app/views/components/zui/ai_feedback/ai_feedback.rb` outside allowed_files"); sys.exit(0)
+if scenario == "owner_boundary_plain":
+    result("blocked", "owner", [], "Expand allowed_files to include app/views/components/previews/zui/modal_preview.rb, then retry."); sys.exit(0)
 if scenario == "owner_boundary_permit":
     result("blocked", "owner", [], "Revise the task boundary and invariant to permit `app/views/components/zui/ai_feedback/ai_feedback.rb` to emit a public state-specific `ai-feedback-*` root class, then rerun this task."); sys.exit(0)
 if scenario == "env":

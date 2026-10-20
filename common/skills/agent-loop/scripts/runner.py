@@ -67,10 +67,11 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
 
 
 def _owner_requests_unallowed_edit(res: contracts.Result, task: contracts.Task) -> bool:
-    if not any(verb in (res.next or "").lower() for verb in ("edit", "permit")):
+    if not any(verb in (res.next or "").lower() for verb in ("edit", "permit", "expand allowed_files")):
         return False
-    return any("/" in path and not any(worktree._match(path, allowed) for allowed in task.allowed_files)
-               for path in re.findall(r"`([^`]+)`", res.next))
+    paths = re.findall(r"`([^`]+)`|(?<![\w.-])((?:[\w.-]+/)+[\w.-]+)", res.next)
+    return any("/" in (quoted or plain) and not any(worktree._match(quoted or plain, allowed) for allowed in task.allowed_files)
+               for quoted, plain in paths)
 
 
 def _harden_lint_cmd(cmd: str) -> str:

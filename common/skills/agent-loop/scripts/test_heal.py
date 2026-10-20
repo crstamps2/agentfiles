@@ -41,16 +41,21 @@ class PolicyTests(unittest.TestCase):
     def test_unknown_reason_gets_one_careful_retry(self):
         self.assertEqual(heal.policy("something new"), ("retry", 2))
 
+    def test_failed_rails_gate_queues_a_code_fix(self):
+        reason = "gates failed: rails test rc=1, rubocop rc=0"
+        self.assertEqual(heal.policy(reason), ("gate-fix", 3))
+
     def test_budget_is_per_reason_and_spent_budget_escalates_to_human(self):
         with tempfile.TemporaryDirectory() as d:
             tdir = pathlib.Path(d)
             r = "gates failed: rails test rc=1"
-            self.assertEqual(heal.decide(tdir, r)[0], "prepare-retry"); heal.record(tdir, "prepare-retry", r, "gates")
-            self.assertEqual(heal.decide(tdir, r)[0], "prepare-retry"); heal.record(tdir, "prepare-retry", r, "gates")
-            action, why = heal.decide(tdir, r); self.assertEqual(action, "human"); self.assertIn("budget 2 spent", why)
+            self.assertEqual(heal.decide(tdir, r)[0], "gate-fix"); heal.record(tdir, "gate-fix", r, "gates")
+            self.assertEqual(heal.decide(tdir, r)[0], "gate-fix"); heal.record(tdir, "gate-fix", r, "gates")
+            self.assertEqual(heal.decide(tdir, r)[0], "gate-fix"); heal.record(tdir, "gate-fix", r, "gates")
+            action, why = heal.decide(tdir, r); self.assertEqual(action, "human"); self.assertIn("budget 3 spent", why)
             # a different reason has its own budget
             self.assertEqual(heal.decide(tdir, "visual gate failed: 500")[0], "prepare-retry")
-            self.assertEqual(len(heal.history(tdir)), 2)
+            self.assertEqual(len(heal.history(tdir)), 3)
 
     def test_human_policies_never_consume_budget(self):
         with tempfile.TemporaryDirectory() as d:

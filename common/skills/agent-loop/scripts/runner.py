@@ -67,7 +67,7 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
 
 
 def _owner_requests_unallowed_edit(res: contracts.Result, task: contracts.Task) -> bool:
-    if "edit" not in (res.next or "").lower():
+    if not any(verb in (res.next or "").lower() for verb in ("edit", "permit")):
         return False
     return any("/" in path and not any(worktree._match(path, allowed) for allowed in task.allowed_files)
                for path in re.findall(r"`([^`]+)`", res.next))

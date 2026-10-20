@@ -12,6 +12,7 @@ budget so a genuinely stuck ticket still surfaces -- with the count and history 
   prepare-retry `bin/wt prepare --for rails` then re-enter (stale deps/migrations after a rebase)
   repair        hand the recorded evidence to the task-writer, then re-enter (bad guards, contract complaints)
   fix-task      queue a runner-assigned fix task for named lint offenses, then re-enter implement
+  gate-fix      queue a scoped worker task for a deterministic gate failure, then re-enter implement
   republish     re-run the publish step for the accepted task (publish/push defects fixed in code)
   human         genuinely needs an owner (design questions, hand-written merge conflicts, HUMAN file)
 
@@ -35,7 +36,7 @@ POLICIES = [
     (r"critic produced no review", "retry", 5),          # the critic never ran; nothing was judged
     (r"^gates failed: pre-commit lint", "fix-task", 3),   # offenses in OUR work: a worker fixes them
     (r"^gates failed: yarn build", "prepare-retry", 3),
-    (r"^gates failed: rails test", "prepare-retry", 2),
+    (r"^gates failed: rails test", "gate-fix", 3),       # a deterministic assertion needs a code change, not another prepare
     (r"^visual gate failed: .* -> 500 \(", "preview-fix", 3),   # the preview raised: OUR code, a worker fixes it
     (r"^visual gate failed", "prepare-retry", 3),
     (r"^guard failed on the BASE tree|contract complaint|guard disagreement", "repair", 4),

@@ -324,6 +324,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             heal.record(tdir, action, t.reason, t.state)
             t.state = "implement"; t.reason = f"queued lint fix task {ft}"; state.save(tdir, t)
             return Step(key, "implement", f"queued lint fix task {ft} for the pre-commit offenses")
+        if action == "gate-fix":
+            ft = _gate_fix_task(tdir, t.reason, _manifest_path(wt, key), cfg, key, wt)
+            heal.record(tdir, action, t.reason, t.state)
+            t.state = "implement"; t.reason = f"queued gate fix task {ft}"; state.save(tdir, t)
+            return Step(key, "implement", f"queued gate fix task {ft} for the deterministic gate failure")
         if action == "preview-fix":
             ft = _preview_fix_task(tdir, t.reason, _manifest_path(wt, key), wt)
             heal.record(tdir, action, t.reason, t.state)
@@ -1214,6 +1219,38 @@ def _preview_error_text(page: str) -> str:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     keep = [ln for ln in lines if re.search(r"Error|Exception|uninitialized|undefined|^(app|test|lib|config)/\S+:\d+", ln)]
     return (screenshots.exception_summary(page) + "\n\n" + "\n".join(dict.fromkeys(keep))[:3000]).strip()
+
+
+def _gate_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg, key: str, wt) -> str:
+    """Turn a deterministic gate failure into a bounded task over the ticket's changed files."""
+    gates_out = tdir / "gates.out"
+    evidence = gates_out.read_text(errors="replace") if gates_out.exists() else reason
+    evidence = evidence or reason
+    existing = contracts.load_tasks(manifest)
+    files = _sh(["git", "diff", "--name-only", "origin/main...HEAD"], wt, 60).stdout.split()
+    if not files:
+        files = sorted({path for task in existing for path in task.allowed_files})
+    if not files:
+        raise ValueError("the ticket has no changed or task-owned files to fix")
+    for task in existing:
+        if task.slug.startswith("gate-fix-") and task.allowed_files == files and not _task_accepted(cfg, key, task):
+            return task.id
+    tid = _next_runner_task_id(manifest)
+    cmd = "bin/rails test test/views/components/zui/"
+    _append_task(manifest, {
+        "id": tid, "slug": f"gate-fix-{tid}",
+        "summary": "Fix the deterministic gate failure (see feedback)",
+        "allowed_files": files, "may_edit_tests": True, "visual": False,
+        "verification_commands": [cmd],
+        "acceptance": [f"AC-1: `{cmd}` passes"],
+        "invariants": ["Fix the code that failed the deterministic gate.",
+                       "Do not weaken any test or lint rule."],
+        "stop_when": ["the verification commands pass"],
+    })
+    feedback = cfg.state_root / "attempts" / key / tid / "feedback.md"
+    feedback.parent.mkdir(parents=True, exist_ok=True)
+    feedback.write_text(f"# Deterministic gate failure\n\n```\n{evidence[-6000:]}\n```\n")
+    return tid
 
 
 def _preview_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, wt) -> str:

@@ -572,6 +572,28 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(any("--force-exclusion" in c for c in fix.verification_commands))
         self.assertTrue(any("Rails/FindEach" in i for i in fix.invariants))
 
+    def test_failed_rails_gate_becomes_a_bounded_code_fix_task(self):
+        """ZIP-8698: re-preparing a deterministic assertion failure never changes the code that failed it."""
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        reason = "gates failed: rails test rc=1, rubocop rc=0"
+        (tdir / "gates.out").write_text("expected to find css \"label[for='feedback_details']\"\n")
+        tt = state.transition(state.load(tdir), "gates")
+        tt = state.transition(tt, "paused", reason=reason); state.save(tdir, tt)
+        step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(state.load(tdir).state, "implement")
+        self.assertIn("queued gate fix task", step.action)
+        import contracts
+        fixes = [task for task in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")
+                 if task.slug.startswith("gate-fix-")]
+        self.assertEqual(len(fixes), 1)
+        fix = fixes[0]
+        self.assertEqual(fix.allowed_files, ["app/a.rb", "app/b.rb"])
+        self.assertTrue(fix.may_edit_tests)
+        self.assertEqual(fix.verification_commands, ["bin/rails test test/views/components/zui/"])
+        self.assertTrue(any("Do not weaken any test or lint rule" in invariant for invariant in fix.invariants))
+        feedback = self.cfg.state_root / "attempts" / "ZIP-7873" / fix.id / "feedback.md"
+        self.assertIn("label[for='feedback_details']", feedback.read_text())
+
     def test_lint_fix_task_permits_the_offending_test_file(self):
         """ZIP-4275: generated lint fixes for test paths must clear the worker allowlist gate."""
         tdir = self.cfg.ticket_dir("ZIP-7873")
@@ -1091,7 +1113,7 @@ class LifecycleTests(unittest.TestCase):
     def test_spent_heal_budget_routes_to_structured_recovery(self):
         import heal
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
-        for _ in range(2): heal.record(tdir, "prepare-retry", "gates failed: rails test rc=1", "gates")
+        for _ in range(3): heal.record(tdir, "gate-fix", "gates failed: rails test rc=1", "gates")
         tt = state.transition(tt, "gates"); tt = state.transition(tt, "paused", reason="gates failed: rails test rc=1"); state.save(tdir, tt)
         r, steps, t = self.run_once()
         self.assertTrue(steps[0].wait); self.assertIn("waiting for automatic recovery", steps[0].action)

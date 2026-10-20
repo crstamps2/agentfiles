@@ -810,6 +810,16 @@ class RunnerHarness(unittest.TestCase):
         bad = self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md"
         self.assertIn("app/views/components/zui/ai_feedback/ai_feedback.rb", bad.read_text())
 
+    def test_premium_owner_request_for_an_unquoted_unallowed_path_is_a_contract_complaint(self):
+        """ZIP-8699: a plain-text unallowed path must not leave the ticket blocked as `owner`."""
+        outcome, rows = self.run_task("fail", "fail", "owner_boundary_plain", "owner_boundary_plain")
+        self.assertEqual(outcome, "paused")
+        self.assertEqual([r["outcome"] for r in rows[2:]], ["environment", "environment"])
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertEqual(t.state, "paused"); self.assertTrue(t.reason.startswith("contract complaint (owner):"))
+        bad = self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md"
+        self.assertIn("app/views/components/previews/zui/modal_preview.rb", bad.read_text())
+
     def test_premium_owner_request_to_permit_an_unallowed_path_is_a_contract_complaint(self):
         """ZIP-8697: workers may phrase a task-boundary request without the word `edit`."""
         outcome, rows = self.run_task("fail", "fail", "owner_boundary_permit", "owner_boundary_permit")

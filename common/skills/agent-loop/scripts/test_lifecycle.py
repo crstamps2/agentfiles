@@ -11,6 +11,7 @@ import botreview
 import ci
 import config
 import lifecycle
+import procs
 import state
 
 MANIFEST = '''[[tasks]]
@@ -103,7 +104,8 @@ class LifecycleTests(unittest.TestCase):
 
     def fake_adjudicator(self, cfg, agent, prompt, stage, wt, timeout, model=None):
         self.assertEqual(agent, "review-adjudicator")            # never the plan critic's definition
-        (stage / "adjudication.json").write_text(json.dumps(self.adjudication or {"decisions": []}))
+        out = stage.parent if stage.name.startswith("fix-") else stage
+        (out / "adjudication.json").write_text(json.dumps(self.adjudication or {"decisions": []}))
 
     def run_once(self, outcomes=("accepted", "accepted"), max_steps=12):
         r = FakeRunner(self.cfg, outcomes)
@@ -177,13 +179,45 @@ class LifecycleTests(unittest.TestCase):
         prompts = []
         def adjudicate(cfg, agent, prompt, stage, wt, timeout, model=None):
             prompts.append(prompt)
-            (stage / "adjudication.json").write_text(json.dumps(bad if len(prompts) == 1 else good))
+            out = stage.parent if stage.name.startswith("fix-") else stage
+            (out / "adjudication.json").write_text(json.dumps(bad if len(prompts) == 1 else good))
         with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=adjudicate):
             r, steps, t = self.run_once(outcomes=("accepted", "accepted", "rejected"))
         self.assertEqual(len(prompts), 2)
         self.assertIn("inline interpreter code", prompts[1])          # the violation is fed back
         self.assertEqual(r.calls, ["001", "002", "901"]); self.assertEqual(t.state, "implement")
         self.assertEqual([c for c, _ in self.replies], [5])                # one reply, posted after a valid task existed
+
+    def test_schema_fix_relaunch_keeps_the_original_adjudication_logs(self):
+        """ZIP-8698: the schema-fix pass reused round-1's exclusive log paths and crashed."""
+        self.comments = [{"kind": "inline", "id": 5, "path": "app/a.rb", "line": 3, "reply_to": None,
+                          "sha": "s", "body": "nil guard missing", "body_hash": "h5"}]
+        bad = {"decisions": [{"id": 5, "decision": "fix", "reply": "Adding the guard; see follow-up commit.",
+                               "task": {"allowed_files": ["app/a.rb"], "verification_commands": ["ruby -e 'abort'"], "summary": "Add nil guard"}}]}
+        good = {"decisions": [{"id": 5, "decision": "fix", "reply": "Adding the guard; see follow-up commit.",
+                                "task": {"allowed_files": ["app/a.rb"], "verification_commands": ["true"], "summary": "Add nil guard"}}]}
+        round_stage = self.cfg.state_root / "botreview" / "ZIP-7873" / "round-1"
+        calls = 0
+
+        def adjudicate(cfg, agent, prompt, stage, wt, timeout, model=None):
+            nonlocal calls
+            calls += 1
+            stage.mkdir(parents=True, exist_ok=True)
+            procs.run_stage(["/bin/echo", "initial" if calls == 1 else "repair"], wt, 10, None,
+                            stage / "stdout.log", stage / "stderr.log")
+            (round_stage / "adjudication.json").write_text(json.dumps(bad if calls == 1 else good))
+
+        with patch.object(lifecycle.plan_mod, "_run_agent", side_effect=adjudicate):
+            try:
+                r, _steps, t = self.run_once(outcomes=("accepted", "accepted", "rejected"))
+            except procs.LogPathExists as e:
+                self.fail(f"schema-fix relaunch reused its log path: {e}")
+        self.assertEqual(r.calls, ["001", "002", "901"])
+        self.assertEqual(t.state, "implement")
+        self.assertEqual((round_stage / "stdout.log").read_text(), "initial\n")
+        retry_logs = [p for p in round_stage.parent.rglob("stdout.log") if p != round_stage / "stdout.log"]
+        self.assertEqual(len(retry_logs), 1)
+        self.assertEqual(retry_logs[0].read_text(), "repair\n")
 
     def test_a_cached_adjudication_whose_fix_task_breaks_the_schema_is_not_replayed(self):
         """ZIP-4281 after b0add05: the round-1 adjudication on disk was replayed and skipped the new check."""

@@ -1314,7 +1314,10 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=
         if tk.slug.startswith("lint-fix-") and tk.allowed_files == files and not (cfg and _task_accepted(cfg, key, tk)):
             return tk.id                                  # the same fix is already queued
     tid = _next_runner_task_id(manifest)
-    if all(f.endswith((".ts", ".js", ".tsx", ".jsx", ".scss", ".css")) for f in files):
+    if (all(f.endswith((".ts", ".js", ".tsx", ".jsx")) for f in files)
+            and _re.search(r"^\s*\U0001f94a\s+eslint(?:\s|$)", reason, _re.M)):
+        cmd = "bin/agent_run yarn eslint " + " ".join(files) + " --no-warn-ignored --max-warnings=0"
+    elif all(f.endswith((".ts", ".js", ".tsx", ".jsx", ".scss", ".css")) for f in files):
         cmd = "bin/agent_run yarn prettier --check " + " ".join(files)
     elif _re.search(reek_warning, reason):
         cmd = "bin/agent_run bundle exec reek --force-exclusion " + " ".join(files)

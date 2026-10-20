@@ -658,6 +658,35 @@ after = ["001"]
         self.assertEqual(fix.allowed_files, ["app/assets/javascripts/controllers/zui_dropzone_controller.ts"])
         self.assertTrue(any("prettier" in c for c in fix.verification_commands))   # the tool that rejected it
 
+    def test_lint_fix_selects_the_failed_tool_without_running_eslint_on_ruby_or_stylesheets(self):
+        import contracts
+        ts = "app/views/components/zui/modal/modal_ai.figma.ts"
+        rb = "app/views/components/zui/modal/modal.rb"
+        scss = "app/views/components/zui/modal/modal.scss"
+        eslint = f"┃ eslint ❯\nyarn eslint {ts} --no-warn-ignored --max-warnings=0\n{ts}\n  8:7  error  'instance' is assigned a value but never used  @typescript-eslint/no-unused-vars\n"
+        cases = [
+            ("eslint failed, prettier passed", eslint + "✔️ prettier\n🥊 eslint (4.44 seconds)\n", [ts],
+             f"bin/agent_run yarn eslint {ts} --no-warn-ignored --max-warnings=0"),
+            ("eslint passed, prettier failed", f"[warn] {ts}\n✔️ eslint\n🥊 prettier\n", [ts],
+             f"bin/agent_run yarn prettier --check {ts}"),
+            ("eslint skipped, prettier failed", f"│ eslint (skip) no files for inspection\n[warn] {scss}\n🥊 prettier\n", [scss],
+             f"bin/agent_run yarn prettier --check {scss}"),
+            ("rubocop and eslint both failed", f"{rb}:12:3: C: Style/Foo: fix it.\n" + eslint + "🥊 rubocop\n🥊 eslint\n", [rb],
+             f"bin/agent_run rubocop --cache false --force-exclusion {rb}"),
+            ("reek and eslint both failed", f"{rb} -- 1 warning:\n  [12]:UnusedParameters: unused argument\n" + eslint + "🥊 reek\n🥊 eslint\n", [rb, ts],
+             f"bin/agent_run bundle exec reek --force-exclusion {rb} {ts}"),
+        ]
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        manifest = self.wt / "planning/zip-7873/tasks.toml"
+        for label, output, files, command in cases:
+            with self.subTest(label=label):
+                manifest.write_text(MANIFEST)
+                (tdir / "hook-reject.out").write_text(output)
+                tid = lifecycle._lint_fix_task(tdir, "gates failed: pre-commit lint rejected the commit", manifest)
+                fix = next(task for task in contracts.load_tasks(manifest) if task.id == tid)
+                self.assertEqual(fix.allowed_files, files)
+                self.assertEqual(fix.verification_commands, [command])
+
     def test_fix_task_reads_the_full_hook_output_not_the_truncated_reason(self):
         """The reason field is capped at 400 chars, which kept only lefthook's trailing summary."""
         tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)

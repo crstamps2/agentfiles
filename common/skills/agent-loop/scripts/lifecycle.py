@@ -202,11 +202,20 @@ def _task_accepted(cfg, key, task) -> bool:
     return False
 
 
+class TaskDependencyError(ValueError):
+    pass
+
+
 def _next_task(cfg, key, tasks):
-    """First task in manifest order without an accepted attempt (by id AND slug)."""
-    for task in tasks:
-        if not _task_accepted(cfg, key, task):
+    """First unaccepted task whose explicit prerequisites have accepted matching slugs."""
+    done = {task.id for task in tasks if _task_accepted(cfg, key, task)}
+    pending = [task for task in tasks if task.id not in done]
+    for task in pending:
+        if all(dependency in done for dependency in getattr(task, "after", [])):
             return task
+    if pending:
+        missing = {task.id: [dep for dep in getattr(task, "after", []) if dep not in done] for task in pending}
+        raise TaskDependencyError(f"no runnable task; unaccepted or unknown prerequisites: {missing}")
     return None
 
 
@@ -471,7 +480,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 if t.state == "paused":
                     return Step(key, "implement", f"republish of task {tk.id} failed", detail=t.reason, wait=True)
                 return Step(key, "implement", f"task {tk.id}: published previously accepted work")
-        task = _next_task(cfg, key, tasks)
+        try:
+            task = _next_task(cfg, key, tasks)
+        except TaskDependencyError as exc:
+            (tdir / "bad-guards.md").write_text(f"Task dependencies cannot be satisfied:\n{exc}\n")
+            return _pause_step(cfg, t, "implement", f"contract complaint: task dependencies: {exc}")
         if task is None:
             t = state.transition(t, "gates"); _save(cfg, t)
             return Step(key, "implement", "all tasks accepted")

@@ -810,6 +810,14 @@ class RunnerHarness(unittest.TestCase):
         bad = self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md"
         self.assertIn("app/views/components/zui/ai_feedback/ai_feedback.rb", bad.read_text())
 
+    def test_markdown_around_allowed_files_does_not_turn_a_contract_request_into_an_owner_question(self):
+        for phrase in ("Expand allowed_files", "Expand `allowed_files`", "Expand **allowed_files**"):
+            with self.subTest(phrase=phrase):
+                res = contracts.parse_result("STATUS: blocked\nREASON: owner\nBASE: abc\nFILES: none\n"
+                                             "EVIDENCE: missing preview\nUNVERIFIED: browser checks\n"
+                                             f"NEXT: {phrase} to include `app/views/components/previews/zui/modal_preview.rb`.\n")
+                self.assertTrue(runner._owner_requests_unallowed_edit(res, self.tasks[0]))
+
     def test_premium_owner_request_for_an_unquoted_unallowed_path_is_a_contract_complaint(self):
         """ZIP-8699: a plain-text unallowed path must not leave the ticket blocked as `owner`."""
         outcome, rows = self.run_task("fail", "fail", "owner_boundary_plain", "owner_boundary_plain")

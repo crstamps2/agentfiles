@@ -132,6 +132,26 @@ class LoopTests(unittest.TestCase):
         log = self.go(); self.assertEqual(log["result"], "failed"); self.assertIn("task-writer left", log["reason"])
         self.assertEqual(self.calls.count("task-writer"), 3)
 
+    def test_repair_writer_receives_existing_schema_failures_before_its_first_attempt(self):
+        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
+        (pd / "plan.md").write_text("plan")
+        (pd / "tasks.toml").write_text(self.GOOD.replace('["true"]', '["ruby -e \'puts 1\'"]'))
+        (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. Repair the verification command")
+
+        def repair_when_informed(agent, directory):
+            prompt = (self.stage / "writer-1" / "prompt.md").read_text()
+            if "inline interpreter code" not in prompt:
+                return "REVISION: blocked - missing verification schema feedback"
+            (directory / "tasks.toml").write_text(self.GOOD)
+            return "REVISION: applied 1 blockers"
+
+        self.script = [repair_when_informed, self.critic_says("approve")]
+        with patch.object(plan, "_run_agent", self.fake_run_agent), patch.object(plan, "export_ticket", lambda k, d: d), \
+             patch.object(plan, "assignment", lambda cfg, i: {"author_model": "A", "critic_model": "C"}):
+            log = plan.repair_plan(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
+        self.assertEqual(log["result"], "approved")
+        self.assertEqual(plan.validate_manifest(pd / "tasks.toml"), [])
+
     def test_repair_plan_bounces_writer_violations_to_the_writer(self):
         pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
         (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(self.GOOD); (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")

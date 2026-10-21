@@ -796,8 +796,30 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(rows[2]["agent"], "premium-worker"); self.assertIn("escalating", rows[0]["reason"])
 
     def test_premium_owner_block_still_blocks_ticket(self):
-        outcome, rows = self.run_task("fail", "fail", "owner")
+        tasks = self.tasks_with(stop_when=[
+            "the close control is part of the header slot (STATUS: blocked / REASON: owner)"
+        ])
+        outcome, rows = self.run_task("fail", "fail", "owner", tasks=tasks)
         self.assertEqual(outcome, "blocked"); self.assertEqual(rows[2]["outcome"], "blocked")
+
+    def test_premium_owner_block_matching_declared_stop_condition_is_a_contract_complaint(self):
+        tasks = self.tasks_with(stop_when=[
+            "the generator changes unrelated cop exclusions unexpectedly (STATUS: blocked / REASON: preserve and report the unrelated diff)"
+        ])
+        outcome, rows = self.run_task("fail", "fail", "owner_stop_condition", "owner_stop_condition", tasks=tasks)
+        self.assertEqual(outcome, "paused")
+        self.assertEqual([r["outcome"] for r in rows[2:]], ["environment", "environment"])
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertTrue(t.reason.startswith("contract complaint (owner):"))
+        self.assertIn("generator-produced removals", (self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md").read_text())
+
+    def test_premium_owner_question_with_an_unrelated_stop_condition_still_blocks_ticket(self):
+        tasks = self.tasks_with(stop_when=[
+            "the generator changes unrelated cop exclusions unexpectedly (STATUS: blocked / REASON: preserve and report the unrelated diff)"
+        ])
+        outcome, rows = self.run_task("fail", "fail", "owner", tasks=tasks)
+        self.assertEqual(outcome, "blocked")
+        self.assertEqual(rows[2]["outcome"], "blocked")
 
     def test_premium_owner_request_for_an_unallowed_path_is_a_contract_complaint(self):
         """ZIP-8697: a task-boundary block must replan, not strand the ticket as bare `owner`."""

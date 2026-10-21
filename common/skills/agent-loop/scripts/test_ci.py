@@ -58,6 +58,23 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(ci.classify([C("z", "fail")], behind=0, attempts=2, prior_actions=("rerun",)).action, "fix")
 
 
+class GitHubCheckTests(unittest.TestCase):
+    def test_failure_excerpt_reads_the_matching_check_run_summary(self):
+        from unittest.mock import patch
+        link = "https://app.circleci.com/workflow/8e147625-2636-481a-9cad-2484a176ba46"
+        runs = {"check_runs": [
+            {"name": "build", "details_url": "https://github.com/x/y/actions/runs/1",
+             "output": {"title": "build", "summary": "passed", "text": None}},
+            {"name": "zipline", "details_url": link,
+             "output": {"title": "Workflow: zipline", "summary": "* unit_tests - Failed", "text": None}},
+        ]}
+        result = ci.subprocess.CompletedProcess([], 0, ci.json.dumps(runs), "")
+        with patch.object(ci.subprocess, "run", return_value=result):
+            excerpt = ci.github_check_failure_excerpt(ci.Check("zipline", "fail", link=link),
+                                                       "retailzipline/zipline-app", "abc123", ".")
+        self.assertEqual(excerpt, "Workflow: zipline\n* unit_tests - Failed")
+
+
 class LinkParsingTests(unittest.TestCase):
     def test_circleci_workflow_id(self):
         self.assertEqual(ci.circleci_workflow_id("https://app.circleci.com/workflow/d1a2c3f9-f1a7-4af3-ae7d-fc118103a349"),

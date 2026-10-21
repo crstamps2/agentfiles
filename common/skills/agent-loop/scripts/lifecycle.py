@@ -579,8 +579,9 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
     if t.state == "ready":
         cis = _load_json(_ci_state_path(cfg, key), {}); pr = cis.get("pr") or pr_number
         checks = ci.fetch_checks(pr, publish.REPO, wt)
+        failure_text = _failure_text(checks, wt)
         verdict = ci.classify(checks, behind=ci.behind_base(wt), attempts=cis.get("attempts", 0),
-                              failure_text=_failure_text(checks, wt), prior_actions=tuple(cis.get("actions", [])))
+                              failure_text=failure_text, prior_actions=tuple(cis.get("actions", [])))
         cis.setdefault("actions", [])
         if verdict.action == "wait":
             _ci_state_path(cfg, key).write_text(json.dumps(cis)); return Step(key, "ready", "CI running", detail=verdict.reason, wait=True)
@@ -627,7 +628,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                "invariants": ["Do not weaken any test or lint rule"], "stop_when": ["the verification commands pass"]}
         _append_task(_manifest_path(wt, key), fix)
         (cfg.state_root / "attempts" / key / fix["id"]).mkdir(parents=True, exist_ok=True)
-        (cfg.state_root / "attempts" / key / fix["id"] / "feedback.md").write_text(f"# CI failure\n\n```\n{_failure_text(checks, wt)[-4000:]}\n```\n")
+        (cfg.state_root / "attempts" / key / fix["id"] / "feedback.md").write_text(f"# CI failure\n\n```\n{failure_text[-4000:]}\n```\n")
         t = state.transition(t, "implement", reason=f"ci-fix {fix['id']} queued"); _save(cfg, t)
         return Step(key, "ready", "CI code failure -> fix task queued", detail=fix["id"])
 
@@ -855,7 +856,7 @@ def _failure_text(checks, wt) -> str:
         if "actions/runs" in c.link:
             parts.append(ci.gha_failure_excerpt(c.link, publish.REPO, wt))
         elif "circleci.com" in c.link:
-            parts.append(ci.circleci_failure_excerpt(c.link))
+            parts.append(ci.circleci_failure_excerpt(c.link) or ci.github_check_failure_excerpt(c, publish.REPO, _head(wt), wt))
     return "\n".join(parts)
 
 

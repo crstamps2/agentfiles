@@ -171,6 +171,23 @@ after = ["001"]
         self.assertIn('id = "901"', manifest); self.assertIn("ci-fix-1", manifest)
         self.assertTrue((self.cfg.state_root / "attempts" / "ZIP-7873" / "901" / "feedback.md").exists())
 
+    def test_ci_fix_uses_github_check_summary_when_circleci_logs_are_unavailable(self):
+        """ZIP-8882: unavailable CircleCI logs must not create a blank-feedback fix task."""
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="ready", previous="draft-pr", worktree=str(self.wt)))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 47888, "actions": ["rerun"], "attempts": 1}))
+        self.checks = [ci.Check("zipline", "fail", link="https://app.circleci.com/workflow/8e147625-2636-481a-9cad-2484a176ba46")]
+        summary = "Workflow: zipline\n* unit_tests - Failed\n* system_tests - Failed"
+
+        with patch.object(lifecycle.ci, "circleci_failure_excerpt", return_value=""), \
+             patch.object(lifecycle.ci, "github_check_failure_excerpt", return_value=summary):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+
+        feedback = self.cfg.state_root / "attempts" / "ZIP-7873" / "901" / "feedback.md"
+        self.assertEqual(step.action, "CI code failure -> fix task queued")
+        self.assertEqual(state.load(tdir).state, "implement")
+        self.assertIn(summary, feedback.read_text())
+
     def test_ci_fix_id_follows_existing_runner_fix_tasks(self):
         """ZIP-8882: a CI fix must append after prior runner-generated task ids."""
         import contracts

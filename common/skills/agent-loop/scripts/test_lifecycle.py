@@ -622,6 +622,26 @@ after = ["001"]
         feedback = self.cfg.state_root / "attempts" / "ZIP-7873" / fix.id / "feedback.md"
         self.assertIn("label[for='feedback_details']", feedback.read_text())
 
+    def test_gate_fix_rechecks_overlapping_lint_task(self):
+        """ZIP-8882: a Rails gate restored an unused TypeScript value, then the pre-commit ESLint
+        hook rejected it again because the generated gate-fix task verified only Rails."""
+        import contracts
+        source = "app/views/components/zui/task/task.figma.ts"
+        eslint = f"bin/agent_run yarn eslint {source} --no-warn-ignored --max-warnings=0"
+        manifest = self.wt / "planning" / "zip-7873" / "tasks.toml"
+        lifecycle._append_task(manifest, {
+            "id": "901", "slug": "lint-fix-901", "size": "small",
+            "summary": "Fix the ESLint offense", "allowed_files": [source],
+            "may_edit_tests": False, "visual": False,
+            "verification_commands": [eslint], "acceptance": ["AC-1: ESLint passes"],
+        })
+        with patch.object(lifecycle, "_sh", return_value=subprocess.CompletedProcess([], 0, f"{source}\n", "")):
+            tid = lifecycle._gate_fix_task(self.cfg.ticket_dir("ZIP-7873"), "gates failed: rails test rc=1",
+                                            manifest, self.cfg, "ZIP-7873", self.wt)
+        fix = next(task for task in contracts.load_tasks(manifest) if task.id == tid)
+        self.assertEqual(fix.verification_commands,
+                         ["bin/rails test test/views/components/zui/", eslint])
+
     def test_lint_fix_task_permits_the_offending_test_file(self):
         """ZIP-4275: generated lint fixes for test paths must clear the worker allowlist gate."""
         tdir = self.cfg.ticket_dir("ZIP-7873")

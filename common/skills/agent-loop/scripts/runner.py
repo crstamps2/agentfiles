@@ -75,6 +75,18 @@ def _owner_requests_unallowed_edit(res: contracts.Result, task: contracts.Task) 
                for quoted, plain in paths)
 
 
+def _owner_reports_declared_stop_condition(res: contracts.Result, task: contracts.Task) -> bool:
+    report_words = set(re.findall(r"\b[a-z]{4,}\b", f"{res.evidence}\n{res.next}".lower()))
+    for condition in task.stop_when:
+        declared = re.search(r"\(\s*STATUS:\s*blocked\s*/\s*REASON:\s*([^)]+)\)", condition, re.I)
+        if not declared or re.search(r"\bowner\b", declared.group(1), re.I):
+            continue
+        condition_words = set(re.findall(r"\b[a-z]{4,}\b", condition[:declared.start()].lower()))
+        if len(condition_words) >= 3 and len(condition_words & report_words) >= 3:
+            return True
+    return False
+
+
 def _harden_lint_cmd(cmd: str) -> str:
     """rubocop/reek given explicit paths lint files the repo EXCLUDES (linters/** carries 13 pre-existing
     offenses on main); CI never sees them because it runs with exclusions. Add --force-exclusion so a
@@ -619,7 +631,8 @@ class Runner:
                 providers.note_run(self.cfg.state_root, agent.model, rec.path)   # every later launch switches vendor up front
             owner_boundary = (
                 outcome == "blocked" and res is not None and res.status == "blocked"
-                and res.reason == "owner" and _owner_requests_unallowed_edit(res, task)
+                and res.reason == "owner" and (_owner_requests_unallowed_edit(res, task)
+                                             or _owner_reports_declared_stop_condition(res, task))
             )
             if owner_boundary and rung.tier == "premium":
                 outcome, reason = "environment", f"contract complaint (owner): {(res.next or res.unverified or '')[:300]}"

@@ -166,10 +166,29 @@ after = ["001"]
         self.checks = [ci.Check("rubocop", "fail", link="https://github.com/x/y/actions/runs/1")]
         with patch.object(lifecycle.ci, "gha_failure_excerpt", return_value="Style/Foo: offense"):
             r, steps, t = self.run_once(outcomes=("accepted", "accepted", "rejected"))
-        self.assertEqual(r.calls[-1], "801"); self.assertEqual(t.state, "implement")
+        self.assertEqual(r.calls[-1], "901"); self.assertEqual(t.state, "implement")
         manifest = (self.wt / "planning" / "zip-7873" / "tasks.toml").read_text()
-        self.assertIn('id = "801"', manifest); self.assertIn("ci-fix-1", manifest)
-        self.assertTrue((self.cfg.state_root / "attempts" / "ZIP-7873" / "801" / "feedback.md").exists())
+        self.assertIn('id = "901"', manifest); self.assertIn("ci-fix-1", manifest)
+        self.assertTrue((self.cfg.state_root / "attempts" / "ZIP-7873" / "901" / "feedback.md").exists())
+
+    def test_ci_fix_id_follows_existing_runner_fix_tasks(self):
+        """ZIP-8882: a CI fix must append after prior runner-generated task ids."""
+        import contracts
+        manifest = self.wt / "planning" / "zip-7873" / "tasks.toml"
+        lifecycle._append_task(manifest, {
+            "id": "909", "slug": "lint-fix-909", "size": "small", "summary": "Fix lint",
+            "allowed_files": ["app/a.rb"], "acceptance": ["AC-1: lint passes"],
+            "verification_commands": ["bin/agent_run rubocop --cache false --force-exclusion app/a.rb"],
+        })
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="ready", previous="draft-pr"))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 47888, "actions": ["rerun"], "attempts": 1}))
+        self.checks = [ci.Check("rubocop", "fail", link="https://github.com/x/y/actions/runs/1")]
+        with patch.object(lifecycle.ci, "gha_failure_excerpt", return_value="Style/Foo: offense"):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(step.detail, "910")
+        self.assertEqual([task.id for task in contracts.load_tasks(manifest)][-2:], ["909", "910"])
+        self.assertEqual(state.load(tdir).state, "implement")
 
     def test_ci_infra_failure_reruns_and_waits(self):
         self.checks = [ci.Check("zipline", "fail", link="https://github.com/x/y/actions/runs/9")]

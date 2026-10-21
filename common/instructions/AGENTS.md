@@ -147,6 +147,13 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 - Do not declare `fallbackModels`; pi-subagents supports one resolved model per launch. If a provider/model failure blocks a launch before useful work, retry through a later explicit launch using `anthropic/claude-sonnet-5-5`.
 - Before submitting a launch with an explicit `model:`, verify the model and thinking level against the agent definition. A deliberate post-failure Claude retry is a separate launch, not an in-launch provider switch.
 
+## Pi Delegation Compatibility
+
+- Use the native `subagent` tool or the supported owned-leaf helper at `tools/pi/scripts/subagent-dispatch.mjs` in the agentfiles checkout. Both use the installed package's executor and agent definitions; neither grants delegation authority by itself.
+- A legacy Orchestration v2 probe failure does not prove native reviewers are unavailable. For authorized delegation, run the helper's `--probe`, then require a real terminal response and review text. The helper uses current public APIs, not a fabricated v2 provider or an alternate CLI agent.
+- Keep exact attempt identities after uncertain replies; never blindly redispatch. Record effective model/thinking and unavailable lanes separately. A completed child is not necessarily an approving review.
+- The helper treats reviewed checkouts as untrusted and loads only the operator's managed Pi install. Do not add project-trust, model/tool overrides, arbitrary SDK paths, or busy-pane reload injection to work around a failure.
+
 ## Skills
 
 - `/standup` -- Status dashboard across Jira, GitHub PRs, and git worktrees

@@ -3,8 +3,12 @@
 Autonomous delivery of ZIP-6774 (ZUI containers) tickets to **Human Gate 1**: a ready-for-review PR
 with CI green and the repo's Claude review bots already addressed. Cody looks at nothing before that.
 
+Required operating authority, ownership, maintenance, and recovery-proof guidance lives in
+[Operations policy](references/operations-policy.md), shared by both skill entrypoints. This guide
+covers architecture; do not use historical descriptions to override that policy.
+
 Adapted from the "strong reviewer, inexpensive workers" field guide. Everything lives on `agentfiles`
-branch `agent-loop-1` (unmerged, never pushed). Spinup changes live on the dotfiles branch
+branch `agent-loop-1`, whose checkout is used by launchd. Spinup changes live on the dotfiles branch
 `spinup-headless`. `~/.pi/agent/skills/{agent-loop,loop-watch}` are symlinks into this tree.
 
 ## Where things are
@@ -27,18 +31,21 @@ assignee, minus `exclude`d tickets and tickets whose `deps` are not Done in Jira
 stacks). Each pick: full cmux spinup (agent tab runs `/loop-watch`), assign to Cody, In Progress,
 launchd supervisor. Runs every 15 min as `com.cody.agent-loop.drip` for board discovery.
 
-## The cohort (four durable slots)
+## The cohort (two production background slots)
 
 `cohort.json` is the only source of capacity truth once migration has created it; before that, the
 drip uses the legacy `max_in_flight` count.
 
-- **Four slots, seven hard ceiling.** A ticket owns its slot from reservation until **verified Human
+- **Two production slots, seven hard ceiling.** Omitted configuration defaults to four; that is
+  not the deployed capacity. A ticket owns its slot from reservation until **verified Human
   Gate 1**: state `human-gate-1`, a recorded PR that GitHub reports open and ready, evidence SHA equal
   to the worktree HEAD, no active recovery, no open decision. A draft PR, a GitHub error, or a stale
   SHA releases nothing. Any override above seven is rejected before state changes.
 - **Waiting keeps the slot.** `paused`, `blocked`, repairing, retrying, provider-waiting, rebase
   repair, `decision-required`, and `HUMAN` takeovers all retain their slot. Repair work runs outside
-  the cohort and never admits a fifth ticket.
+  the cohort and never admits work beyond configured capacity. Persistent foreground ownership is
+  outside the cohort: its supported same-worktree handoff releases membership without displacing
+  unrelated tickets. Preserve legacy `HUMAN` markers; return only through `/agent-loop-auto`.
 - **Refill order.** A released slot goes to the oldest parked ticket (by original admission
   sequence), then a reserved spinup retry, then the next board candidate. A failed spinup keeps its
   reservation and retries the same ticket.
@@ -57,7 +64,7 @@ drip uses the legacy `max_in_flight` count.
   `runner.py decision-answer --ticket X --guidance "..."`; the guidance is recorded, appended to
   `plan.md`/`transcript.md`, and the ticket resumes its saved stage (or re-plans) automatically.
 - **Migration.** `runner.py cohort-migrate --dry-run` prints chronology (with its evidence source),
-  the proposed four members, tickets to park, excluded review-ready tickets, and evidence-backed
+  the proposed members up to configured capacity, tickets to park, excluded review-ready tickets, and evidence-backed
   recovery contracts. `--apply` snapshots metadata to `cohort-migrations/`, writes `cohort.json`,
   then parks the rest and stops only their supervisors. `--rollback <snapshot>` restores metadata
   only, and refuses after later admissions or applied events unless `--force` (which snapshots
@@ -81,8 +88,9 @@ spinup → plan → plan-review → implement → gates → draft-pr → ready �
   repo's skills (`.agents/skills/zui-component-creation` is the definition of done). Schema check
   bounces violations to the author. The opposite-vendor critic (Claude Fable) reviews; a `revise` is
   applied by the **task-writer** (Terra), never a second author round; critic round 2 is
-  approve-with-concerns unless it names a wrong-code blocker. $25 cap.
-- **implement**: tasks in manifest order; before each, rebase onto `origin/main` (generated-file
+  approve-with-concerns unless it names a wrong-code blocker. Planning spend is advisory; ordinary
+  failures retain bounded recovery rather than requiring a fabricated owner ruling.
+- **implement**: runnable tasks in dependency order, with manifest-order tie-breaking; before each, rebase onto `origin/main` (generated-file
   conflicts regenerate themselves). Ladder per task: cheap ×2 (Terra) → premium Terra ×2 → blocked.
   `size = "small"` tasks start on Luna (Haiku 4.5 on a Codex outage). Worker stages are light (N slots); verification
   (Rails/browser) is one-at-a-time on the heavy lane. Every acceptance also runs the repo's rubocop +
@@ -118,7 +126,7 @@ decisions, re-raised every six hours while a decision stands.
 | `publish failed` / `finalize failed` / mark-ready / reply / adjudication | republish (after the runner fix that caused it) | 3 |
 | rebase conflict in hand-written files / spent budget / bare `blocked: owner` | structured recovery + repair (slot kept) | — |
 | validated product/API ambiguity | **decision-required** (Cody answers via `decision-answer`) | — |
-| `need(s) Cody` / owner or tier-3/4 question (e.g. reviewer questions) | **notify Cody**, slot kept, never a runner defect | — |
+| Unvalidated `need(s) Cody` / owner or tier label | Classify from evidence; only a validated product/API decision waits on Cody | — |
 | `HUMAN` file | **human** takeover (slot kept) | — |
 
 Other invariants the runner enforces so these do not recur: clean base before each attempt (stray
@@ -130,7 +138,7 @@ they fail there too, accepted work is committed completely (deletions included) 
 
 ```
 /agent-loop                       # fleet: COHORT slots, WAITING ADMISSION, REVIEW READY
-/agent-loop resume all            # after a reboot or a stop: `runner.py resume --all`, then operator tickets + panes
+/agent-loop resume all            # explicit autonomous resume; preserve foreground/HUMAN, do not open panes
 /agent-loop start                 # drip: next ready ticket(s) from the top of the epic board (Jira Rank)
 #   runner.py supervise drip-start   # install the 15-min LaunchAgent so the drip runs itself
 /agent-loop pause | unpause       # touch/rm ~/.local/state/agent-loop/PAUSE
@@ -141,9 +149,11 @@ Per-ticket, from `scripts/`: `runner.py watch --ticket X` (live pane view), `res
 [--from stage]`, `supervise status|start|stop`, `overview`.
 
 Reboot: supervisors and the drip auto-start (`RunAtLoad`); the drip skips ticks until `bin/dev-services status`
-is green. Run `/agent-loop resume all` (`runner.py resume --all`) to restart any stopped supervisors and reopen panes.
-Kill switch: `touch ~/.local/state/agent-loop/PAUSE`. Take a ticket over by hand: `touch
-~/.local/state/agent-loop/tickets/ZIP-X/HUMAN`.
+is green. Inspect status first; use `/agent-loop resume all` (`runner.py resume --all`) only for an
+explicitly authorized autonomous resume. Never restart foreground supervision or reopen panes merely
+for status.
+Kill switch: `touch ~/.local/state/agent-loop/PAUSE`. Direct interactive requests use the persistent
+foreground handoff described in the shared policy. Never create or remove `HUMAN` to simulate it.
 
 ## Automatic runner repair (repair.py)
 
@@ -152,7 +162,8 @@ defect under `~/.local/state/agent-loop/defects/open/`. Every 5 minutes `com.cod
 (`runner.py repair`) takes one: `repair-agent` (Terra, max) fixes it test-first in a throwaway worktree;
 gates require a new test that fails on the base, no removed test or assertion, only runner code
 changed, and the full suite passing; the opposite-vendor `repair-reviewer` (Opus 5.5) approves; the live branch
-fast-forwards and the ticket's heal budgets reset. Two failed attempts notify Cody. Protected safety
+fast-forwards and the ticket's heal budgets reset. Rejected repairs retain diagnostic evidence and
+bounded retry/backoff; routine failures are not product decisions. Protected safety
 files (contracts, publish, agentdef, worktree, repair) never land automatically; their patches wait in
 `defects/needs-approval/`.
 

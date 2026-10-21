@@ -1,105 +1,85 @@
 ---
 name: loop-watch
-description: Coordinator seat for one agent-loop ticket, run in the cmux agent pane. Shows the ticket's live progress (deterministic, free) and wakes the model ONLY when the ticket is paused/blocked to triage from evidence, record the decision in planning/<ticket>/transcript.md, and resume. Use when a workspace was spun up for the autonomous loop or Cody asks what a loop ticket is doing.
+description: Use when a workspace was launched for one autonomous agent-loop ticket, a runner state-change event arrives, or Cody asks what a specific loop ticket is doing.
 ---
 
 # /loop-watch <TICKET>
 
-You are the **coordinator** for one ticket (field guide, tier 1). Two rules govern this pane:
+Per-ticket coordinator surface. It is not fleet control or a background implementation agent. The
+required canonical policy is [Operations policy](../agent-loop/references/operations-policy.md).
+Read it before triage or a handoff.
 
-1. **Visibility is free.** The live view is `runner.py watch`, a zero-token loop that prints a line
-   on every change (stage, task/attempt, worker, elapsed, PR, CI, supervisor, spend) and a heartbeat
-   every 5 minutes. You do not poll state files yourself and you do not summarise the same state
-   twice. (A watcher that re-read state every few minutes on a flagship model cost $151 in one day.)
-2. **You act only on `paused` / `blocked`.** Everything else is the runner's business.
+## Start with one snapshot
 
-Paths: scripts `~/workspace/agentfiles/common/skills/agent-loop/scripts` (`R`), state
-`~/.local/state/agent-loop` (`S`), worktree = this pane's cwd, transcript
-`<worktree>/planning/<ticket-lower>/transcript.md` (append-only; create if missing).
+These commands are copyable after setting `TICKET` to the requested key:
 
-## On start (once)
+```bash
+TICKET="${1:?ticket key required}"
+R="$HOME/workspace/agentfiles/common/skills/agent-loop/scripts"
+cd "$R"
+python3 runner.py watch --ticket "$TICKET" --once
+python3 runner.py supervise status --ticket "$TICKET"
+```
 
-1. `cd $R && python3 runner.py supervise status --ticket <TICKET>`; if **not loaded**:
-   `python3 runner.py supervise start --ticket <TICKET> --worktree <cwd>`.
-2. `python3 runner.py watch --ticket <TICKET> --once` and print its line verbatim.
-3. Append `## <UTC ISO> coordinator started` to the transcript.
-4. **Open the live view in its OWN cmux tab**, never as a blocking tool call in this pane
-   (a 3.7-hour "Working…" spinner reads as a hang -- ZIP-7875, 2026-09-17):
-   `cmux_open_terminal` with placement `tab`, title `<TICKET> loop watch`, command
-   `cd <worktree> && python3 <R>/runner.py watch --ticket <TICKET> 2>&1 | tee -a planning/<t>/watch.log`.
-   Then print ONE line in this pane: `Live view: tab "<TICKET> loop watch". I wake on paused/blocked.`
-   and go idle.
-5. Register the idle loop (LoopCreate triggerType "idle", trigger "idle", recurring). On each wake run
-   `python3 runner.py watch --ticket <TICKET> --once`: if paused/blocked → **Triage**; if
-   `READY FOR CODY` → **Gate**; otherwise say nothing (the tab is the voice) and go idle again.
-   **Never pause or complete the loop yourself** except at `READY FOR CODY`.
+Report the observed line and stop. Do not start or restart a missing supervisor, open a cmux tab,
+browser tab, terminal, agent, loop, or live view, or edit runtime records, manifests, attempts,
+leases, plan rulings, or application files. Append timestamped observations, evidence paths, and
+actual actions to `planning/<ticket-lower>/transcript.md`; do not rewrite prior evidence.
 
-## Triage (the only time you spend tokens)
+## Event-driven visibility
 
-First: most pauses heal themselves (`heal.py`: retry / prepare-retry / repair / replan / republish,
-each with a budget; see `tickets/<T>/heal.jsonl`). `watch` prints `self-heal: <action>` when that
-happens -- do nothing. You act only when `watch` shows `needs operator: …` (policy says human, or a
-budget is spent) or `blocked`. Then read the reason line and classify:
+Run one further snapshot only for an explicit user status request, an actual runner/platform
+state-change event, or an authorized bounded check:
 
-- `resource:` / `heavy lane` / `slot` → transient. `python3 runner.py resume --ticket X --from implement`.
-- `plan failed` / `budget exceeded` / `task-writer left the manifest invalid` → **the runner heals this
-  itself**: heal policy `replan` (budget 3) sends the ticket back to `plan`, which REPAIRS from the
-  critic's `revise` review (task-writer applies the blockers, one more critic round) up to twice, then
-  re-plans from scratch. Do NOT edit `tasks.toml` yourself -- you would race the repair. Only if
-  `watch` shows `needs operator: replan already tried 3x` do you act: read the latest
-  `plan-review.md`, decide whether the critic is right (quote evidence), and either append your
-  ruling under `## Coordinator decisions` in plan.md and `resume` (full re-plan), or print
-  `NEEDS CODY:` with the disagreement.
-- planner/premium `blocked` with an owner question → answer FROM EVIDENCE (ticket text, the repo
-  skill, a shipped sibling; quote the line), write it under `## Coordinator decisions` in plan.md,
-  `resume`. If evidence genuinely conflicts: print `NEEDS CODY: <question>` + both pieces of
-  evidence, append to transcript, and re-enter `watch` (do not resume).
-- worker asked for a **browser / tool it does not have** (e.g. "grant this session a browser tool")
-  → the task is mis-scoped as a worker task. Add `visual = true` if it is a screenshot task, or move
-  the browser check into a system test the task owns; `resume --from implement`.
-- `gates failed` → read `$S/tickets/<T>/gates.out`; real failure → append a fix task (id `8nn`,
-  allowed_files = branch's changed files, may_edit_tests true, verification = the failing command),
-  `resume --from implement`; environmental → `resume --from gates`.
-- `publish failed` / `reply failed` / traceback / `adjudication unusable` / `verification ... passes
-  on re-run` → **runner defect**. Print `RUNNER DEFECT: <reason>`, append to transcript, and queue it for the automatic
-  repair agent: `python3 runner.py report-defect --ticket <KEY> --reason "<reason>"` (it fixes the runner test-first,
-  lands the fix and resets the ticket's heal budgets; watch for `automatic runner repair` in the transcript). Do NOT patch
-  `$R`, and **re-enter the foreground `watch`** -- never stop the loop. Crashes and heal give-ups are
-  queued automatically; a defect the repair agent cannot fix (or that touches a protected safety file)
-  notifies Cody. `watch` will print the state change and you continue from there.
-  A pane that stops "pending operator repair" goes stale the moment the operator resumes the ticket
-  from elsewhere (ZIP-7872 showed a 7-hour-old pause while the runner shipped three tasks).
+```bash
+cd "$R"
+python3 runner.py watch --ticket "$TICKET" --once
+```
 
-Every decision = one transcript entry `## <UTC ISO> decision — <one line>` with reason/evidence/action.
-Then re-enter the foreground `watch`.
+Then go idle. Do not create a model timer, repeatedly read state files, or create a watcher. An
+existing runner-owned view may be read. Opening any new surface needs an explicit user request or
+higher-authority authorization.
 
-## Gate
+## Evidence-based recovery
 
-When `watch` prints `READY FOR CODY`, append the PR URL and `ci.json.tier3_pending` (the design
-decisions Cody must confirm) to the transcript and print them once. Then stop the loop; the pane
-is done until Cody reviews.
+When the ticket is progressing, waiting on bounded recovery, foreground-owned, or held by a live
+writer, report that fact and do nothing. Do not compete with the runner or edit its manifest.
 
-## Cody steering (after the gate, or whenever Cody speaks)
+For `paused` or `blocked`, preserve the exact observed reason. Let routine recovery proceed through
+the runner and reconciler. If observed evidence identifies a runner defect or traceback and
+reporting it is authorized, use the supported path:
 
-The coordinator-only rules bind the autonomous loop, not Cody. When Cody gives this pane direct
-feedback or a request ("add more preview examples", "rebase with main", "reply to the review"):
+```bash
+REASON='paste the exact observed runner failure summary here'
+cd "$R"
+python3 runner.py report-defect --ticket "$TICKET" --reason "$REASON"
+```
 
-- **Act on it here.** Leave coordinator mode and work as a normal agent in this worktree, following
-  the repo `AGENTS.md`, its skills, and test-first verification. Never answer "this pane can't" or
-  "send it back through a full implementation round" for a bounded change Cody asked for.
-- A clear imperative ("do it", "just do what's requested") is the approval -- do not re-ask. Ask
-  only when scope is genuinely ambiguous, the change is destructive, or it is an external post.
-- External comms (GitHub, Jira, Slack) still follow the comms gate: draft, get approval, then post.
-- Do not restart the runner for Cody-directed edits once the ticket is at the gate; commit/push
-  only when Cody asks or the request implies it (e.g. a rebase), and record a one-line transcript
-  entry `## <UTC ISO> cody-directed — <what changed>`.
+Do not run a repair, clear a recovery, mark a defect approved, fabricate a Cody ruling, or resume a
+ticket merely because it is paused. Planning spend is advisory. Only a complete, validated
+product/API ambiguity waits for Cody; report that evidence to Cody rather than answering for Cody. A mechanical recovery that exhausts
+ordinary retries needs a runner defect, not a coordinator ruling. If no active recovery already
+owns it, report the observed defect through `report-defect`; otherwise leave the existing repair
+in control.
 
-## Rules
+## Direct user steering and gates
 
-- While the loop is autonomous, never commit, push, comment on GitHub, or touch Jira from this
-  pane, and never edit application code (Cody steering above is the exception). Never edit anything
-  under `$R`. Never delete attempt records or `planning/`. Never `git reset`/`checkout`.
-- `touch $S/PAUSE` is Cody's kill switch; if present, say so and re-enter `watch`.
-- Keep model output to the decision lines above. The watch loop is the pane's voice.
-- Your own pi session writes `.pi/` state into the worktree; it is git-excluded. Never format,
-  lint, or otherwise touch `.pi/**` or `planning/**` files -- they are not source.
+A real interactive user message in this worktree is foreground work. The interactive-lane extension
+claims it, waits for any same-worktree writer to yield, and leaves other autonomous tickets running.
+Do not run worktree tools during that handoff. Once established, follow the direct user request
+under normal repository and higher-authority gates. It returns to autonomy only through:
+
+```text
+/agent-loop-auto
+```
+
+Automated wakes, RPC, headless input, and `/loop-watch` startup do not claim foreground ownership.
+Preserve legacy `HUMAN` manual work. If a snapshot reports `READY FOR CODY`, report the observed PR
+and remaining gates once. Do not mark ready, post, merge, deploy, or open new review tools without
+explicit higher-authority authorization.
+
+## Never cross the role boundary
+
+Do not admit or park tickets, alter capacity, restart foreground supervision, reclaim a lease by
+age, erase `HUMAN`, or claim repair, publication, or Human Gate 1 completion without the receipts
+in the shared reference.

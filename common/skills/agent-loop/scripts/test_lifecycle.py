@@ -190,6 +190,31 @@ after = ["001"]
         self.assertEqual([task.id for task in contracts.load_tasks(manifest)][-2:], ["909", "910"])
         self.assertEqual(state.load(tdir).state, "implement")
 
+    def test_ci_budget_pause_reenters_ready_with_a_fresh_bounded_ci_window(self):
+        """ZIP-8882: a CI-budget pause must not re-escalate before a CI fix can be queued."""
+        import contracts
+        import heal
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        prior_actions = ["rerun", "fix", "rerun", "fix", "rerun"]
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="paused", previous="ready", worktree=str(self.wt),
+                                      reason=f"CI still failing after {ci.MAX_CI_ATTEMPTS} loop attempts: zipline"))
+        (tdir / "ci.json").write_text(json.dumps({"pr": 47888, "attempts": ci.MAX_CI_ATTEMPTS,
+                                                   "actions": prior_actions}))
+        self.checks = [ci.Check("zipline", "fail", link="https://github.com/x/y/actions/runs/1")]
+
+        with patch.object(lifecycle.ci, "gha_failure_excerpt", return_value="NoMethodError"):
+            resumed = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+            queued = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+
+        cis = json.loads((tdir / "ci.json").read_text())
+        self.assertEqual(resumed.action, "self-heal: ci-reset")
+        self.assertEqual(queued.action, "CI code failure -> fix task queued")
+        self.assertEqual(state.load(tdir).state, "implement")
+        self.assertEqual(cis["attempts"], 1)
+        self.assertEqual(cis["actions"], prior_actions + ["fix"])
+        self.assertEqual(heal.history(tdir)[-1]["action"], "ci-reset")
+        self.assertEqual(contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")[-1].slug, "ci-fix-1")
+
     def test_ci_infra_failure_reruns_and_waits(self):
         self.checks = [ci.Check("zipline", "fail", link="https://github.com/x/y/actions/runs/9")]
         with patch.object(lifecycle.ci, "gha_failure_excerpt", return_value="ECONNRESET"), patch.object(lifecycle.ci, "rerun_gha", return_value=True) as rr:

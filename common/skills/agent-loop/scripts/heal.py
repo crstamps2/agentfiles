@@ -13,6 +13,7 @@ budget so a genuinely stuck ticket still surfaces -- with the count and history 
   repair        hand the recorded evidence to the task-writer, then re-enter (bad guards, contract complaints)
   fix-task      queue a runner-assigned fix task for named lint offenses, then re-enter implement
   gate-fix      queue a scoped worker task for a deterministic gate failure, then re-enter implement
+  ci-reset      restore one CI decision window while preserving its action history, then re-enter ready
   republish     re-run the publish step for the accepted task (publish/push defects fixed in code)
   human         genuinely needs an owner (design questions, hand-written merge conflicts, HUMAN file)
 
@@ -33,6 +34,7 @@ POLICIES = [
     (r"^resource: ", "retry", 200),
     (r"^heavy lane held|worker slot|slot busy", "retry", 200),
     (r"verification timeout|heavy lane busy", "retry", 6),
+    (r"^CI still failing after \d+ loop attempts:", "ci-reset", 1),
     (r"critic produced no review", "retry", 5),          # the critic never ran; nothing was judged
     (r"^gates failed: pre-commit lint", "fix-task", 3),   # offenses in OUR work: a worker fixes them
     (r"^gates failed: yarn build", "prepare-retry", 3),

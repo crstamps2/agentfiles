@@ -39,6 +39,17 @@ class PolicyTests(unittest.TestCase):
             providers.mark_exhausted(state_root, "openai", "Try again in ~8405 min")
             self.assertEqual(heal.decide(tdir, r)[0], "retry")                      # the next launch runs on Anthropic
 
+    def test_ci_budget_pause_resets_once_before_automatic_recovery(self):
+        """ZIP-8882: a spent CI budget gets one fresh window, not generic futile retries."""
+        with tempfile.TemporaryDirectory() as d:
+            tdir = pathlib.Path(d)
+            reason = "CI still failing after 5 loop attempts: zipline"
+            self.assertEqual(heal.decide(tdir, reason), ("ci-reset", "ci-reset (1/1)"))
+            heal.record(tdir, "ci-reset", reason, "ready")
+            action, why = heal.decide(tdir, reason)
+            self.assertEqual(action, "human")
+            self.assertIn("ci-reset already tried 1x", why)
+
     def test_unknown_reason_gets_one_careful_retry(self):
         self.assertEqual(heal.policy("something new"), ("retry", 2))
 

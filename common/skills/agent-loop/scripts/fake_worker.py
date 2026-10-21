@@ -23,10 +23,10 @@ else:
 target.parent.mkdir(parents=True, exist_ok=True)
 
 
-def result(status, reason="none", files=None, nxt="none"):
+def result(status, reason="none", files=None, nxt="none", evidence=None):
     (task_dir / "result.md").write_text(
         f"STATUS: {status}\nREASON: {reason}\nBASE: fake\nFILES: {', '.join(files or [])}\n"
-        f"EVIDENCE: fake worker scenario={scenario}\nUNVERIFIED: none\nNEXT: {nxt}\n")
+        f"EVIDENCE: {evidence or f'fake worker scenario={scenario}'}\nUNVERIFIED: none\nNEXT: {nxt}\n")
 
 
 if scenario == "misplaced_result":
@@ -57,6 +57,10 @@ if scenario == "owner":
     result("blocked", "owner", [], "Is the close control part of the header slot?"); sys.exit(0)
 if scenario == "owner_boundary":
     result("blocked", "owner", [], "Permit an edit to `app/views/components/zui/ai_feedback/ai_feedback.rb` outside allowed_files"); sys.exit(0)
+if scenario == "owner_stop_condition":
+    result("blocked", "owner", [],
+           "Owner decision needed: preserve the generator-produced removals for the five unrelated cops, or resolve their separate migration/generator discrepancy before this task can proceed.",
+           "The generator added task exclusions but also removed unrelated exclusions from five cops."); sys.exit(0)
 if scenario == "owner_boundary_plain":
     result("blocked", "owner", [], "Expand allowed_files to include app/views/components/previews/zui/modal_preview.rb, then retry."); sys.exit(0)
 if scenario == "owner_boundary_permit":

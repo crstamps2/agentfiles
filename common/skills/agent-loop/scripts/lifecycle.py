@@ -615,7 +615,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             t = state.transition(t, "gates"); _save(cfg, t)
             return Step(key, "ready", "rebased onto origin/main; re-running gates")
         # fix: write a scoped task and go back to implement
-        fix = {"id": f"8{cis['attempts']:02d}", "slug": f"ci-fix-{cis['attempts']}", "summary": f"Fix the CI failure in {', '.join(verdict.failing)} (see feedback)",
+        fix = {"id": _next_runner_task_id(_manifest_path(wt, key)), "slug": f"ci-fix-{cis['attempts']}", "summary": f"Fix the CI failure in {', '.join(verdict.failing)} (see feedback)",
                "allowed_files": _sh(["git", "diff", "--name-only", "origin/main...HEAD"], wt, 60).stdout.split()
                                 or sorted({g for x in contracts.load_tasks(_manifest_path(wt, key)) for g in x.allowed_files}),
                "may_edit_tests": True, "visual": False,
@@ -1354,10 +1354,7 @@ def _lint_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg=
 def _next_runner_task_id(manifest: pathlib.Path) -> str:
     import re as _re
     used = {int(m) for m in _re.findall(r'^id = "(9\d\d)"', manifest.read_text(), _re.M)} if manifest.exists() else set()
-    n = 901
-    while n in used:
-        n += 1
-    return str(n)
+    return str(max(used, default=900) + 1)
 
 
 def _waiting_since(tdir: pathlib.Path, t) -> str:

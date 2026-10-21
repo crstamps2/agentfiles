@@ -1242,11 +1242,17 @@ def _gate_fix_task(tdir: pathlib.Path, reason: str, manifest: pathlib.Path, cfg,
             return task.id
     tid = _next_runner_task_id(manifest)
     cmd = "bin/rails test test/views/components/zui/"
+    # Keep the hook checks for these files: a gate fix must not recreate the lint rejection it follows.
+    lint_commands = []
+    for task in existing:
+        if task.slug.startswith("lint-fix-") and set(task.allowed_files) & set(files):
+            lint_commands.extend(task.verification_commands)
+    commands = [cmd, *dict.fromkeys(lint_commands)]
     _append_task(manifest, {
         "id": tid, "slug": f"gate-fix-{tid}",
         "summary": "Fix the deterministic gate failure (see feedback)",
         "allowed_files": files, "may_edit_tests": True, "visual": False,
-        "verification_commands": [cmd],
+        "verification_commands": commands,
         "acceptance": [f"AC-1: `{cmd}` passes"],
         "invariants": ["Fix the code that failed the deterministic gate.",
                        "Do not weaken any test or lint rule."],

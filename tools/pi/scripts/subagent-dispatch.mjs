@@ -24,7 +24,7 @@ function readManagedText(path, agentDir, maxBytes) {
   try {
     const entry = fstatSync(fd);
     if (!entry.isFile() || entry.size > maxBytes)
-      throw Error("Expected a bounded regular managed file");
+      throw new Error("Expected a bounded regular managed file");
     return readFileSync(fd, "utf8");
   } finally {
     closeSync(fd);
@@ -39,7 +39,7 @@ export function resolveSdkRoot({ agentDir }) {
     256,
   ).trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(version))
-    throw Error("Invalid managed Pi version");
+    throw new Error("Invalid managed Pi version");
   const root = resolve(
     install,
     "releases",
@@ -52,11 +52,11 @@ export function resolveSdkRoot({ agentDir }) {
     readManagedText(join(root, "package.json"), agentDir, 1048576),
   );
   if (manifest.name !== "@earendil-works/pi-coding-agent")
-    throw Error(
+    throw new Error(
       `Invalid SDK: expected @earendil-works/pi-coding-agent at ${root}`,
     );
   if (!existsSync(join(root, "dist/index.js")))
-    throw Error(`SDK entry is missing at ${root}`);
+    throw new Error(`SDK entry is missing at ${root}`);
   return root;
 }
 
@@ -111,11 +111,11 @@ export function delegateLeaf(
     timeoutMs < 1 ||
     timeoutMs > 2147483647
   )
-    throw Error(
+    throw new Error(
       "agent, task, absolute cwd and a positive bounded timeout are required",
     );
   if (!Number.isSafeInteger(graceMs) || graceMs < 0 || graceMs > 2147483647)
-    throw Error("Cancellation grace must be a bounded nonnegative integer");
+    throw new Error("Cancellation grace must be a bounded nonnegative integer");
   const identity = {
     requestId: randomUUID(),
     ownerRunId: randomUUID(),
@@ -223,7 +223,7 @@ export function trustedManagedPath(path, agentDir) {
   const canonical = realpathSync(path);
   let current = canonical;
   if (current !== boundary && !current.startsWith(boundary + sep))
-    throw Error("Managed Pi path escapes the operator install");
+    throw new Error("Managed Pi path escapes the operator install");
   while (true) {
     const entry = statSync(current);
     if (
@@ -231,7 +231,7 @@ export function trustedManagedPath(path, agentDir) {
         !(entry.isDirectory() && entry.mode & 0o1000)) ||
       (entry.uid !== process.getuid() && entry.uid !== 0)
     )
-      throw Error(
+      throw new Error(
         `Managed Pi path has unsafe ownership or permissions: ${current}`,
       );
     const parent = dirname(current);
@@ -288,7 +288,7 @@ export async function openDispatchHost({ cwd, agentDir }) {
   await loader.reload();
   const errors = loader.getExtensions().errors;
   if (errors.length)
-    throw Error(`Native extension load failed: ${JSON.stringify(errors)}`);
+    throw new Error(`Native extension load failed: ${JSON.stringify(errors)}`);
   const { session } = await createAgentSession({
     cwd,
     agentDir,
@@ -319,11 +319,11 @@ async function main() {
     !values.probe &&
     (!values.agent || !values["task-file"] || !values.cwd || !values.report)
   )
-    throw Error(
+    throw new Error(
       "Usage: node subagent-dispatch.mjs --probe | --agent ROLE --task-file FILE --cwd DIR --report FILE [--timeout-ms MS]",
     );
   if (values.report && existsSync(values.report))
-    throw Error(`Report already exists: ${values.report}`);
+    throw new Error(`Report already exists: ${values.report}`);
   const agentDir = join(userInfo().homedir, ".pi", "agent");
   const cwd = resolve(values.cwd || process.cwd());
   const { session, bus, versions } = await openDispatchHost({ cwd, agentDir });
@@ -335,7 +335,7 @@ async function main() {
     await session.bindExtensions({});
     const probe = await rpcRequest(bus, "ping");
     if (probe.version !== 1 || !probe.methods?.includes("spawn"))
-      throw Error(
+      throw new Error(
         "Installed native provider does not support documented RPC v1",
       );
     if (values.probe) {

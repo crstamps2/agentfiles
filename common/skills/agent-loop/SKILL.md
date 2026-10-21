@@ -1,110 +1,100 @@
 ---
 name: agent-loop
-description: Operate the autonomous ZIP-6774 agent loop -- status, pause/resume, human takeover of a ticket, dry runs. Use when Cody asks about the loop, the hopper, worker attempts, or wants to stop/take over autonomous work.
+description: Use when Cody asks about autonomous fleet status, admission, recovery, spending, or product/API decisions across agent-loop tickets.
 ---
 
-# /agent-loop [status | resume | start | pause | unpause | stop | spend | ledger | hopper]
+# /agent-loop [status | start | resume | pause | unpause | stop | decide | spend | ledger | hopper]
 
-Cody's operator surface for the autonomous loop. Every command below is `python3 runner.py <verb>`
-run from `~/workspace/agentfiles/common/skills/agent-loop/scripts`; never hand-edit state files.
-The loop itself runs under launchd (one LaunchAgent per ticket); the cmux agent pane of each
-workspace runs `/loop-watch <TICKET>` as the coordinator. This skill is the *fleet* view.
+Fleet operator surface for autonomous work. The canonical policy is
+[Operations policy](references/operations-policy.md). Read that required reference before control
+or maintenance actions.
 
-## `/agent-loop` or `/agent-loop status`  (default)
+## Role and capacity
 
-1. `python3 runner.py overview` -- with a cohort: `COHORT n/4` slot rows (admission #, state,
-   recovery or decision wait, supervisor, progress), `WAITING ADMISSION` (parked order, next
-   candidate) and `REVIEW READY` (PRs). Without one: the legacy per-ticket lines. Print it verbatim.
-2. `python3 runner.py supervise status` -- which ticket LaunchAgents are loaded and alive.
-3. Summarise in ≤5 lines: tickets at Human Gate 1 (PR links), cohort members and what each waits on,
-   open product decisions (question + `decision-answer` command), next admission. If
-   `~/.local/state/agent-loop/PAUSE` exists say so first.
+- These limits govern autonomous fleet operation. A direct user request to fix the runner switches
+  to authorized maintenance under the shared preflight. Act on that approval rather than stopping
+  at diagnosis or asking again. Ticket application work uses foreground ownership.
+- Production autonomous capacity is **2**. The `Config` fallback of 4 is an omitted-config
+  default, not a production quota. The legacy drip count is also 2.
+- Foreground work is outside the autonomous cohort. Do not stop, park, or resume unrelated work to
+  make room for it. Only `/agent-loop-auto` in the owning foreground pane returns a ticket to
+  normal autonomous admission.
+- Higher-authority repository, security, communications, readiness, and deployment policy wins.
+  This skill grants no permission to post, mark ready, assign reviewers, merge, or deploy.
 
-## `/agent-loop decide TICKET "guidance"`  -- answer a product decision
-`python3 runner.py decision-answer --ticket X --guidance "..."`. Only for tickets in
-`decision-required`; it records the answer, appends `## Owner rulings` to plan.md, and resumes the
-saved stage (or re-plans). Never edit state files to answer.
+## Bounded status
 
-## `/agent-loop resume [TICKET | all]`  -- "pick up where they left off"
+```bash
+R="$HOME/workspace/agentfiles/common/skills/agent-loop/scripts"
+cd "$R"
+python3 runner.py overview
+python3 runner.py supervise status
+```
 
-Normally unnecessary: supervisors are `RunAtLoad` and pauses self-heal by policy (`heal.py`). Use this
-after `supervise stop`, after removing a `HUMAN` file, or when `overview` shows `needs operator`.
+Report the autonomous slots, foreground ownership separately, real product/API decisions, active
+recovery or repair waits, verified Human Gate 1 candidates, and next admission. Do not open panes,
+tabs, agents, watches, or loops merely to get status. Do not model-poll.
 
-`all`: start with `python3 runner.py resume --all`. It restarts the supervisor of every in-flight ticket
-that has a worktree without changing its state (heal.py then handles `paused` by policy), leaves running
-supervisors alone, and lists `HUMAN` takeovers and `blocked` tickets under `needs_operator`. Work through
-only those listed tickets with the rules below, then reopen panes.
+## Explicit operations
 
-With a cohort, a ticket outside it cannot be resumed while all four slots are owned (`resume` refuses);
-members waiting on a recovery contract are resumed by the reconciler when their repair lands, so do
-not resume them by hand (`resume` refuses; `runner.py recovery-clear --ticket X [--resume-from STAGE]` is the
-deliberate override, and `runner.py repair-approved --defect ID` wakes tickets after Cody applies a
-`needs-approval` patch). A `needs Cody` notification is a genuine owner question: answer it, then `resume`.
-For one ticket, or each ticket `--all` listed under `needs_operator`:
-- state `paused` or `blocked`: read the reason.
-  - `resource:` / `heavy lane` → `python3 runner.py resume --ticket X --from implement` (transient).
-  - `plan failed` / `budget exceeded` → `python3 runner.py resume --ticket X` (back to `plan`, which
-    REPAIRS from the existing revise review before it ever re-plans). Planner `blocked` (tier-4 owner
-    question) → read plan-review.md / plan.md and report the question; do not resume blindly.
-  - `gates failed` → `--from gates`; `publish failed`/`reply failed`/`mark ready failed` → `--from ready`
-    (or `--from bot-loop` if a PR is already ready).
-  - a traceback / "Runner defect" → do NOT resume; the repair agent fixes it (`runner.py report-defect` if not queued).
-- any other state: `python3 runner.py resume --ticket X` just (re)starts the supervisor.
-Then make sure each workspace has its coordinator pane: `cmux tree --workspace <ws>`; if there is no
-terminal titled `pi '/loop-watch X'`, open one (new terminal surface → `cd <worktree>` →
-`NODE_OPTIONS= pi '/loop-watch X'`) and a Jira tab in the browser pane if missing.
-Finish with `/agent-loop status`.
+### Admission
 
-## `/agent-loop start` / `drip`  -- "start new work from the board"
+Preview before an explicitly authorized fleet start:
 
-The hopper is a **drip fed from Jira**: children of the epic in board Rank order (top first), any
-assignee, only tickets in the ready column (`Selected for Work`), skipping tickets excluded in
-`hopper.toml` (Martin's audit) and tickets whose `deps` are not Done in Jira (no autonomous PR
-stacks). With `cohort.json` present it admits only into empty cohort slots (four; parked tickets
-first, by original admission order); without it, the legacy `[drip].max_in_flight` count applies.
+```bash
+cd "$R"
+python3 runner.py drip --dry-run
+```
 
-- `python3 runner.py drip --dry-run` -- show what it would start and why others were skipped.
-- `python3 runner.py drip` -- start now (spinup with all panes incl. `/loop-watch`, assign to Cody,
-  In Progress, supervisor).
-- `python3 runner.py supervise drip-start` -- install the 15-minute LaunchAgent so the drip runs
-  itself forever; `drip-stop` removes it.
-- `python3 runner.py supervise cohort-start` -- install the 60-second deterministic reconciler
-  (`cohort-shadow-start` runs it with `--dry-run`; `cohort-stop` removes it).
-- `python3 runner.py cohort-migrate --dry-run | --apply | --rollback <snapshot> [--force]` -- move
-  legacy in-flight tickets into the cohort (snapshot first; metadata-only rollback).
-Only verified Human Gate 1 releases a slot. Paused, blocked, repairing, provider-waiting, and
-`decision-required` tickets keep theirs; `park --ticket X` releases one deliberately.
+Run `python3 runner.py drip` only on an explicit user request or existing higher-authority fleet
+authorization. It can create workspaces and surfaces. It must not admit a third autonomous ticket.
 
-## `/agent-loop pause` / `unpause`
-`touch ~/.local/state/agent-loop/PAUSE` -- every runner and coordinator halts at its next boundary
-(nothing is killed mid-attempt). `rm` it to continue. Say which tickets were in flight.
+### Autonomous resume
 
-## `/agent-loop stop TICKET`
-`python3 runner.py supervise stop --ticket X`. The ticket keeps its state; `resume` brings it back.
-Use `touch ~/.local/state/agent-loop/tickets/X/HUMAN` when Cody takes a ticket over by hand
-(runner refuses to touch it until the file is removed).
+```bash
+cd "$R"
+python3 runner.py resume --ticket "$TICKET"
+```
 
-## `/agent-loop spend [since YYYY-MM-DD] [ticket ZIP-1234]`
-`python3 runner.py spend [--since ...] [--ticket ZIP-1234] [--by ticket,model,stage,day,role]` --
-what the loop cost, as a bar chart: totals, share and call counts by ticket, model and stage. With
-`--ticket`, where that one ticket's money went. This is reporting only; the loop is never stopped by
-a dollar figure (Cody, 2026-09-23). Read it in the morning: a night where planning dominates, or one
-model dwarfs the rest, is visible at a glance.
+Use only for an autonomous ticket after reading evidence. Do not override foreground ownership, a
+legacy `HUMAN` takeover, a live writer lease, an active recovery contract, or a repair wait.
+`resume --all` intentionally skips foreground and `HUMAN` ownership.
 
-## `/agent-loop ledger [since YYYY-MM-DD]`
-`python3 runner.py ledger [--since ...]` -- billed $ by model / role / ticket / day. Quote the first
-line (total) and the by-ticket table.
+### Actual product/API guidance
 
-## `/agent-loop hopper`
-Show `hopper.toml`'s `[[hopper.tickets]]` order with each ticket's state. To add a ticket, append a
-table (`key`, optional `deps`, `pin_arm = "cloud"`) and commit on `agentfiles` branch `agent-loop-1`.
+After Cody supplies real guidance to a validated product/API decision:
 
-## Rules
-- Draft-PR creation, pushes to the loop's own branch, marking ready, and bot-comment replies are
-  the runner's (allowlisted). Never do them from here. Never merge, never assign reviewers.
-- Never delete `~/.local/state/agent-loop/attempts/*` or `planning/`; they are the audit trail.
-- A runner traceback is code to fix, not a ticket to resume. The repair agent (`com.cody.agent-loop.repair`,
-  every 5 min) fixes it test-first, gets an opposite-vendor review and fast-forwards the live branch;
-  queue: `~/.local/state/agent-loop/defects/{open,landed,failed,needs-approval}/`. Protected safety files
-  (contracts, publish, agentdef, worktree, repair) are never changed automatically: those land as a
-  patch in `needs-approval/` for Cody.
+```bash
+cd "$R"
+python3 runner.py decision-answer --ticket "$TICKET" --guidance "$GUIDANCE"
+```
+
+Do not invent a ruling to clear planning spend, a retry budget, a bad manifest, a runner defect, or
+an ordinary recovery. Planning spend is advisory; routine recovery is bounded and evidence-based.
+
+## Other operator commands
+
+Only run control actions on explicit authorization; status and spend remain read-only.
+
+| Request | Supported command from `$R` |
+| --- | --- |
+| Stop one autonomous supervisor, preserving ticket state | `python3 runner.py supervise stop --ticket "$TICKET"` |
+| Deliberately park and release a slot | `python3 runner.py park --ticket "$TICKET"` |
+| Inspect admission without starting work | `python3 runner.py drip --dry-run` |
+| Cost reporting | `python3 runner.py spend` or `python3 runner.py ledger` |
+| Inspect configured hopper | Read `../hopper.toml`; edits require explicit scope and verified commit. |
+
+Global pause/unpause uses the existing operator kill switch: explicitly requested pause creates
+`~/.local/state/agent-loop/PAUSE`; unpause removes only that file. It is not permission to alter
+any ticket marker, force a handoff, or kill an active attempt. Supervisor stop is not foreground
+handoff. Use `runner.py <verb> --help` for supported options.
+
+## Hard boundaries
+
+- Never hand-edit state, cohort, attempt, recovery, manifest, lease, `HUMAN`, or foreground
+  ownership records. Do not delete planning or repair evidence.
+- Do not unconditionally restart supervision or create a coordinator pane during status or resume.
+- Routine defects belong to automatic repair. Explicit user-directed fixes use the shared
+  maintenance preflight. Never dirty its checkout, advance HEAD, stop, or bypass another live
+  repair. Never use `repair-approved` on an open defect.
+- Never reclaim a lease from age alone. PID and boot identity evidence are required.

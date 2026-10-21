@@ -138,6 +138,26 @@ def gha_failure_excerpt(link: str, repo: str, cwd, max_chars: int = 6000) -> str
     return txt[-max_chars:]
 
 
+def github_check_failure_excerpt(check: Check, repo: str, ref: str, cwd, max_chars: int = 6000) -> str:
+    """Check-run output is available through GitHub even when a provider's own log API is not."""
+    if not check.link:
+        return ""
+    r = subprocess.run(["gh", "api", "--method", "GET", f"repos/{repo}/commits/{ref}/check-runs?per_page=100"],
+                       cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    if r.returncode or not r.stdout.strip():
+        return ""
+    try:
+        runs = json.loads(r.stdout).get("check_runs", [])
+    except json.JSONDecodeError:
+        return ""
+    for run in runs:
+        if run.get("name") != check.name or run.get("details_url") != check.link:
+            continue
+        output = run.get("output") or {}
+        return "\n".join(str(value) for value in (output.get("title"), output.get("summary"), output.get("text")) if value)[-max_chars:]
+    return ""
+
+
 def rerun_gha(link: str, repo: str, cwd) -> bool:
     m = re.search(r"/actions/runs/(\d+)", link or "")
     if not m:

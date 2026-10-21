@@ -345,6 +345,10 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if action == "wait":
             return Step(key, "paused", why, detail=t.reason, wait=True)          # no state change, no notification
         heal.record(tdir, action, t.reason, t.previous or "?", why)
+        if action == "ci-reset":
+            cis = _load_json(_ci_state_path(cfg, key), {})
+            cis["attempts"] = 0                      # keep actions: they prevent repeated reruns/rebases
+            _ci_state_path(cfg, key).write_text(json.dumps(cis))
         if action == "repair" and "contract complaint" in t.reason:
             _manifest_path(wt, key).with_name("plan-review.md").write_text(
                 "VERDICT: revise\nBLOCKERS:\n"

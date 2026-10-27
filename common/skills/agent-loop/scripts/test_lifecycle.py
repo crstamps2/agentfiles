@@ -637,6 +637,25 @@ after = ["001"]
         self.assertEqual(steps[0].action, "self-heal: prepare-retry")
         self.assertEqual(ticket.state, "gates")
 
+    def test_a_timed_out_rails_gate_retries_without_crashing_the_runner(self):
+        """ZIP-8882: the 30-minute component-test gate can time out without killing its supervisor."""
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        ticket = state.transition(state.load(tdir), "gates"); state.save(tdir, ticket)
+        def unresponsive(argv, cwd, timeout):
+            if argv == ["bin/rails", "test", "test/views/components/zui/"]:
+                raise subprocess.TimeoutExpired(["bash", "-lc", "bin/rails test test/views/components/zui/"], 1800)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with patch.object(lifecycle, "_sh", side_effect=unresponsive):
+            runner, steps, ticket = self.run_once(max_steps=1)
+        self.assertEqual(runner.calls, [])
+        self.assertEqual([step.wait for step in steps], [True])
+        self.assertIn("timed out after 1800 seconds", steps[0].detail)
+        self.assertTrue(ticket.reason.startswith("verification timeout: rails test"))
+        import heal; self.assertEqual(heal.policy(ticket.reason)[0], "retry")
+        runner, steps, ticket = self.run_once(max_steps=1)
+        self.assertEqual(steps[0].action, "self-heal: retry")
+        self.assertEqual(ticket.state, "gates")
+
     def test_a_timeout_while_aborting_an_interrupted_rebase_is_retried_next_tick_not_skipped(self):
         """The case that matters: a restart left a rebase half-done and git stalls while it is being aborted.
         The tick must neither crash nor carry on as if the branch were fine; the abort is retried next tick."""

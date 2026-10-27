@@ -14,6 +14,53 @@ Never invent a path, a file name, or a mapping not listed here. If a step's sour
 not exist, stop that step, report exactly which path was missing, and continue with the
 remaining steps. Do not silently skip or substitute.
 
+## Ownership before setup
+
+All following replacement rules apply only to **ownership-verified** framework-managed
+artifacts. Resolve existing links and source registrations first, then classify each destination:
+
+- **Missing:** eligible for the documented creation only after the parent-chain preflight below passes.
+- **Framework-managed:** a source registration, link, or generated-artifact provenance confirms
+  this `AF_REPO` lineage, rather than a private, package, or shared owner, owns it. Select it for
+  convergence to this checkout's documented source.
+- **External or uncertain:** private overrides, package/shared-marketplace content, intentional
+  native profiles, personal configuration, and any target without that provenance. Preserve it
+  and report its owner or uncertainty.
+
+An alternate target or matching name is not ownership evidence. Stop the affected step for
+explicit migration approval if ownership is external or uncertain; never bulk-repoint it to this
+checkout.
+
+Before any directory creation, linking, rendering, or configuration write, inspect the harness
+root and every existing destination-parent component with `lstat` or equivalent no-follow
+metadata inspection. Use a canonical path; resolving an unexpected directory link does not
+approve its referent. Stop the affected subtree if a parent is symlinked, shared-writable,
+differently owned, externally managed, or uncertain. Trusted root-owned system ancestors above
+the verified user tree are permitted; UID ownership alone is not framework provenance.
+
+Only below approved, ownership-verified parents may missing directories be created, one
+component at a time. Verify each new directory and recheck the parents before each write.
+If `$AF_HOME/.codex`, `skills/`, or `agents/` is externally owned or linked, preserve the whole
+affected subtree; an absent instruction, skill, agent, or configuration leaf is not an exception.
+Existing artifact symlinks below verified parents can still be classified by the ownership rules
+above. These POSIX checks do not attest ACLs or provide a race-free sandbox: the operator must
+trust the ancestors and exclude concurrent directory replacement, or stop.
+
+### Parent-boundary acceptance cases
+
+Use a synthetic `AF_HOME` only, without running bootstrap or a client. Apply the preflight to
+each case before attempting the documented leaf operation:
+
+| Synthetic destination parent | Required outcome |
+| --- | --- |
+| Linked `$AF_HOME/.codex`; instruction/configuration leaf missing | Stop the subtree; no referent file or directory is created. |
+| Canonical harness root, linked `skills/`; skill missing | Stop that collection; no link or rendered skill is created in the referent. |
+| Canonical harness root, linked `agents/`; agent missing | Stop that collection; no rendered agent is created in the referent. |
+| Canonical, approved user-owned parent; selected leaf missing | The documented creation is eligible after its other checks pass. |
+
+Record the classification and compare referent contents before/after. These are procedural
+acceptance checks, not proof that a real client/bootstrap or installed profile was exercised.
+
 ## 1. Instructions
 
 Symlink the top-level instructions file:
@@ -22,21 +69,37 @@ Symlink the top-level instructions file:
 $AF_HOME/.codex/AGENTS.md  ->  $AF_REPO/common/instructions/AGENTS.md
 ```
 
-If `$AF_HOME/.codex/AGENTS.md` already exists as a symlink pointing elsewhere, remove it and
-recreate it pointing at the correct target (see Idempotency, section 7). If it exists as a
-real file (not a symlink), stop and report -- do not overwrite a user's real file.
+For a missing or selected framework-managed destination, ensure this path resolves to the target
+above. Replace a selected managed symlink that points elsewhere or is broken (see Idempotency,
+section 6). If the destination is external or uncertain, including a private override or a real
+file without framework provenance, leave it unchanged, report it separately, and stop this entry
+for migration approval.
 
-## 2. Skills (symlink each directory)
+## 2. Skills (native frontmatter, unchanged body)
 
-For every directory `$AF_REPO/common/skills/<name>/`:
+Classify each same-name destination under Ownership before setup. For every directory
+`$AF_REPO/common/skills/<name>/` whose destination is missing or selected framework-managed:
 
 ```
 $AF_HOME/.codex/skills/<name>  ->  $AF_REPO/common/skills/<name>
 ```
 
-One symlink per skill directory (not per file inside it). Create `$AF_HOME/.codex/skills/`
-first if it does not exist. Skip (with a note in the summary) any entry under
-`common/skills/` that is not a directory.
+Create `$AF_HOME/.codex/skills/` only as needed for eligible destinations. Check the installed
+native skill contract before linking: the verified frontmatter fields are `name`, `description`,
+`license`, `allowed-tools` and `metadata`. A newer installed contract takes precedence;
+unchecked fields are not proof of invalidity.
+
+- If the source frontmatter is supported, symlink the directory as above.
+- Otherwise render a real skill directory: copy `SKILL.md` with only supported frontmatter
+  fields, and preserve the complete body verbatim. For example, omit `user_invocable` from
+  the generic audit's Codex rendering. Link its other files/directories back to the same
+  source rather than creating an unrelated helper fork.
+- Leave an external or uncertain same-name skill untouched, report it separately, and stop that
+  entry for migration approval. Update only an ownership-verified generated rendering.
+- Run the installed native validator if available. A missing validator dependency is an
+  unchecked native validation, not a rejected skill; report bounded alternative assertions.
+
+Skip non-directory source entries with a note.
 
 Optionally, if a skill directory contains a sibling `openai.yaml` file next to its `SKILL.md`
 (rendered from `$AF_REPO/tools/codex/openai.yaml.tmpl`), it travels with the symlinked
@@ -46,9 +109,11 @@ artifact of this setup.
 
 ## 3. Agents (transform each `*.agent.md` -> `.toml`)
 
-Source agents live at `$AF_REPO/common/agents/<name>.agent.md`. For each one, render
+Source agents live at `$AF_REPO/common/agents/<name>.agent.md`. For each source agent whose
+destination is missing or selected framework-managed, render
 `$AF_HOME/.codex/agents/<name>.toml` (a TOML file, not a symlink -- this is a transform, not a
-copy).
+copy). Leave an external or uncertain destination untouched, report it separately, and stop that
+agent for migration approval.
 
 Transform rules:
 
@@ -177,35 +242,26 @@ each event key, ensure an array of script paths exists under that key, and ensur
 resolved script path is present (add it if missing; if the event key already has
 non-manifest entries, leave those alone and just add/update the manifest-sourced ones).
 
-**MCP servers.** Read `$AF_REPO/common/mcp/servers.jsonc`. It is a flat object keyed by server
-name, each holding that server's config (`command`, `args`, `env`, etc.). Merge each entry
-into `config.toml` as its own `[mcp_servers.<name>]` table, keyed by the same server name.
-Where a server's config contains the placeholder `$REPO`, substitute `$AF_REPO`; where it
-contains `$HOME`, leave it as `$HOME` (resolved by Codex CLI / the shell at launch time, not by
-you).
+**MCP servers.** Read `$AF_REPO/common/mcp/servers.jsonc` as a flat server map.
+Skip disabled catalog entries (`enabled: false` or legacy `disabled: true`) without removing
+or disabling any existing personal registration. Reject contradictory enablement. Strip
+catalog-only flags `enabled`, `disabled` and `tools`; honor selections that exclude `codex`.
+For approved missing entries, use the installed native contract to render the supported
+fields into `[mcp_servers.<name>]`. A different existing entry requires explicit approval,
+not an automatic overwrite. The default disabled example creates no Codex registration.
+Resolve literal `$REPO` and `$HOME` paths from `$AF_REPO` and `$AF_HOME`; a native server
+executable is not assumed to run through a shell. Apply the installed native contract for
+other field types and credential references rather than copying another client's schema.
 
 Write the merged result back to `$AF_HOME/.codex/config.toml`, preserving any existing tables
 in the file that are unrelated to `[hooks]` and `[mcp_servers.*]`.
 
-## 5. `[agents]` config
+Do not infer a Codex `[agents]` delegation setting from dispatch policy, source prompts, or
+startup hooks. This setup does not create or update an `[agents]` table. Preserve any existing
+native agent settings as external configuration unless a separately verified Codex contract and
+explicit approval cover a change.
 
-Merge the following table into `$AF_HOME/.codex/config.toml`, preserving any other existing
-keys in the file:
-
-```toml
-[agents]
-delegation = "proactive"
-max_depth = 1
-```
-
-`delegation = "proactive"` matches this project's dispatch-first orchestration style (agents
-are expected to delegate sub-tasks rather than do everything inline). `max_depth = 1` (the
-default) is sufficient for the agent roster rendered in section 3 -- none of them are defined
-to spawn further sub-agents. Only raise `max_depth` if you observe (or are told) that a
-rendered agent's `developer_instructions` itself directs it to dispatch sub-agents; do not
-raise it speculatively.
-
-## 6. Plugins
+## 5. Plugins
 
 Discover sibling tool-plugin marketplace directories in this repo: glob
 `$AF_REPO/tools/*/plugins`, excluding `$AF_REPO/tools/codex/plugins` (this doc's own tool).
@@ -222,31 +278,34 @@ For each marketplace manifest found under a matched directory:
 
 Do not manually copy plugin files into `$AF_HOME/.codex/` in either case.
 
-## 7. Idempotency
+## 6. Idempotency
 
 Re-running this whole doc must be safe and convergent:
 
-- **Symlinks** (`AGENTS.md`, each skill dir): if the symlink already exists and points at the
-  correct target, leave it untouched. If it exists and points elsewhere (or is a broken
-  symlink), remove and recreate it. Never leave two competing links for the same name.
-- **Rendered agent files**: always regenerate `$AF_HOME/.codex/agents/<name>.toml` from the
-  current source and overwrite it in place -- these are generated artifacts, not hand-edited
-  files.
-- **config.toml merges** (`[hooks]`, `[mcp_servers.*]`, `[agents]`): re-merging must not
-  duplicate hook script entries or MCP server tables. An entry already present with the same
-  resolved values is left as-is; only missing or changed entries are added/updated.
+- **Selected framework-managed symlinks** (`AGENTS.md`, each skill dir): if a selected link
+  already points at the correct target, leave it untouched. If a selected managed link points
+  elsewhere or is broken, recreate it. Preserve and report external or uncertain links rather
+  than replacing them.
+- **Rendered agent files**: regenerate only ownership-verified generated
+  `$AF_HOME/.codex/agents/<name>.toml` files from the current source. Preserve and report an
+  external or uncertain agent file instead of overwriting it.
+- **config.toml merges** (`[hooks]`, `[mcp_servers.*]`): do not duplicate entries. Preserve
+  existing MCP tables and personal configuration; changed MCP entries require explicit approval.
+  Update only ownership-verified framework-managed hook entries. Do not create or replace an
+  `[agents]` table.
 - **Plugin marketplace registration**: if a mapped plugin is already registered, leave it
   as-is; do not double-register.
 
-## 8. Verify
+## 7. Verify
 
 Before reporting done, check:
 
-- Every directory under `$AF_REPO/common/skills/` has a corresponding symlink under
-  `$AF_HOME/.codex/skills/` that resolves (not broken).
-- Every `$AF_REPO/common/agents/<name>.agent.md` has a corresponding
+- Every selected framework skill resolves as a directory link or native-frontmatter rendering;
+  transformed bodies match source exactly and auxiliary links resolve. Report external overrides
+  separately instead of relinking them. Recheck generated renderings on subsequent setup runs.
+- Every selected framework source agent has a corresponding
   `$AF_HOME/.codex/agents/<name>.toml` containing `model` and `model_reasoning_effort` keys
-  (not a `tier` key).
+  (not a `tier` key). List preserved external or uncertain agent files separately.
 - For at least one read-only agent (e.g. `code-reviewer`), confirm its rendered `[access]`
   table has `sandbox_mode = "read-only"` -- a Codex process running that agent should be
   constrained by the sandbox from writing to the filesystem, matching its source `access:`
@@ -254,19 +313,22 @@ Before reporting done, check:
 - For at least one agent with no `access:` key at all (e.g. `rails-engineer`), confirm its
   rendered `[access]` table has `sandbox_mode = "workspace-write"` -- parity with the "all
   tools" default that same absent-`access:` agent gets elsewhere.
-- `$AF_HOME/.codex/AGENTS.md` resolves (symlink is not broken) and points at
-  `$AF_REPO/common/instructions/AGENTS.md`.
-- `$AF_HOME/.codex/config.toml` is valid TOML and contains the expected `[hooks]`,
-  `[mcp_servers.*]`, and `[agents]` tables.
-- Every discovered sibling plugin marketplace (section 6) is either registered with a mapped
+- The selected framework-managed `$AF_HOME/.codex/AGENTS.md` resolves (symlink is not broken)
+  and points at `$AF_REPO/common/instructions/AGENTS.md`. Report a preserved external or
+  uncertain instruction file separately instead of replacing it.
+- `$AF_HOME/.codex/config.toml` is valid TOML and contains the expected `[hooks]` and
+  `[mcp_servers.*]` tables while preserving unrelated tables, including any pre-existing
+  `[agents]` table.
+- Every discovered sibling plugin marketplace (section 5) is either registered with a mapped
   Codex equivalent, or explicitly listed as skipped with "no Codex equivalent."
 
 Report a summary: counts of skills linked, agents rendered, hooks merged, MCP servers merged,
-plugins mapped vs. skipped, plus any items skipped or failed and why.
+plugins mapped vs. skipped, preserved external or uncertain entries, and any items skipped or
+failed and why.
 
 ## Failure handling
 
-If the filesystem/OS rejects a symlink (e.g. no symlink support, permission denied), fall back
-to copying the source file/directory to the destination path instead, and note in the final
-summary that a copy was used in place of a symlink for that item (copies will not auto-update
-on future source edits, unlike symlinks).
+If the filesystem/OS rejects a symlink for a selected framework-managed destination (e.g. no
+symlink support, permission denied), fall back to copying the source file/directory to that
+destination path instead, and note in the final summary that a copy was used in place of a
+symlink for that item (copies will not auto-update on future source edits, unlike symlinks).

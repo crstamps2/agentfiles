@@ -5,6 +5,18 @@ description: Spin up a Jira ticket or PR review in cmux (default) -- creates a g
 
 # /spinup
 
+## Resolve the script owner
+
+Resolve this `SKILL.md` to its real source path before running commands. Set
+`SPINUP_SKILL_DIR` to its containing directory.
+Require `$SPINUP_SKILL_DIR/scripts/cmux_chain.py` to exist; stop if it is absent.
+Do not infer ownership from the current working directory or invoke another harness's copy.
+
+These commands are for explicitly requested lifecycle actions, not wiring verification.
+Do not seed, poll, install/load listeners, start workspaces or tear down resources merely
+to test these paths. Existing helper behavior and cache locations are unchanged; apply
+current communication, Jira-tool and foreground-work policies before invoking it.
+
 > **Note:** This is a worked example skill. The paths, repo references, and Jira project key below use placeholder values (`your-app`, `your-org/your-app`, `PROJ-XXXX`). Replace them with your own project details before use.
 
 Personal workflow command. Four modes:
@@ -47,7 +59,7 @@ When the user runs `/spinup`, shell out to the appropriate script based on the m
 
 Run:
 ```bash
-python3 ~/.claude/skills/spinup/scripts/spinup_helper.py list-pending
+python3 "$SPINUP_SKILL_DIR/scripts/spinup_helper.py" list-pending
 ```
 
 The helper returns a JSON array of pending tickets, each with `key`, `title`, `issue_type`, `status`. Render them as a numbered list:
@@ -66,7 +78,7 @@ If the array is empty: print "No tickets pending spinup." If the helper exits no
 
 Run:
 ```bash
-python3 ~/.claude/skills/spinup/scripts/cmux_chain.py spinup PROJ-1234
+python3 "$SPINUP_SKILL_DIR/scripts/cmux_chain.py" spinup PROJ-1234
 ```
 
 On success it prints JSON with `ref`, `branch`, `status`, `workspace`, `worktree`, and optionally `suggested_prompt`. Render as a confirmation:
@@ -85,7 +97,7 @@ If `status` is `serving-timeout`: note "dev server did not respond -- agent tab 
 
 Run:
 ```bash
-python3 ~/.claude/skills/spinup/scripts/cmux_chain.py spinup-pr 45647
+python3 "$SPINUP_SKILL_DIR/scripts/cmux_chain.py" spinup-pr 45647
 ```
 
 On success it prints JSON with `pr`, `decision`, `branch`, `status`, `workspace`, `worktree`, and optionally `suggested_prompt`. Render as a confirmation:
@@ -108,7 +120,7 @@ Use when cmux is unavailable or the user explicitly passes `--atlas`.
 
 Run:
 ```bash
-python3 ~/.claude/skills/spinup/scripts/spinup_helper.py spinup PROJ-1234
+python3 "$SPINUP_SKILL_DIR/scripts/spinup_helper.py" spinup PROJ-1234
 ```
 
 The helper fetches the ticket, derives the branch, transitions to In Progress, then creates an Atlas workspace (idempotent via `atlas-cli workspaces new --use-existing`) and runs `bin/worktree-setup` in a visible PTY tab. On success it prints JSON with `ticket`, `branch`, `workspace_id`, `workspace_name`, `worktree_path`, `suggested_prompt`, `transitioned`. Render as a confirmation:
@@ -131,10 +143,10 @@ There is NO auto-launched Claude work tab on the Atlas path. The dev server is N
 
 Run:
 ```bash
-python3 ~/.claude/skills/spinup/scripts/spinup_helper.py spinup-pr 45647
+python3 "$SPINUP_SKILL_DIR/scripts/spinup_helper.py" spinup-pr 45647
 
 # Skip a PR (logs decision, no workspace created)
-python3 ~/.claude/skills/spinup/scripts/spinup_helper.py spinup-pr 45647 --skip
+python3 "$SPINUP_SKILL_DIR/scripts/spinup_helper.py" spinup-pr 45647 --skip
 ```
 
 On success (`review`), prints JSON with `pr`, `decision`, `branch`, `workspace_id`, `workspace_name`, `worktree_path`, `suggested_prompt`. Render as confirmation:
@@ -156,7 +168,7 @@ On `--skip`, prints `{"pr": 45647, "decision": "skip"}` and logs the decision.
 Not for manual use. The launchd job calls:
 
 ```bash
-python3 ~/.claude/skills/spinup/scripts/spinup_helper.py poll
+python3 "$SPINUP_SKILL_DIR/scripts/spinup_helper.py" poll
 ```
 
 `poll` auto-spins all newly-assigned eligible Jira tickets (create workspace + run setup) and surfaces new PR review requests. Prints JSON:
@@ -181,13 +193,13 @@ The listener runs as a local launchd job -- NOT a remote /schedule routine, NOT 
 
 Source-of-truth files:
 
-- **Wrapper**: `~/.claude/skills/spinup/scripts/cmux-poller.sh` -- sets PATH for bare launchd environment, then `exec python3 ... poll`
-- **Plist**: `~/.claude/skills/spinup/scripts/inc.example.cmux-work-listener.plist` -- source of truth; copy to `~/Library/LaunchAgents/` to install
+- **Wrapper**: `"$SPINUP_SKILL_DIR/scripts/cmux-poller.sh"` -- sets PATH for bare launchd environment, then `exec python3 ... poll`
+- **Plist**: `"$SPINUP_SKILL_DIR/scripts/inc.example.cmux-work-listener.plist"` -- source of truth; copy to `~/Library/LaunchAgents/` to install
 
 To go live (install and load):
 
 ```bash
-cp ~/.claude/skills/spinup/scripts/inc.example.cmux-work-listener.plist \
+cp "$SPINUP_SKILL_DIR/scripts/inc.example.cmux-work-listener.plist" \
    ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/inc.example.cmux-work-listener.plist
 ```
@@ -247,25 +259,25 @@ The cmux listener runs `cmux_chain.py cmux-poll` as a local launchd job on weekd
 Run once to mark all currently-eligible tickets and open PRs as already handled, so the first real poll only surfaces genuinely new items:
 
 ```bash
-python3 ~/.claude/skills/spinup/scripts/cmux_chain.py seed-backlog
+python3 "$SPINUP_SKILL_DIR/scripts/cmux_chain.py" seed-backlog
 ```
 
 **Source-of-truth files:**
 
-- **Wrapper**: `~/.claude/skills/spinup/scripts/cmux-poller.sh` -- sets a bare-env-safe PATH, then `exec python3 ... cmux-poll`
-- **Plist**: `~/.claude/skills/spinup/scripts/inc.example.cmux-work-listener.plist` -- source of truth; copy to `~/Library/LaunchAgents/` to install
+- **Wrapper**: `"$SPINUP_SKILL_DIR/scripts/cmux-poller.sh"` -- sets a bare-env-safe PATH, then `exec python3 ... cmux-poll`
+- **Plist**: `"$SPINUP_SKILL_DIR/scripts/inc.example.cmux-work-listener.plist"` -- source of truth; copy to `~/Library/LaunchAgents/` to install
 
 **Go live (human in loop):**
 
 ```bash
 # 1. Seed the backlog
-python3 ~/.claude/skills/spinup/scripts/cmux_chain.py seed-backlog
+python3 "$SPINUP_SKILL_DIR/scripts/cmux_chain.py" seed-backlog
 
 # 2. Dry-run once (expect empty jira_spun_up and prs_to_surface)
-python3 ~/.claude/skills/spinup/scripts/cmux_chain.py cmux-poll
+python3 "$SPINUP_SKILL_DIR/scripts/cmux_chain.py" cmux-poll
 
 # 3. Install and load
-cp ~/.claude/skills/spinup/scripts/inc.example.cmux-work-listener.plist \
+cp "$SPINUP_SKILL_DIR/scripts/inc.example.cmux-work-listener.plist" \
    ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/inc.example.cmux-work-listener.plist
 ```

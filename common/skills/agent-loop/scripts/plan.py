@@ -45,6 +45,14 @@ stop_when = ["the verification commands pass", "you would need to edit a file ou
 '''
 
 
+VERIFICATION_COMMAND_CONTRACT = ("\n## Verification command contract\n"
+                                 "Every `verification_commands` entry must use only direct repository-tool commands. This contract overrides contrary suggestions in a review or role instructions. "
+                                 "Within those entries, never use inline interpreters (`ruby -e`, `node -e`, `python -c`), shell wrappers, `awk`, pipes, `;`, "
+                                 "redirection, command substitution, backticks, or parameter expansion. Simple commands may be joined with `&&`. "
+                                 "Use repository tools such as `bin/**`, `bundle exec <repo tool>`, `yarn`, `npx`, `grep`, `test`, or read-only `git`; "
+                                 "put checks that need scripting in a task-owned test and run that test.")
+
+
 class PlanError(RuntimeError):
     pass
 
@@ -145,6 +153,7 @@ def _author_prompt(key: str, ticket_json: pathlib.Path, wt: pathlib.Path, shippe
          f"Write `{plan_dir}/plan.md` and `{plan_dir}/tasks.toml`. Use ABSOLUTE paths when writing.",
          "\n## Already shipped on this branch (do NOT re-plan; reference it)\n" + (shipped or "nothing yet"),
          "\n## Manifest schema (follow exactly)\n```toml\n" + SCHEMA_EXAMPLE + "```",
+         VERIFICATION_COMMAND_CONTRACT,
          _reach_note(plan_dir)]
     if prior_review:
         p.append(f"\n## Critic review to address\nRead `{prior_review}` in full and revise the plan and manifest so every BLOCKER is resolved. "
@@ -196,7 +205,7 @@ def _writer_prompt(key: str, wt: pathlib.Path, schema_violations=()) -> str:
     return "\n".join([
         f"# Apply the critic's blockers for {key}\n",
         f"Review: `{plan_dir}/plan-review.md`   Manifest: `{plan_dir}/tasks.toml`   Plan: `{plan_dir}/plan.md`   Worktree: `{wt}`",
-        "Apply each BLOCKER with the smallest edit that resolves it; leave CONCERNS alone. Use ABSOLUTE paths when writing." + fix,
+        "Apply each BLOCKER with the smallest edit that resolves it; leave CONCERNS alone. Use ABSOLUTE paths when writing." + VERIFICATION_COMMAND_CONTRACT + fix,
         "End your reply with `REVISION: applied <n> blockers` or `REVISION: blocked — <one line>`."])
 
 

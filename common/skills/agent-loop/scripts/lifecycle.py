@@ -534,7 +534,10 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         if rb.returncode:
             (tdir / "gates.out").write_text((rb.stdout + rb.stderr)[-6000:])
             return _pause_step(cfg, t, "gates", f"gates failed: yarn build rc={rb.returncode}")
-        r1 = _sh(["bin/rails", "test", "test/views/components/zui/"], wt, 1800)
+        try:
+            r1 = _sh(["bin/rails", "test", "test/views/components/zui/"], wt, 1800)
+        except subprocess.TimeoutExpired as exc:
+            return _pause_step(cfg, t, "gates", f"verification timeout: rails test: {exc}")
         # Committed work AND anything still in the tree: linting only `origin/main...HEAD` let an
         # uncommitted file reach the pre-commit hook unlinted, and publish died on the hook instead
         # (ZIP-7875: Rails/FindEach + Metrics/AbcSize in a system test, found only at commit time).

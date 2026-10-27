@@ -16,20 +16,41 @@ Never invent a path, a file name, or a mapping not listed here. If a step's sour
 not exist, stop that step, report exactly which path was missing, and continue with the
 remaining steps. Do not silently skip or substitute.
 
-> **Why pi differs from Claude Code / Codex CLI.** pi ships a minimal core with *no* built-in
-> sub-agents, MCP, or hooks -- those are all provided by extensions/packages ("adapt pi to your
-> workflows"). So where the Claude/Codex setups render native config, the pi setup:
+> **Runtime contract.** This setup requires pi 1.3.0 or later with built-in MCP support.
+> Check the installed version and its native MCP documentation before proceeding; stop the
+> MCP step on older or unsupported runtimes rather than installing an adapter fallback. The
+> renderer's conservative catalog shape guards are not a full native schema validator or a
+> compatibility promise for every release at or above this minimum.
 >
-> - installs the **`pi-subagents`** npm package, which provides the `subagent` delegation tool
->   and reads the agentfiles agent roster from `$PI_DIR/agents/*.md` (rendered in section 3);
-> - installs the **`pi-mcp-adapter`** npm package, which exposes the MCP servers from
->   `common/mcp/servers.jsonc` through a single lazy proxy tool (rendered into `$PI_DIR/mcp.json`
->   in section 6);
-> - symlinks the **`agentfiles-hooks`** extension (vendored in this repo under
->   `tools/pi/extensions/`), which reproduces the tool-neutral hooks behavior on pi's event API.
+> - `pi-subagents` provides delegation and reads `$PI_DIR/agents/*.md` (section 3).
+> - Built-in MCP reads `$PI_DIR/mcp.json`; no MCP adapter package is required (section 6).
+> - The vendored `agentfiles-hooks` extension maps the shared hooks onto pi events.
 >
-> Instructions and skills, by contrast, map cleanly onto pi's native context-file and
-> Agent-Skills support and are just symlinked.
+> Eligible ownership-verified instructions and supported skill formats map cleanly onto pi's
+> native context-file and Agent-Skills support and can be symlinked.
+
+## Ownership before setup
+
+All following replacement rules apply only to **ownership-verified** framework-managed
+artifacts. Resolve existing links and source registrations first, then classify each destination:
+
+- **Missing:** eligible for the documented creation only after the parent-chain preflight below passes.
+- **Framework-managed:** a source registration, link, or generated-artifact provenance confirms
+  this `AF_REPO` lineage, rather than a private, package, or shared owner, owns it. Select it for
+  convergence to this checkout's documented source.
+- **External or uncertain:** private overrides, package/shared-marketplace content, intentional
+  native profiles, personal configuration, and any target without that provenance. Preserve it
+  and report its owner or uncertainty.
+
+An alternate target or matching name is not ownership evidence. Stop the affected step for
+explicit migration approval if ownership is external or uncertain; never bulk-repoint it to this
+checkout.
+
+Classify `$PI_DIR` and its parent chain before materializing any entry, not just the final
+filename. A missing leaf does not authorize following a directory link. Stop a symlinked,
+shared-writable, differently owned, or uncertain configuration path for migration approval.
+An approved creation plan can prepare missing directories under a verified owner one component
+at a time; verify each directory before continuing. The MCP renderer never prepares directories.
 
 ## 1. Instructions
 
@@ -39,22 +60,25 @@ pi loads `AGENTS.md` from its config dir as a global context file. Symlink it:
 $PI_DIR/AGENTS.md  ->  $AF_REPO/common/instructions/AGENTS.md
 ```
 
-If `$PI_DIR/AGENTS.md` already exists as a symlink pointing elsewhere, remove it and recreate it
-pointing at the correct target (see Idempotency, section 8). If it exists as a real file (not a
-symlink), stop and report -- do not overwrite a user's real file.
+For a missing or selected framework-managed destination, ensure this path resolves to the target
+above. Replace a selected managed symlink that points elsewhere or is broken (see Idempotency,
+section 8). If the destination is external or uncertain, including a private override or a real
+file without framework provenance, leave it unchanged, report it separately, and stop this entry
+for migration approval.
 
 ## 2. Skills (symlink each directory)
 
 pi discovers skills from `$PI_DIR/skills/` natively (Agent Skills standard). For every directory
-`$AF_REPO/common/skills/<name>/`:
+`$AF_REPO/common/skills/<name>/` whose destination is missing or selected framework-managed:
 
 ```
 $PI_DIR/skills/<name>  ->  $AF_REPO/common/skills/<name>
 ```
 
-One symlink per skill directory (not per file inside it). Create `$PI_DIR/skills/` first if it
-does not exist. Skip (with a note in the summary) any entry under `common/skills/` that is not a
-directory.
+Use one symlink per eligible skill directory, not per file inside it. Create `$PI_DIR/skills/`
+only as needed for eligible destinations. Leave an external or uncertain same-name destination
+untouched, report it separately, and stop that entry for migration approval. Skip (with a note in
+the summary) any entry under `common/skills/` that is not a directory.
 
 ## 3. Agents (transform each `*.agent.md` -> `$PI_DIR/agents/<name>.md`)
 
@@ -66,9 +90,11 @@ prompt. (`pi-subagents` also supports richer optional keys -- `aliases`, `system
 `inheritProjectContext`, `inheritSkills`, `defaultReads`, `memory` -- but agentfiles sources do
 not currently declare them, so this transform does not emit them.)
 
-Source agents live at `$AF_REPO/common/agents/<name>.agent.md`. For each one, render
-`$PI_DIR/agents/<name>.md` (plain `.md`, not a symlink -- this is a transform, not a copy).
-Create `$PI_DIR/agents/` first if it does not exist.
+Source agents live at `$AF_REPO/common/agents/<name>.agent.md`. For each source agent whose
+destination is missing or selected framework-managed, render `$PI_DIR/agents/<name>.md` (plain
+`.md`, not a symlink -- this is a transform, not a copy). Leave an external or uncertain
+destination untouched, report it separately, and stop that agent for migration approval. Create
+`$PI_DIR/agents/` only as needed for eligible destinations.
 
 Transform rules, applied to the YAML frontmatter only. The body (everything after the closing
 `---`) is copied verbatim into the rendered file's body, unchanged.
@@ -198,8 +224,12 @@ Set the interactive (top-level orchestrator) model from the `orchestrator` tier 
 - When `pi_model` has no slash, set only `defaultModel` and retain the existing `defaultProvider`.
 - `defaultThinkingLevel` = that table's `pi_thinking` value.
 
-Do not overwrite any other existing keys in `settings.json`. If the user already set these generated
-model defaults to different values, update them to the tier values but leave everything else untouched.
+Do not overwrite unrelated settings. The top-level model and `subagents.defaultModel` are
+independent: the latter must contain one registered `provider/model` identifier, not a doubled
+provider or an assumed CLI/plugin namespace. When absent, use the verified `specialist.pi_model`
+as the builtin-agent fallback. Preserve valid explicit custom overrides. If an existing fallback
+uses an unavailable provider, report its exact identifier and propose the registered tier value
+for scoped repair; never rename every occurrence of a provider-like string or plugin name.
 
 ## 5. Subagent package + hooks extension
 
@@ -224,22 +254,26 @@ entry) so pi installs it on next trusted startup, and note the fallback in the s
 
 ### 5b. `agentfiles-hooks` extension (hooks bridge)
 
-pi loads extensions from `$PI_DIR/extensions/`. Symlink the hooks extension vendored in this repo
-(so edits to the repo take effect without re-running setup):
+pi loads extensions from `$PI_DIR/extensions/`. For a missing or selected framework-managed
+destination, symlink the hooks extension vendored in this repo (so edits to the repo take effect
+without re-running setup):
 
 ```
 $PI_DIR/extensions/agentfiles-hooks  ->  $AF_REPO/tools/pi/extensions/agentfiles-hooks
 ```
 
-Create `$PI_DIR/extensions/` first if it does not exist. This extension reads
-`$AF_REPO/common/hooks/hooks.manifest.jsonc` (the same tool-neutral manifest Claude Code and
-Codex CLI consume) and runs its `SessionStart` scripts once per session and `Stop` scripts when
-the agent settles, injecting each script's stdout into the conversation as context. It discovers
-the repo root from its own file location, so no extra configuration is needed.
+Create `$PI_DIR/extensions/` only as needed for this eligible destination. Leave an external or
+uncertain `agentfiles-hooks` extension untouched, report it separately, and stop that entry for
+migration approval. This extension reads `$AF_REPO/common/hooks/hooks.manifest.jsonc` (the same
+tool-neutral manifest Claude Code and Codex CLI consume) and runs its `SessionStart` scripts once
+per session and `Stop` scripts when the agent settles, injecting each script's stdout into the
+conversation as context. It discovers the repo root from its own file location, so no extra
+configuration is needed.
 
 ### 5c. Foreground interactive lane
 
-On macOS, when the agent-loop runner and `~/.local/bin/agent-loop-python` launcher are installed, link:
+On macOS, when the agent-loop runner and `~/.local/bin/agent-loop-python` launcher are installed
+and the destination is missing or selected framework-managed, link:
 
 ```
 $PI_DIR/extensions/interactive-lane  ->  $AF_REPO/tools/pi/extensions/interactive-lane
@@ -250,99 +284,74 @@ cohort capacity. Coordinator startup, extension wakeups, RPC and headless worker
 The workspace stays interactive across reloads and exits; `/agent-loop-auto` explicitly returns it
 to the background queue. Existing panes need `/reload` once after installing this extension.
 If the launcher is absent, report this extension as skipped rather than installing a broken hook.
+If an existing `interactive-lane` extension is external or uncertain, leave it untouched, report
+it separately, and stop that entry for migration approval.
 
-## 6. MCP servers (via `pi-mcp-adapter`)
+## 6. Built-in MCP servers
 
-pi has **no built-in MCP support** by design (it favors CLI tools + skills). The
-[`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) package bridges the gap: it
-exposes all configured MCP servers through one lazy `mcp` proxy tool (~200 tokens) instead of
-dumping every server's tool definitions into context, and only starts a server when a tool is
-actually called. This is the pi-native way to reuse the MCP servers you run under Claude Code /
-Codex CLI.
+### 6a. Select the built-in implementation
 
-### 6a. Install the adapter
+Built-in MCP must remain enabled. Preserve unrelated package and extension settings.
+If an extension registers `/mcp` (including `pi-mcp-adapter`), it replaces the builtin in
+sessions even though shell `pi mcp` commands still use the builtin. If such a replacement or
+`-builtin:mcp` is configured, stop this step and request a scoped migration. Do not install
+an adapter, remove unrelated packages, restart sessions, or import credentials automatically.
 
+### 6b. Preserve user configuration
+
+Native user configuration is `$PI_DIR/mcp.json`, with servers under `mcpServers`. Trusted
+projects can additionally define `.pi/mcp.json`; do not generate project overrides here.
+Personal servers and private hosts belong in the user file, never this public catalog.
+
+Use the renderer for the shareable catalog forms it supports:
+
+```bash
+node "$AF_REPO/tools/pi/scripts/render-mcp.mjs" \
+  "$AF_REPO/common/mcp/servers.jsonc" "$PI_DIR/mcp.json" "$AF_REPO" "$AF_HOME"
 ```
-pi install npm:pi-mcp-adapter
-```
 
-Run via the shell. Idempotent -- if already present in `pi list`, skip and note it. If
-`pi install` is unavailable, fall back to adding `"pi-mcp-adapter"` to the `packages` array in
-`$PI_DIR/settings.json` (no duplicates) and note the fallback.
+It expands catalog `$REPO`/`$HOME` paths, preserves runtime `${ENV_VAR}` interpolation,
+and translates legacy catalog disablement to native `enabled: false`. The shared example
+retains compatibility metadata for other consumers; native Pi output omits `disabled`.
+Before creating a missing target, it applies conservative offline shape guards to the catalog
+forms it supports. A guard failure stops before file creation. These guards do not validate every
+native field or promise compatibility with future Pi schemas; the installed runtime remains the
+version-specific authority.
 
-### 6b. Two-channel MCP config: public catalog vs. local secrets
+- A missing target that passes the supported-shape guards is created with mode `600` only in
+  an already prepared canonical parent chain. The renderer rejects parent symlinks, differently
+  owned directories, and group/other-writable directories within the user's tree. Root-owned
+  system ancestors above that tree are permitted. Missing parents require separately approved
+  ownership preparation, not recursive creation; the disabled example is not connected.
+- These POSIX checks do not attest ACLs or provide a race-free sandbox against a malicious
+  same-account process. The operator must trust the canonical path's ancestors and exclude
+  concurrent directory replacement; otherwise stop rather than claim safe setup.
+- An identical existing target is left byte-for-byte unchanged. A native-valid existing JSON
+  configuration with a UTF-8 BOM is parsed with the BOM removed only for parsing, then remains
+  byte-for-byte unchanged on a no-op. Target symlinks, hard links, non-regular files and files
+  owned by another account are refused before reading their contents; stop for ownership approval
+  rather than following a link into a credential store.
+- A different same-name server or native hyphen/underscore alias is a collision, not permission
+  to overwrite. Stop and report the server identifier only.
+- Any other merge into an existing file also requires explicit approval; the renderer leaves
+  the entire file unchanged. Present a redacted metadata-level proposal, then use native
+  `pi mcp add` or `/mcp` only for the approved entries. Never replace `mcpServers`, prune
+  personal entries, or silently change existing exposure/enabled state.
 
-MCP servers split into two categories, and each has its own home. **This split is a hard
-security boundary, not a style preference** -- `common/` is a public repo gated by
-`common/scripts/agentfiles-scan.sh` (deny-list + secret scanner), so anything with a real token,
-credential, OAuth client secret, or an org-internal hostname must never be rendered from it.
+### 6c. Authentication and verification boundaries
 
-The adapter reads *both* of these files and merges them (the local file wins on precedence):
+Native OAuth is managed through `/mcp login <server>` or `pi mcp login <server>` and stored
+in `$PI_DIR/mcp-auth.json`. Do not read or render this credential file. Native MCP does not
+automatically read an adapter's `~/.config/mcp/mcp.json`; leave any legacy file untouched,
+and let the user authorize migration of individual server definitions. Do not copy tokens
+from other clients, inspect browser accounts, or initiate sign-in during setup.
 
-| Channel | File | Contents | In git? |
-|---------|------|----------|---------|
-| **Public catalog** | `$PI_DIR/mcp.json` (rendered from `common/mcp/servers.jsonc`) | Shareable servers only: `$HOME`/`$REPO` placeholders, `${ENV_VAR}` interpolation, public URLs. No secrets, no internal hostnames. | yes (source) |
-| **Local secrets** | `~/.config/mcp/mcp.json` (hand-authored, `chmod 600`) | Personal servers with inline tokens, OAuth, or internal/private hosts. | **no** |
-
-#### Render the public catalog -> `$PI_DIR/mcp.json`
-
-Render the shareable catalog from `$AF_REPO/common/mcp/servers.jsonc` so pi uses the *same*
-single source of truth as the Claude/Codex MCP config (rather than importing from the derived
-`~/.claude` / `~/.codex` trees):
-
-1. Read `$AF_REPO/common/mcp/servers.jsonc` and strip `//` comments (it is JSONC). It is a flat
-   object keyed by server name, each value holding that server's config (`command`, `args`,
-   `env`, `url`, `headers`, `disabled`, etc.).
-2. In every value, substitute the literal string `$REPO` with `$AF_REPO`; leave `$HOME` and any
-   `${ENV_VAR}` tokens as-is (the adapter/shell resolves them at launch).
-3. Wrap the whole map under a top-level `mcpServers` key and write it to `$PI_DIR/mcp.json` as
-   valid JSON:
-
-   ```json
-   {
-     "mcpServers": {
-       "<server-name>": { "command": "...", "args": ["..."], "env": {} }
-     }
-   }
-   ```
-
-   If `$PI_DIR/mcp.json` already exists, load it, replace its `mcpServers` object with the
-   freshly rendered one (these are generated from source), and preserve any other top-level keys
-   the adapter owns (e.g. `settings`). Do not preserve stale server entries that are no longer in
-   `servers.jsonc`.
-
-The default `servers.jsonc` ships only a `"disabled": true` placeholder `example-server`;
-rendering it is harmless (the `disabled` flag stops the adapter from ever trying to connect).
-Note in the summary that it is a disabled placeholder.
-
-#### Local secrets -> `~/.config/mcp/mcp.json` (do NOT generate from `common/`)
-
-Servers that carry secrets or internal hosts (databases behind a VPN, PATs, OAuth) are the ones
-you already run under Claude Code / Codex CLI. Do **not** copy them into `common/mcp/servers.jsonc`
--- that would leak them into the public repo and trip the scanner. Instead they live in a local,
-`chmod 600`, non-repo file at `~/.config/mcp/mcp.json`, which the adapter reads at higher
-precedence than the rendered catalog. Setup does **not** own or overwrite this file.
-
-This setup step must not write secrets. Handle the local file as follows:
-
-- If `~/.config/mcp/mcp.json` already exists, leave it untouched and note it in the summary.
-- If it does not exist and the machine has host-specific MCP configs (`~/.claude.json`,
-  `~/.codex/config.toml`, etc.) with secret-bearing servers, do **not** silently copy secrets.
-  Report that personal servers were found and point the user at either:
-  - the adapter's own interactive importer -- `/mcp setup` or
-    `pi-mcp-adapter init --discover-host-configs` -- which previews and adopts host configs
-    with the user's consent; or
-  - hand-authoring `~/.config/mcp/mcp.json` (same `{ "mcpServers": { ... } }` shape as the public
-    catalog, `chmod 600`), keeping tokens inline locally or via `${ENV_VAR}` / OS keychain.
-- Prefer `${ENV_VAR}` interpolation for tokens where an env var is actually populated; only inline
-  a literal token when it exists nowhere else (e.g. already inline in `~/.claude.json`) and the
-  local file is `chmod 600` -- this is a lateral move at the same local-plaintext security level,
-  never an addition to the repo.
-
-HTTP/OAuth servers (bare `url`, no inline secret) are repo-safe in principle, but if their URL is
-an internal/private host they still belong in the local file. Public OAuth endpoints
-(e.g. `https://mcp.figma.com/mcp`) may go in either file; if placed in the local file they
-authenticate via `/mcp-auth <server>` (browser flow, credentials stored in the OS keychain).
+Use the installed runtime's native schema validator for offline checks where available; it is
+the authoritative version-specific check. The renderer's guards cover only the documented
+catalog forms above. `pi mcp list` connects every enabled server; it is not an offline validation
+command.
+Only run connection/login checks after the user approves those side effects. External
+changes take effect with a user-controlled `/reload`; do not reload busy panes automatically.
 
 ## 7. Packages / plugins
 
@@ -361,19 +370,20 @@ marketplace manifest found:
 
 Re-running this whole doc must be safe and convergent:
 
-- **Symlinks** (`AGENTS.md`, each skill dir, the `agentfiles-hooks` extension dir): if the
-  symlink already exists and points at the correct target, leave it untouched. If it exists and
-  points elsewhere (or is a broken symlink), remove and recreate it. Never leave two competing
-  links for the same name.
-- **`pi-subagents` / `pi-mcp-adapter` packages**: if already installed (`pi list`), leave as-is;
-  do not reinstall.
-- **`$PI_DIR/mcp.json`** (public catalog): always regenerate the `mcpServers` object from
-  `common/mcp/servers.jsonc` and overwrite it in place; preserve unrelated adapter-owned top-level
-  keys.
-- **`~/.config/mcp/mcp.json`** (local secrets): never generated or overwritten by setup; if it
-  exists, leave it untouched.
-- **Rendered agent files**: always regenerate `$PI_DIR/agents/<name>.md` from the current source
-  and overwrite it in place -- these are generated artifacts, not hand-edited files.
+- **Selected framework-managed symlinks** (`AGENTS.md`, each skill dir, the
+  `agentfiles-hooks` extension dir): if a selected link already points at the correct target,
+  leave it untouched. If a selected managed link points elsewhere or is broken, recreate it.
+  Preserve and report external or uncertain links rather than replacing them.
+- **`pi-subagents` package**: skip installation when already present. Do not add an MCP adapter.
+- **`$PI_DIR/mcp.json`**: create a missing file with the preserving renderer only after its
+  supported-shape guards pass. An identical existing configuration, including a native-valid
+  UTF-8-BOM configuration, is unchanged; any required merge or collision stops this step for
+  explicit approval. Never replace the existing `mcpServers` map or remove personal entries.
+- **Authentication and legacy files**: never read, generate, import, or overwrite credential
+  files, including `mcp-auth.json` and any legacy adapter secrets file.
+- **Rendered agent files**: regenerate only ownership-verified generated
+  `$PI_DIR/agents/<name>.md` files from the current source. Preserve and report an external or
+  uncertain agent file instead of overwriting it.
 - **settings.json**: re-applying tier-driven `defaultModel`/`defaultThinkingLevel` must not
   disturb unrelated keys.
 - **Packages/MCP**: if already installed/registered, leave as-is; do not double-register.
@@ -382,37 +392,43 @@ Re-running this whole doc must be safe and convergent:
 
 Before reporting done, check:
 
-- Every directory under `$AF_REPO/common/skills/` has a corresponding symlink under
-  `$PI_DIR/skills/` that resolves (not broken).
-- Every `$AF_REPO/common/agents/<name>.agent.md` has a corresponding `$PI_DIR/agents/<name>.md`
-  containing a `model:` key (not `tier:`).
+- Every selected framework skill has a corresponding symlink under `$PI_DIR/skills/` that
+  resolves (not broken). List preserved external or uncertain same-name skills separately; do
+  not count them as missing or relink them.
+- Every selected framework source agent has a corresponding `$PI_DIR/agents/<name>.md`
+  containing a `model:` key (not `tier:`). List preserved external or uncertain agent files
+  separately.
 - For at least one read-only agent (e.g. `code-reviewer`), confirm its rendered `tools:` list
   contains no write-capable tool (no `write` or `edit`) -- the spawned subagent process will be
   constrained to that allowlist.
 - For at least one agent with no `access:` key (e.g. `rails-engineer`), confirm the rendered file
   has **no** `tools:` key (full default tool set).
-- `$PI_DIR/AGENTS.md` resolves (symlink not broken) and points at
-  `$AF_REPO/common/instructions/AGENTS.md`.
-- `pi list` shows `pi-subagents` and `pi-mcp-adapter` installed (or `$PI_DIR/settings.json`
-  `packages` contains them if the install fell back to settings).
-- `$PI_DIR/mcp.json` is valid JSON with an `mcpServers` object containing every server from
-  `common/mcp/servers.jsonc` (with `$REPO` resolved to `$AF_REPO`).
-- No secret or internal hostname was written into `$PI_DIR/mcp.json` or `common/`; any such server
-  is in `~/.config/mcp/mcp.json` (local, `chmod 600`) or was left to the user to import.
-- `$PI_DIR/extensions/agentfiles-hooks` resolves and contains an `index.ts`.
-- When the agent-loop launcher is installed on macOS, `$PI_DIR/extensions/interactive-lane` resolves
-  and contains an `index.ts`.
+- The selected framework-managed `$PI_DIR/AGENTS.md` resolves (symlink not broken) and points
+  at `$AF_REPO/common/instructions/AGENTS.md`. Report a preserved external or uncertain
+  instruction file separately instead of replacing it.
+- `pi-subagents` is registered, and built-in MCP is not disabled or replaced by an extension.
+- `$PI_DIR/mcp.json` parses. Report the supported-shape guard outcome, source entries that
+  require a separately approved merge, and the limitation that this is not complete future-schema
+  validation. The example is disabled using native `enabled: false`, not an adapter-only flag.
+- Existing personal server entries, top-level configuration and credential files are preserved.
+  No private host, token, header value or authentication material was copied into this repo.
+- The selected framework-managed `$PI_DIR/extensions/agentfiles-hooks` resolves and contains an
+  `index.ts`; report a preserved external or uncertain extension separately.
+- When the agent-loop launcher is installed on macOS, the selected framework-managed
+  `$PI_DIR/extensions/interactive-lane` resolves and contains an `index.ts`; report a preserved
+  external or uncertain extension separately.
 - `$PI_DIR/settings.json` is valid JSON with `defaultModel` / `defaultThinkingLevel` set from the
   `orchestrator` tier.
 
-Report a summary: counts of skills linked, agents rendered, the `pi-subagents` and
-`pi-mcp-adapter` install results, the `agentfiles-hooks` link result, public MCP servers rendered
-into `$PI_DIR/mcp.json`, whether a local `~/.config/mcp/mcp.json` was found (never its contents),
-plugins mapped vs. skipped, plus any items skipped or failed and why.
+Report skills linked, agents rendered, delegation package status, hook links, built-in MCP
+selection, catalog supported-shape-guard plus creation/no-op/approval-required outcome,
+preserved external or uncertain entries, and skipped or failed steps. Separate offline schema
+checks from user-approved connection checks; do not expose personal server arguments,
+environment/header values, authentication files or private logs.
 
 ## Failure handling
 
-If the filesystem/OS rejects a symlink (e.g. no symlink support, permission denied), fall back to
-copying the source file/directory to the destination path instead, and note in the final summary
-that a copy was used in place of a symlink for that item (copies will not auto-update on future
-source edits, unlike symlinks).
+If the filesystem/OS rejects a symlink for a selected framework-managed destination (e.g. no
+symlink support, permission denied), fall back to copying the source file/directory to that
+destination path instead, and note in the final summary that a copy was used in place of a
+symlink for that item (copies will not auto-update on future source edits, unlike symlinks).

@@ -6,17 +6,18 @@ and pi**.
 
 ## What it is
 
-`agentfiles` holds your orchestration config once, in a tool-neutral format
-under `common/`, and renders it into whichever coding CLI you're using. The
-same agent roster, skills, and instructions back `~/.claude`, `~/.codex`, and
-`~/.pi/agent` -- no duplicated, drifting copies per tool.
+`agentfiles` keeps reusable orchestration content in `common/` and tool-native
+setup and rendering rules in `tools/`. It materializes selected
+framework-managed artifacts for `~/.claude`, `~/.codex`, and `~/.pi/agent`
+without creating another policy fork for private or package-owned overrides.
 
 ## Why
 
 If you use more than one agentic CLI, you've felt this: an agent definition
 gets tuned in one tool and the other quietly falls behind. `agentfiles`
-fixes that by making `common/` the only place you edit. Both tools consume
-the same source and stay consistent.
+keeps reusable framework content in `common/` plus native `tools/` overlays.
+Private organization overrides and externally owned packages retain their own sources;
+resolve ownership before comparing or synchronizing installed artifacts.
 
 ## Quick start
 
@@ -53,7 +54,7 @@ cd agentfiles
 ## Layout
 
 ```
-common/                   # Source of truth -- tool-neutral, edit here
+common/                   # Shared tool-neutral source, edit framework content here
   instructions/AGENTS.md  # Orchestration rules, role boundaries, conventions
   agents/*.agent.md       # Agent role definitions (tool-neutral frontmatter)
   skills/                 # Orchestration skills (standup, retro, audit, spinup, spindown)
@@ -63,9 +64,9 @@ common/                   # Source of truth -- tool-neutral, edit here
   scripts/agentfiles-scan.sh  # Deny-list + secret scan for public pushes
 
 tools/
-  claude/setup.md         # Mechanical setup spec: common/ -> ~/.claude
-  codex/setup.md          # Mechanical setup spec: common/ -> ~/.codex
-  pi/setup.md             # Mechanical setup spec: common/ -> ~/.pi/agent
+  claude/setup.md         # Ownership-aware setup and native Claude rules
+  codex/setup.md          # Ownership-aware setup and native Codex rules
+  pi/setup.md             # Ownership-aware setup and native pi rules
   pi/extensions/          # pi extensions that reproduce hooks on pi's event API
   claude/plugins/         # Local Claude plugin marketplace (example: LSP)
   codex/openai.yaml.tmpl  # Template for per-skill Codex metadata
@@ -73,10 +74,15 @@ tools/
 bootstrap.sh              # Entry point: resolve env, sync repo, dispatch setup
 ```
 
-`~/.claude/`, `~/.codex/`, and `~/.pi/agent/` are **derived output**, not source. Don't
-hand-edit files under them directly -- edits get overwritten the next time
-you run `bootstrap.sh`. Change `common/` (or the relevant `tools/<tool>/`
-spec) instead, then re-run bootstrap.
+Only selected framework-managed artifacts under harness roots are derived output. Before
+changing a destination, setup resolves links and registrations: missing or confirmed
+framework-managed entries can converge to the documented source; private overrides,
+package/shared-marketplace content, personal configuration, runtime memory, and uncertain
+owners are preserved and reported.
+
+A preserved external entry is not a setup failure to "fix" by repointing it. If a requested
+change needs to replace one, setup stops that entry for explicit migration approval. Host
+dotfiles should wire external owners, not maintain another policy fork.
 
 ## How it works
 
@@ -90,37 +96,39 @@ spec) instead, then re-run bootstrap.
    filesystem/shell access, with `AF_HOME`, `AF_REPO`, and `AF_OS` injected
    as environment variables. (pi is invoked in non-interactive print mode,
    `pi -a -p`.)
-3. **Setup is symlink-first, with a transform step for agent definitions.**
-   Shared artifacts (instructions, skills) are symlinked straight from
-   `common/` into the tool's home directory, so edits to `common/` show up
-   immediately without re-running setup. Agent definitions
-   (`common/agents/*.agent.md`) can't be symlinked as-is -- each tool has its
-   own frontmatter shape (Claude wants `.md` with a `model:` key, Codex wants
-   `.toml` with `model` / `model_reasoning_effort`, pi wants `.md` with
-   `model` / `thinking` keys read by the `pi-subagents` package) -- so setup
-   renders a per-tool copy, looking up each agent's `tier:` in
-   `model-tiers.toml` to pick the concrete model. See `tools/claude/setup.md`,
-   `tools/codex/setup.md`, and `tools/pi/setup.md` for the exact transform
-   rules.
+3. **Setup is ownership-aware and symlink-first where native formats permit.**
+   For a missing or confirmed framework-managed destination, eligible shared
+   instructions and skills can symlink directly from `common/`; an external
+   same-name target is preserved and reported instead of repointed. Native
+   overlays render artifacts when the destination format differs. For example,
+   Codex skills with unsupported generic frontmatter render only supported
+   frontmatter while retaining the source body, and agent definitions
+   (`common/agents/*.agent.md`) render to each tool's native agent format:
+   Claude uses `.md` with `model:`, Codex uses `.toml` with `model` /
+   `model_reasoning_effort`, and pi uses `.md` with `model` / `thinking` read
+   by `pi-subagents`. Setup regenerates only ownership-verified generated
+   renders, looking up each agent's `tier:` in `model-tiers.toml`. See
+   `tools/claude/setup.md`, `tools/codex/setup.md`, and `tools/pi/setup.md`
+   for the exact transform rules.
 
-**Note on pi.** pi's core has no built-in sub-agents, MCP, or hooks -- it
-favors a minimal core extended by packages/extensions. So the pi setup installs
-the [`pi-subagents`](https://www.npmjs.com/package/pi-subagents) package for the
-agent roster (`subagent` delegation tool), the
-[`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) package to
-expose your `common/mcp/servers.jsonc` servers through one lazy proxy tool, and
-symlinks a small vendored `agentfiles-hooks` extension that runs the same
-`common/hooks/` manifest on pi's event API. Instructions and skills map onto
-pi's native context-file and Agent-Skills support and are symlinked directly.
+**Note on pi.** Setup requires pi 1.3.0 or later with **built-in MCP**. Delegation
+uses `pi-subagents`, and the vendored `agentfiles-hooks` extension maps shared hooks
+onto pi events. No MCP adapter package is required. An extension registering `/mcp`
+replaces the builtin; setup stops for a separately approved migration if one is found.
+Instructions and supported skill formats use native context-file/Agent-Skills support.
+The MCP renderer applies conservative checks to the catalog forms it supports before
+creating a missing file; the installed pi release remains authoritative, and this does
+not promise complete support for future native schemas.
 
 ## Updating
 
 Re-run the same one-liner (or `git -C ~/.agentfiles pull --ff-only &&
 ~/.agentfiles/bootstrap.sh --tool=<claude|codex|pi>` if you cloned manually).
-Bootstrap is idempotent: symlinks are recreated only if they point at the
-wrong target, rendered agent files are regenerated in place, and
-hook/MCP-server merges skip entries that are already present. Nothing is
-duplicated by re-running it.
+Bootstrap is repeatable for entries it owns: selected framework-managed links
+converge, ownership-verified generated renders regenerate in place, and approved
+hook/MCP operations do not duplicate entries. It preserves external or uncertain
+targets and reports any needed migration for approval, so a rerun can stop with an
+approval-required outcome rather than materializing every similarly named artifact.
 
 ## Supported platforms & prerequisites
 
@@ -131,14 +139,15 @@ duplicated by re-running it.
   [Codex CLI](https://github.com/openai/codex), or [pi](https://pi.dev),
   reachable on `$PATH` as `claude`, `codex`, or `pi` respectively (bootstrap
   invokes it directly).
-- **For pi:** an internet connection on first run so the setup can
-  `pi install` the `pi-subagents` (agent delegation) and `pi-mcp-adapter`
-  (MCP bridge) packages.
+- **For pi:** pi 1.3.0 or later and Node.js; delegation setup may install
+  `pi-subagents` on first run. MCP itself is built in, not an adapter dependency.
 
 ## Customizing
 
-Everything you add or edit lives under `common/`. Every tool picks it up next
-time you run `bootstrap.sh`.
+Shared framework content belongs under `common/`; native setup, rendering, and
+integration behavior belongs under `tools/`. A tool picks up selected
+framework-managed outputs on the next `bootstrap.sh` run. Private, package-owned,
+and other external artifacts retain their native owner and are not source-edit targets.
 
 **Add or edit an agent** -- create/edit `common/agents/<name>.agent.md`.
 Frontmatter needs at minimum `name:`, `description:`, and `tier:` (one of
@@ -148,8 +157,9 @@ system prompt/instructions, copied verbatim into every tool's rendered
 output.
 
 **Add or edit a skill** -- create a new directory under `common/skills/<name>/`
-with a `SKILL.md`. Every tool's setup step symlinks the whole directory in,
-one symlink per skill.
+with a `SKILL.md`. Each setup selects only ownership-verified destinations, then
+uses a direct link or the tool's documented native rendering. It does not repoint an
+external same-name skill.
 
 **Add or edit a hook** -- drop a script under `common/hooks/`, then add an
 entry for it in `common/hooks/hooks.manifest.jsonc` under the relevant event
@@ -166,16 +176,18 @@ sensitivity:
   name, with `command`/`args`/`env`. Use `$REPO`/`$HOME` placeholders and
   `${ENV_VAR}` interpolation -- **no inline secrets or internal hostnames**
   (this repo is public and scanner-gated). Claude Code and Codex CLI render
-  this into their native MCP config; pi renders it into `~/.pi/agent/mcp.json`
-  and serves it through the `pi-mcp-adapter` package (one lazy proxy tool
-  instead of every server's tool definitions in context).
+  this into native MCP config. Pi uses `~/.pi/agent/mcp.json` and built-in MCP;
+  its preserving renderer checks the catalog forms it supports before creating a
+  missing file in a prepared canonical, ownership-verified parent chain. It does not
+  create parent directories or claim complete native-schema support across pi versions.
+  It requires approval before any change to an existing configuration and never
+  replaces personal server entries.
 - **Personal/secret servers** (inline tokens, OAuth, internal/private hosts)
-  never go in the repo. For pi they live in a local, `chmod 600`,
-  non-repo file at `~/.config/mcp/mcp.json`, which `pi-mcp-adapter` reads at
-  higher precedence and merges with the rendered catalog. You can hand-author
-  it or adopt existing host configs with `/mcp setup` /
-  `pi-mcp-adapter init --discover-host-configs`. See `tools/pi/setup.md` §6 for
-  the full rules.
+  never go in the repo. Pi uses its native user-level `mcp.json`; OAuth credentials
+  are separately managed in `mcp-auth.json`. Setup does not read or migrate secrets
+  or legacy adapter files. Use native `/mcp` or `pi mcp add` for approved changes.
+  `pi mcp list` connects servers, so it is not an offline schema check.
+  See `tools/pi/setup.md` section 6 for preservation and migration rules.
 
 **Adjust model tiers** -- edit `common/model-tiers.toml`. Each table (e.g.
 `[specialist]`) maps a tier name to a concrete model per tool: `claude` for

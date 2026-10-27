@@ -14,6 +14,53 @@ Never invent a path, a file name, or a mapping not listed here. If a step's sour
 not exist, stop that step, report exactly which path was missing, and continue with the
 remaining steps. Do not silently skip or substitute.
 
+## Ownership before setup
+
+All following replacement rules apply only to **ownership-verified** framework-managed
+artifacts. Resolve existing links and source registrations first, then classify each destination:
+
+- **Missing:** eligible for the documented creation only after the parent-chain preflight below passes.
+- **Framework-managed:** a source registration, link, or generated-artifact provenance confirms
+  this `AF_REPO` lineage, rather than a private, package, or shared owner, owns it. Select it for
+  convergence to this checkout's documented source.
+- **External or uncertain:** private overrides, package/shared-marketplace content, intentional
+  native profiles, personal configuration, and any target without that provenance. Preserve it
+  and report its owner or uncertainty.
+
+An alternate target or matching name is not ownership evidence. Stop the affected step for
+explicit migration approval if ownership is external or uncertain; never bulk-repoint it to this
+checkout.
+
+Before any directory creation, linking, rendering, or configuration write, inspect the harness
+root and every existing destination-parent component with `lstat` or equivalent no-follow
+metadata inspection. Use a canonical path; resolving an unexpected directory link does not
+approve its referent. Stop the affected subtree if a parent is symlinked, shared-writable,
+differently owned, externally managed, or uncertain. Trusted root-owned system ancestors above
+the verified user tree are permitted; UID ownership alone is not framework provenance.
+
+Only below approved, ownership-verified parents may missing directories be created, one
+component at a time. Verify each new directory and recheck the parents before each write.
+If `$AF_HOME/.claude`, `skills/`, or `agents/` is externally owned or linked, preserve the whole
+affected subtree; an absent instruction, skill, agent, or configuration leaf is not an exception.
+Existing artifact symlinks below verified parents can still be classified by the ownership rules
+above. These POSIX checks do not attest ACLs or provide a race-free sandbox: the operator must
+trust the ancestors and exclude concurrent directory replacement, or stop.
+
+### Parent-boundary acceptance cases
+
+Use a synthetic `AF_HOME` only, without running bootstrap or a client. Apply the preflight to
+each case before attempting the documented leaf operation:
+
+| Synthetic destination parent | Required outcome |
+| --- | --- |
+| Linked `$AF_HOME/.claude`; instruction/configuration leaf missing | Stop the subtree; no referent file or directory is created. |
+| Canonical harness root, linked `skills/`; skill missing | Stop that collection; no link or rendered skill is created in the referent. |
+| Canonical harness root, linked `agents/`; agent missing | Stop that collection; no rendered agent is created in the referent. |
+| Canonical, approved user-owned parent; selected leaf missing | The documented creation is eligible after its other checks pass. |
+
+Record the classification and compare referent contents before/after. These are procedural
+acceptance checks, not proof that a real client/bootstrap or installed profile was exercised.
+
 ## 1. Instructions
 
 Symlink the top-level instructions file:
@@ -22,27 +69,34 @@ Symlink the top-level instructions file:
 $AF_HOME/.claude/CLAUDE.md  ->  $AF_REPO/common/instructions/AGENTS.md
 ```
 
-If `$AF_HOME/.claude/CLAUDE.md` already exists as a symlink pointing elsewhere, remove it and
-recreate it pointing at the correct target (see Idempotency, section 6). If it exists as a
-real file (not a symlink), stop and report -- do not overwrite a user's real file.
+For a missing or selected framework-managed destination, ensure this path resolves to the target
+above. Replace a selected managed symlink that points elsewhere or is broken (see Idempotency,
+section 6). If the destination is external or uncertain, including a private override or a real
+file without framework provenance, leave it unchanged, report it separately, and stop this entry
+for migration approval.
 
 ## 2. Skills (symlink each directory)
 
-For every directory `$AF_REPO/common/skills/<name>/`:
+For every directory `$AF_REPO/common/skills/<name>/` whose destination is missing or selected
+framework-managed:
 
 ```
 $AF_HOME/.claude/skills/<name>  ->  $AF_REPO/common/skills/<name>
 ```
 
-One symlink per skill directory (not per file inside it). Create `$AF_HOME/.claude/skills/`
-first if it does not exist. Skip (with a note in the summary) any entry under
-`common/skills/` that is not a directory.
+Use one symlink per eligible skill directory, not per file inside it. Create
+`$AF_HOME/.claude/skills/` only as needed for eligible destinations. Leave an external or
+uncertain same-name destination untouched, report it separately, and stop that entry for
+migration approval. Skip (with a note in the summary) any entry under `common/skills/` that is
+not a directory.
 
 ## 3. Agents (transform each `*.agent.md` -> `.md`)
 
-Source agents live at `$AF_REPO/common/agents/<name>.agent.md`. For each one, render
+Source agents live at `$AF_REPO/common/agents/<name>.agent.md`. For each source agent whose
+destination is missing or selected framework-managed, render
 `$AF_HOME/.claude/agents/<name>.md` (plain `.md`, not a symlink -- this is a transform, not a
-copy).
+copy). Leave an external or uncertain destination untouched, report it separately, and stop that
+agent for migration approval.
 
 Transform rules, applied to the YAML frontmatter only. The body (everything after the closing
 `---`) is copied verbatim, unchanged.
@@ -103,7 +157,7 @@ memory: user
 Note `tier: specialist` became `model: sonnet` (via the `[specialist]` table's `claude` key),
 and `access:` became `tools:` with the same value.
 
-## 4. Hooks + MCP -> settings.json
+## 4. Hooks in settings.json; native MCP registration
 
 Target file: `$AF_HOME/.claude/settings.json`. Create it as `{}` first if it does not exist.
 Load it as JSON (strip `//` comments from the source files below before parsing -- they are
@@ -117,14 +171,22 @@ object: for each event key, ensure an array exists, and ensure an entry running 
 script path is present (add it if missing; if the event key already has non-manifest entries,
 leave those alone and just add/update the manifest-sourced ones).
 
-**MCP servers.** Read `$AF_REPO/common/mcp/servers.jsonc`. It is a flat object keyed by server
-name, each holding that server's config (`command`, `args`, `env`, etc.). Merge each entry into
-`settings.json`'s top-level `"mcpServers"` object, keyed by the same server name. Where a
-server's config contains the placeholder `$REPO`, substitute `$AF_REPO`; where it contains
-`$HOME`, leave it as `$HOME` (resolved by Claude Code / the shell at launch time, not by you).
+Write only the approved hook merge to `$AF_HOME/.claude/settings.json`, preserving unrelated
+keys. Do not write MCP server registrations into that settings file.
 
-Write the merged result back to `$AF_HOME/.claude/settings.json`, preserving any existing keys
-in the file that are unrelated to `"hooks"` and `"mcpServers"`.
+**MCP servers.** Read the shareable catalog at `$AF_REPO/common/mcp/servers.jsonc`.
+Skip disabled catalog entries (`enabled: false` or legacy `disabled: true`); report the default
+example as skipped, not connected. Reject contradictory enablement. Remove catalog-only flags
+`enabled`, `disabled` and `tools` before native registration; honor a `tools` selection that
+excludes `claude`. Resolve literal `$REPO`/`$HOME` paths from the setup inputs rather than
+assuming a command executable is launched through a shell.
+
+For an explicitly approved missing entry, verify the installed `claude mcp add-json --help`
+contract and use `claude mcp add-json --scope user <name> <json>`. Let the native CLI validate
+and own its user configuration. Do not infer storage paths, copy authentication material,
+replace existing registrations, or migrate preexisting settings-file data automatically.
+If existing-name ownership is uncertain, stop that entry for approval. Do not run
+`claude mcp list` as an offline check: the installed command health-checks approved servers.
 
 ## 5. Plugins
 
@@ -138,15 +200,16 @@ copy plugin files into `$AF_HOME/.claude/` -- registering the marketplace path i
 
 Re-running this whole doc must be safe and convergent:
 
-- **Symlinks** (`CLAUDE.md`, each skill dir): if the symlink already exists and points at the
-  correct target, leave it untouched. If it exists and points elsewhere (or is a broken
-  symlink), remove and recreate it. Never leave two competing links for the same name.
-- **Rendered agent files**: always regenerate `$AF_HOME/.claude/agents/<name>.md` from the
-  current source and overwrite it in place -- these are generated artifacts, not
-  hand-edited files.
-- **settings.json merges**: re-merging must not duplicate hook entries or MCP server entries.
-  An entry already present with the same resolved values is left as-is; only missing or
-  changed entries are added/updated.
+- **Selected framework-managed symlinks** (`CLAUDE.md`, each skill dir): if a selected link
+  already points at the correct target, leave it untouched. If a selected managed link points
+  elsewhere or is broken, recreate it. Preserve and report external or uncertain links rather
+  than replacing them.
+- **Rendered agent files**: regenerate only ownership-verified generated
+  `$AF_HOME/.claude/agents/<name>.md` files from the current source. Preserve and report an
+  external or uncertain agent file instead of overwriting it.
+- **settings.json merges**: do not duplicate approved hook entries or overwrite unrelated settings.
+- **MCP registrations**: disabled catalog entries remain skipped. Existing native registrations
+  remain untouched; a changed or uncertain entry needs explicit approval, not replacement.
 - **Plugin marketplace registration**: if already registered, leave it as-is; do not
   double-register.
 
@@ -154,25 +217,29 @@ Re-running this whole doc must be safe and convergent:
 
 Before reporting done, check:
 
-- Every directory under `$AF_REPO/common/skills/` has a corresponding symlink under
-  `$AF_HOME/.claude/skills/` that resolves (not broken).
-- Every `$AF_REPO/common/agents/<name>.agent.md` has a corresponding
-  `$AF_HOME/.claude/agents/<name>.md` containing a `model:` key (not `tier:`).
+- Every selected framework skill has a corresponding symlink under
+  `$AF_HOME/.claude/skills/` that resolves (not broken). List preserved external or uncertain
+  same-name skills separately; do not count them as missing or relink them.
+- Every selected framework source agent has a corresponding
+  `$AF_HOME/.claude/agents/<name>.md` containing a `model:` key (not `tier:`). List preserved
+  external or uncertain agent files separately.
 - For at least one read-only agent (e.g. `code-reviewer`), confirm its rendered `tools:` list
   contains no write-capable tool (no `Write`, `Edit`, or similar) -- it should match the
   source `access:` value exactly, unexpanded.
-- `$AF_HOME/.claude/CLAUDE.md` resolves (symlink is not broken) and points at
-  `$AF_REPO/common/instructions/AGENTS.md`.
-- `$AF_HOME/.claude/settings.json` is valid JSON and contains the expected hook and MCP
-  server keys.
+- The selected framework-managed `$AF_HOME/.claude/CLAUDE.md` resolves (symlink is not broken)
+  and points at `$AF_REPO/common/instructions/AGENTS.md`. Report a preserved external or
+  uncertain instruction file separately instead of replacing it.
+- `$AF_HOME/.claude/settings.json` contains the expected approved hooks, not generated MCP keys.
+- Report native MCP registrations as approved additions, preserved entries or skipped/unchecked
+  items. Do not claim server connectivity from schema/help checks.
 - The plugin marketplace at `$AF_REPO/tools/claude/plugins` is registered.
 
 Report a summary: counts of skills linked, agents rendered, hooks merged, MCP servers merged,
-plus any items skipped or failed and why.
+plus preserved external or uncertain entries, and any items skipped or failed and why.
 
 ## Failure handling
 
-If the filesystem/OS rejects a symlink (e.g. no symlink support, permission denied), fall back
-to copying the source file/directory to the destination path instead, and note in the final
-summary that a copy was used in place of a symlink for that item (copies will not
-auto-update on future source edits, unlike symlinks).
+If the filesystem/OS rejects a symlink for a selected framework-managed destination (e.g. no
+symlink support, permission denied), fall back to copying the source file/directory to that
+destination path instead, and note in the final summary that a copy was used in place of a
+symlink for that item (copies will not auto-update on future source edits, unlike symlinks).

@@ -152,6 +152,28 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(log["result"], "approved")
         self.assertEqual(plan.validate_manifest(pd / "tasks.toml"), [])
 
+    def test_repair_plan_gives_task_writer_command_contract_before_retrying(self):
+        """ZIP-9032: stale task-writer guidance chose ruby -e after a critic requested a probe."""
+        pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
+        bad = self.GOOD.replace('["true"]', '["ruby -e \'puts 1\'"]')
+        (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(bad)
+        (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. Repair the verification command")
+
+        def writer_follows_explicit_command_contract(agent, directory):
+            if agent == plan.WRITER_DEF:
+                prompt = (self.stage / "writer-1" / "prompt.md").read_text()
+                (directory / "tasks.toml").write_text(self.GOOD if "direct repository-tool commands" in prompt else bad)
+                return "REVISION: applied 1 blocker"
+            (directory / "plan-review.md").write_text("VERDICT: approve\n")
+            return "REVIEW: approve"
+
+        self.script = [writer_follows_explicit_command_contract] * 4
+        with patch.object(plan, "_run_agent", self.fake_run_agent), patch.object(plan, "export_ticket", lambda k, d: d), \
+             patch.object(plan, "assignment", lambda cfg, i: {"author_model": "A", "critic_model": "C"}):
+            log = plan.repair_plan(self.cfg, "ZIP-7873", self.wt, 2, self.stage)
+        self.assertEqual(log["result"], "approved")
+        self.assertEqual(self.calls, ["task-writer", "flagship-critic"])
+
     def test_repair_plan_bounces_writer_violations_to_the_writer(self):
         pd = self.wt / "planning" / "zip-7873"; pd.mkdir(parents=True)
         (pd / "plan.md").write_text("plan"); (pd / "tasks.toml").write_text(self.GOOD); (pd / "plan-review.md").write_text("VERDICT: revise\nBLOCKERS:\n1. x")

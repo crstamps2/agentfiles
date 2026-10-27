@@ -1,28 +1,28 @@
 // Tool-neutral MCP server catalog.
 //
 // Add your real MCP servers here, one entry per server, keyed by server
-// name. Setup steps for each tool (Claude Code, Codex CLI) read this file
+// name. Setup steps for each tool (Claude Code, Codex CLI, pi) read this file
 // and render it into that tool's native MCP config format/container.
 //
 // Keep commands portable: use `$HOME` and `$REPO` placeholders instead of
-// absolute paths so this file works across machines and checkouts. `$REPO`
-// is substituted with this repo's absolute path at bootstrap time; `$HOME`
-// is resolved by the shell/tool at launch time.
+// absolute paths so this file works across machines and checkouts. Setup expands
+// both tokens from its verified repository and home inputs before registration.
+// Runtime `${ENV_VAR}` interpolation is preserved for the native client.
 //
 // SECURITY: this file is PUBLIC (deny-list + secret scanner gate pushes).
 // Only put shareable servers here -- use $HOME/$REPO placeholders and
 // `${ENV_VAR}` interpolation for tokens; never inline secrets or internal
-// hostnames. Personal/secret servers belong in a LOCAL, non-repo file that
-// pi-mcp-adapter also reads (e.g. ~/.config/mcp/mcp.json), not here.
+// hostnames. Personal servers belong in each client's native user configuration,
+// never in this public catalog. Native Pi uses ~/.pi/agent/mcp.json.
 //
-// The entry below is a disabled placeholder example -- `"disabled": true`
-// stops the adapter from trying to connect. Replace or remove it and add
-// your own shareable servers.
+// Native Pi disablement uses `enabled: false`. The `disabled` compatibility
+// field serves other catalog consumers; the Pi renderer removes it.
 {
   "example-server": {
     "command": "npx",
     "args": ["-y", "@scope/mcp-server"],
     "env": {},
+    "enabled": false,
     "disabled": true
   }
 }

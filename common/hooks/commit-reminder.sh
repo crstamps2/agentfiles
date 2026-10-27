@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# Stop hook: remind Claude to make small logical commits when there are
-# significant uncommitted changes (implementation + tests).
+# Stop hook: provide advisory commit hygiene without granting mutation authority.
 
 # Only run inside a git repo
 git rev-parse --is-inside-work-tree &>/dev/null || exit 0
@@ -16,5 +15,5 @@ TOTAL=$((CHANGED_FILES + STAGED_FILES))
 
 # Output context for Claude to act on
 cat <<'EOF'
-There are uncommitted code changes in the working tree. If the current task has produced a logical, self-contained set of changes (with tests when applicable), make a small focused commit now before continuing. Follow the project's commit conventions for branch prefix and message format. Don't bundle unrelated changes together — prefer multiple small commits over one large one.
+There are uncommitted tracked changes in the working tree. This reminder does not authorize staging, committing, or changing task scope. During a read-only audit, review, or status request, leave them untouched. Pre-existing changes may belong to the user or another session; never absorb, stash, reset, or commit them merely to clean the checkout. Only when the current task owns the exact changes and the user or applicable policy authorizes commits, verify them and make small focused commits using the project's conventions. Otherwise report the pending changes without modifying them.
 EOF

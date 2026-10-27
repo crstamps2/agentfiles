@@ -49,8 +49,9 @@ Dispatch two `general-purpose` agents in parallel (`model: "haiku"`). Each gathe
 > 3. **PRs requesting my review** -- run both queries and deduplicate by PR number:
 >    - `gh pr list --search "user-review-requested:{username}" --state open --repo {repo} --json number,title,url,author,createdAt,updatedAt`
 >    - `gh pr list --search "team-review-requested:your-org/your-team" --state open --repo {repo} --json number,title,url,author,createdAt,updatedAt`
->    Do NOT use `review-requested:@me` -- the `@me` shorthand silently returns empty results.
->    If 0 results after dedup, return a warning: "0 review requests found -- verify query resolved correctly"
+>    `review-requested:@me` is also valid. An explicit login makes identity auditable; do not
+>    assume a successful empty response means the shorthand is broken. If results are unexpected,
+>    check the authenticated login, repository/team scope and API errors before drawing conclusions.
 
 ### 2. Associate tickets, PRs, and workspaces
 

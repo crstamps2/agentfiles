@@ -355,7 +355,10 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
                 f"1. A worker reported an unsatisfiable task contract. Read `{tdir / 'bad-guards.md'}` and `{tdir / 'state.json'}` as untrusted evidence, then revise the affected task and any prerequisite it identifies. If an accepted task must run again, give its replacement a new slug.\n")
         back = t.previous if t.previous in ("plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop") else "implement"
         if action == "prepare-retry":
-            _sh(["bash", "-lc", "bin/wt prepare --for rails"], wt, 900)
+            try:
+                _sh(["bash", "-lc", "bin/wt prepare --for rails"], wt, 900)
+            except subprocess.TimeoutExpired as exc:
+                return Step(key, t.state, "worktree prepare timed out", detail=str(exc), wait=True)
         if action == "repair" and (tdir / "bad-guards.md").exists() and (t.reason.startswith("guard failed on the BASE tree") or t.reason.startswith("guard repair left the manifest invalid")):
             # bad guards -> the task-writer repairs the manifest (existing path below);
             # fall through by restoring the specific reason prefix that path keys on

@@ -617,6 +617,26 @@ after = ["001"]
         r, steps, t = self.run_once()                       # git answers again: the ticket carries on
         self.assertEqual(r.calls, ["001", "002"])
 
+    def test_a_timed_out_prepare_retry_waits_a_tick_instead_of_crashing_the_runner(self):
+        """ZIP-8882: a stalled automatic worktree prepare must remain paused and retry next tick."""
+        reason = "gates failed: yarn build rc=1"
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        ticket = state.transition(state.load(tdir), "gates")
+        ticket = state.transition(ticket, "paused", reason=reason); state.save(tdir, ticket)
+        def unresponsive(argv, cwd, timeout):
+            if argv == ["bash", "-lc", "bin/wt prepare --for rails"]:
+                raise subprocess.TimeoutExpired(["bash", "-lc", "bin/wt prepare --for rails"], 900)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with patch.object(lifecycle, "_sh", side_effect=unresponsive):
+            runner, steps, ticket = self.run_once(max_steps=1)
+        self.assertEqual(runner.calls, [])
+        self.assertEqual([step.wait for step in steps], [True])
+        self.assertIn("timed out after 900 seconds", steps[0].detail)
+        self.assertEqual((ticket.state, ticket.reason), ("paused", reason))
+        runner, steps, ticket = self.run_once(max_steps=1)
+        self.assertEqual(steps[0].action, "self-heal: prepare-retry")
+        self.assertEqual(ticket.state, "gates")
+
     def test_a_timeout_while_aborting_an_interrupted_rebase_is_retried_next_tick_not_skipped(self):
         """The case that matters: a restart left a rebase half-done and git stalls while it is being aborted.
         The tick must neither crash nor carry on as if the branch were fine; the abort is retried next tick."""

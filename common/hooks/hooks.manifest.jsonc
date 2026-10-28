@@ -18,6 +18,7 @@
   // Runs once when a new session starts. Use for priming context
   // (role reminders, protocol checklists, environment notes).
   "SessionStart": [
+    { "script": "$REPO/common/hooks/model-route-check.sh" },
     { "script": "$REPO/common/hooks/startup-checklist.sh" }
   ],
 

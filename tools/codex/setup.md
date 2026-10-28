@@ -119,8 +119,11 @@ Transform rules:
 
 - `name:` (frontmatter) -- copy through unchanged as `name = "<value>"`.
 - `description:` (frontmatter) -- copy through unchanged as `description = "<value>"`.
-- Body (everything after the closing `---` of the frontmatter) -- copied verbatim, unchanged,
-  into a `developer_instructions = """<body>"""` triple-quoted string.
+- Body (everything after the closing `---` of the frontmatter) -- encode it as a TOML basic
+  string in `developer_instructions` using standard escapes for newlines, quotes, and backslashes.
+  The decoded TOML value must equal the source body byte-for-byte. Do not use a multiline basic
+  string naively: TOML trims the first newline after an opening `"""`, which would lose a source
+  body's leading newline.
 - `tier:` (frontmatter) -- **drop** this key. Look up its value as a table name in
   `$AF_REPO/common/model-tiers.toml`, read that table's `codex_model` key, and emit
   `model = "<value>"`. Read that same table's `codex_effort` key, and emit
@@ -167,6 +170,7 @@ description: Expert code reviewer. Use proactively after code changes to review 
 access: Read, Grep, Glob, Bash
 tier: specialist
 ---
+
 You are an expert code reviewer...
 ```
 
@@ -183,9 +187,7 @@ Rendered output, `$AF_HOME/.codex/agents/code-reviewer.toml`:
 ```toml
 name = "code-reviewer"
 description = "Expert code reviewer. Use proactively after code changes to review for quality, security, performance, and adherence to project conventions. Read-only -- never modifies code."
-developer_instructions = """
-You are an expert code reviewer...
-"""
+developer_instructions = "\nYou are an expert code reviewer...\n"
 model = "gpt-5.4"
 model_reasoning_effort = "medium"
 
@@ -234,13 +236,35 @@ default this same agent source gets when rendered without an `access:`/`tools:` 
 Target file: `$AF_HOME/.codex/config.toml`. Create it as an empty file first if it does not
 exist.
 
-**Hooks.** Read `$AF_REPO/common/hooks/hooks.manifest.jsonc`. It is keyed by hook event name
-(e.g. `SessionStart`, `Stop`), each holding an array of `{ "script": "<repo-relative-path>" }`
-entries. For each entry, substitute `$AF_REPO` for the literal string `$REPO` in the script
-path, producing an absolute path. Merge the result into `config.toml`'s `[hooks]` table: for
-each event key, ensure an array of script paths exists under that key, and ensure the
-resolved script path is present (add it if missing; if the event key already has
-non-manifest entries, leave those alone and just add/update the manifest-sourced ones).
+**Hooks.** Read `$AF_REPO/common/hooks/hooks.manifest.jsonc`. It is keyed by shared logical
+event name, each holding an array of entries with a required `script` and an optional `tools`
+array. Skip an entry when `tools` exists and does not include `codex`; entries without `tools`
+remain shared. Reject a malformed selector (non-array or non-string member) instead of treating
+it as shared.
+
+Map only events with a verified native semantic equivalent. The installed Codex 0.164 contract
+supports `SessionStart` but has no end-of-turn equivalent for the shared `Stop` event; do not map
+`Stop` to `SessionEnd`, which fires at a different lifecycle boundary and cannot provide the same
+next-turn reminder semantics. Report `Stop` as unsupported/skipped. Re-check the installed native
+contract before adding mappings for other events.
+
+For each eligible, supported entry, substitute `$AF_REPO` for the literal string `$REPO` in the
+script path and merge one native command matcher group into the corresponding event under
+`[hooks]`. Codex uses arrays of matcher/handler tables, not arrays of script strings:
+
+```toml
+[hooks]
+
+[[hooks.SessionStart]]
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/absolute/path/to/startup-checklist.sh"
+```
+
+Omit `matcher` for an unfiltered lifecycle hook. Preserve unrelated matcher groups and
+`[hooks.state]`. Do not synthesize trust hashes or use `--dangerously-bypass-hook-trust`; Codex's
+native trust flow owns approval of newly discovered hooks.
 
 **MCP servers.** Read `$AF_REPO/common/mcp/servers.jsonc` as a flat server map.
 Skip disabled catalog entries (`enabled: false` or legacy `disabled: true`) without removing
@@ -289,10 +313,10 @@ Re-running this whole doc must be safe and convergent:
 - **Rendered agent files**: regenerate only ownership-verified generated
   `$AF_HOME/.codex/agents/<name>.toml` files from the current source. Preserve and report an
   external or uncertain agent file instead of overwriting it.
-- **config.toml merges** (`[hooks]`, `[mcp_servers.*]`): do not duplicate entries. Preserve
-  existing MCP tables and personal configuration; changed MCP entries require explicit approval.
-  Update only ownership-verified framework-managed hook entries. Do not create or replace an
-  `[agents]` table.
+- **config.toml merges** (`[hooks]`, `[mcp_servers.*]`): do not duplicate native matcher/handler
+  groups. Preserve `[hooks.state]`, existing MCP tables and personal configuration; changed MCP
+  entries require explicit approval. Update only ownership-verified framework-managed hook
+  entries. Do not create or replace an `[agents]` table.
 - **Plugin marketplace registration**: if a mapped plugin is already registered, leave it
   as-is; do not double-register.
 
@@ -316,15 +340,16 @@ Before reporting done, check:
 - The selected framework-managed `$AF_HOME/.codex/AGENTS.md` resolves (symlink is not broken)
   and points at `$AF_REPO/common/instructions/AGENTS.md`. Report a preserved external or
   uncertain instruction file separately instead of replacing it.
-- `$AF_HOME/.codex/config.toml` is valid TOML and contains the expected `[hooks]` and
-  `[mcp_servers.*]` tables while preserving unrelated tables, including any pre-existing
-  `[agents]` table.
+- `$AF_HOME/.codex/config.toml` is valid TOML and contains native matcher/handler groups only for
+  supported shared events, plus the expected `[mcp_servers.*]` tables, while preserving unrelated
+  tables including any pre-existing `[agents]` table. Run `codex doctor --summary` and require the
+  configuration check to load successfully; a generic TOML parser is not native-schema proof.
 - Every discovered sibling plugin marketplace (section 5) is either registered with a mapped
   Codex equivalent, or explicitly listed as skipped with "no Codex equivalent."
 
 Report a summary: counts of skills linked, agents rendered, hooks merged, MCP servers merged,
-plugins mapped vs. skipped, preserved external or uncertain entries, and any items skipped or
-failed and why.
+plugins mapped vs. skipped, preserved external or uncertain entries, tool-filtered hooks, and
+any items skipped or failed and why.
 
 ## Failure handling
 

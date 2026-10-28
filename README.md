@@ -57,8 +57,8 @@ cd agentfiles
 common/                   # Shared tool-neutral source, edit framework content here
   instructions/AGENTS.md  # Orchestration rules, role boundaries, conventions
   agents/*.agent.md       # Agent role definitions (tool-neutral frontmatter)
-  skills/                 # Orchestration skills (standup, retro, audit, spinup, spindown)
-  hooks/                  # Shared hook scripts + hooks.manifest.jsonc
+  skills/                 # Orchestration skills (agent-loop, loop-watch, standup, retro, audit, spinup, spindown)
+  hooks/                  # Shared and harness-scoped scripts + hooks.manifest.jsonc
   mcp/servers.jsonc       # MCP server catalog
   model-tiers.toml        # Tier -> concrete model, per tool
   scripts/agentfiles-scan.sh  # Deny-list + secret scan for public pushes
@@ -163,11 +163,22 @@ external same-name skill.
 
 **Add or edit a hook** -- drop a script under `common/hooks/`, then add an
 entry for it in `common/hooks/hooks.manifest.jsonc` under the relevant event
-key (`SessionStart`, `Stop`, etc.). Claude Code and Codex CLI merge the
-manifest into their own hook config on the next setup run; pi runs it via the
-`agentfiles-hooks` extension, which maps `SessionStart`/`Stop` onto pi's event
-API (extend that extension if you start using `PreToolUse`/`PostToolUse`/
-`UserPromptSubmit`).
+key (`SessionStart`, `Stop`, etc.). Entries are shared by default; add an
+optional `tools` array such as `"tools": ["pi"]` when a hook depends on one
+harness's native registry or configuration. Each setup path skips entries that
+do not select its harness and rejects malformed selectors rather than widening
+their scope. Each setup maps only events with a verified native semantic
+equivalent and reports unsupported events instead of approximating them. Claude
+Code merges its supported entries; Codex 0.164 maps `SessionStart` but skips the
+shared end-of-turn `Stop` because `SessionEnd` is not equivalent. pi runs eligible
+entries via the `agentfiles-hooks` extension, which maps `SessionStart`/`Stop`
+onto pi's event API (extend that extension only after verifying native semantics
+for additional events).
+
+The Pi-only `model-route-check.sh` hook validates active model routes against
+`pi --list-models` at session start. Its default mode is advisory so registry
+unavailability does not block startup. Run `common/hooks/model-route-check.sh --strict`
+in setup, CI, or manual verification when an unresolved route must fail the command.
 
 **Add or edit an MCP server.** MCP config splits into two channels by
 sensitivity:

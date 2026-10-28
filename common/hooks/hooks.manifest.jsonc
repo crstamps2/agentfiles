@@ -1,10 +1,13 @@
 // Tool-neutral hooks manifest.
 //
-// Maps a shared hook-event name to one or more scripts to run on that event.
-// Both Claude Code and Codex CLI understand this event vocabulary
-// (SessionStart, Stop, PreToolUse, PostToolUse, UserPromptSubmit, etc.).
-// Each tool's setup step reads this file and renders it into that tool's
-// native hook config format/container.
+// Maps a shared logical hook-event name to one or more scripts. Each tool's
+// setup step maps only events with a native semantic equivalent and reports
+// unsupported events instead of approximating them. For example, Claude and
+// pi support the shared Stop behavior, while Codex 0.164 has SessionEnd but no
+// equivalent end-of-turn Stop event. An optional `tools` array limits an
+// entry to named harnesses (`claude`, `codex`, or `pi`); entries without it
+// remain shared by all harnesses. Consumers reject malformed selectors rather
+// than widening their scope.
 //
 // Scripts are referenced with a literal `$REPO` token prefix. The bootstrap
 // process substitutes `$REPO` with the absolute path to this repo when
@@ -18,7 +21,7 @@
   // Runs once when a new session starts. Use for priming context
   // (role reminders, protocol checklists, environment notes).
   "SessionStart": [
-    { "script": "$REPO/common/hooks/model-route-check.sh" },
+    { "script": "$REPO/common/hooks/model-route-check.sh", "tools": ["pi"] },
     { "script": "$REPO/common/hooks/startup-checklist.sh" }
   ],
 

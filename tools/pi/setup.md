@@ -265,10 +265,12 @@ $PI_DIR/extensions/agentfiles-hooks  ->  $AF_REPO/tools/pi/extensions/agentfiles
 Create `$PI_DIR/extensions/` only as needed for this eligible destination. Leave an external or
 uncertain `agentfiles-hooks` extension untouched, report it separately, and stop that entry for
 migration approval. This extension reads `$AF_REPO/common/hooks/hooks.manifest.jsonc` (the same
-tool-neutral manifest Claude Code and Codex CLI consume) and runs its `SessionStart` scripts once
-per session and `Stop` scripts when the agent settles, injecting each script's stdout into the
-conversation as context. It discovers the repo root from its own file location, so no extra
-configuration is needed.
+tool-neutral manifest Claude Code and Codex CLI consume), skips entries whose optional `tools`
+array does not include `pi`, rejects malformed selectors rather than widening their scope, and
+runs eligible `SessionStart` scripts once per session and `Stop` scripts when the agent settles,
+injecting each script's stdout into the conversation as context.
+Entries without `tools` remain shared. It discovers the repo root from its own file location, so
+no extra configuration is needed.
 
 ### 5c. Foreground interactive lane
 

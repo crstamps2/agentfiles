@@ -32,10 +32,11 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-interface HookEntry {
+export interface HookEntry {
 	script: string;
+	tools?: string[];
 }
-type HookManifest = Record<string, HookEntry[]>;
+export type HookManifest = Record<string, HookEntry[]>;
 
 function stripJsonc(text: string): string {
 	// Remove /* */ block comments and // line comments (line comments only
@@ -101,11 +102,14 @@ function resolveRepoRoot(): string {
 	return path.resolve(here, "..", "..", "..", "..");
 }
 
-function loadManifest(repoRoot: string): HookManifest {
+export function loadManifest(repoRoot: string): HookManifest {
 	const manifestPath = path.join(repoRoot, "common", "hooks", "hooks.manifest.jsonc");
 	if (!fs.existsSync(manifestPath)) return {};
 	try {
-		return JSON.parse(stripJsonc(fs.readFileSync(manifestPath, "utf-8"))) as HookManifest;
+		const parsed: unknown = JSON.parse(stripJsonc(fs.readFileSync(manifestPath, "utf-8")));
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? parsed as HookManifest
+			: {};
 	} catch {
 		return {};
 	}
@@ -113,6 +117,26 @@ function loadManifest(repoRoot: string): HookManifest {
 
 function resolveScript(repoRoot: string, script: string): string {
 	return script.replace(/\$REPO/g, repoRoot);
+}
+
+export function scriptsForEvent(
+	manifest: HookManifest,
+	event: string,
+	tool: string,
+	repoRoot: string,
+): string[] {
+	if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return [];
+	const entries = manifest[event];
+	if (!Array.isArray(entries)) return [];
+	return entries.flatMap((entry) => {
+		if (!entry || typeof entry !== "object" || typeof entry.script !== "string") return [];
+		const applies = entry.tools === undefined || (
+			Array.isArray(entry.tools) &&
+			entry.tools.every((candidate) => typeof candidate === "string") &&
+			entry.tools.includes(tool)
+		);
+		return applies ? [resolveScript(repoRoot, entry.script)] : [];
+	});
 }
 
 function runScript(scriptPath: string, cwd: string): Promise<{ stdout: string; stderr: string }> {
@@ -128,13 +152,16 @@ export default function agentfilesHooks(pi: ExtensionAPI) {
 	const manifest = loadManifest(repoRoot);
 
 	const eventScripts = (event: string): string[] =>
-		(manifest[event] ?? []).map((e) => resolveScript(repoRoot, e.script));
+		scriptsForEvent(manifest, event, "pi", repoRoot);
 
 	let sessionStartDone = false;
 	// Context captured from hook scripts, flushed into the next agent turn.
 	let pendingContext: string[] = [];
 
-	async function collect(event: string, ctx: { cwd: string; ui: { notify: (m: string, l?: string) => void } }) {
+	async function collect(event: string, ctx: {
+		cwd: string;
+		ui: { notify: (message: string, type?: "info" | "warning" | "error") => void };
+	}) {
 		for (const scriptPath of eventScripts(event)) {
 			if (!fs.existsSync(scriptPath)) {
 				ctx.ui.notify(`agentfiles-hooks: missing ${scriptPath}`, "warning");

@@ -164,9 +164,12 @@ Load it as JSON (strip `//` comments from the source files below before parsing 
 JSONC).
 
 **Hooks.** Read `$AF_REPO/common/hooks/hooks.manifest.jsonc`. It is keyed by hook event name
-(e.g. `SessionStart`, `Stop`), each holding an array of `{ "script": "<repo-relative-path>" }`
-entries. For each entry, substitute `$AF_REPO` for the literal string `$REPO` in the script
-path, producing an absolute path. Merge the result into `settings.json`'s top-level `"hooks"`
+(e.g. `SessionStart`, `Stop`), each holding an array of entries with a required `script` and an
+optional `tools` array. Skip an entry when `tools` exists and does not include `claude`; entries
+without `tools` remain shared. Reject a malformed selector (non-array or non-string member)
+instead of treating it as shared. For each eligible entry, substitute `$AF_REPO` for the literal
+string `$REPO` in the script path, producing an absolute path. Merge the result into
+`settings.json`'s top-level `"hooks"`
 object: for each event key, ensure an array exists, and ensure an entry running that resolved
 script path is present (add it if missing; if the event key already has non-manifest entries,
 leave those alone and just add/update the manifest-sourced ones).
@@ -235,7 +238,8 @@ Before reporting done, check:
 - The plugin marketplace at `$AF_REPO/tools/claude/plugins` is registered.
 
 Report a summary: counts of skills linked, agents rendered, hooks merged, MCP servers merged,
-plus preserved external or uncertain entries, and any items skipped or failed and why.
+plus preserved external or uncertain entries, tool-filtered hooks, and any items skipped or
+failed and why.
 
 ## Failure handling
 

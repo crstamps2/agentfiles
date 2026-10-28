@@ -80,6 +80,8 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 - Always use **Chrome for Testing** for all browser automation. The Playwright MCP server uses a wrapper (`~/.claude/bin/playwright-mcp-chrome`) that resolves the Chrome for Testing binary from Playwright's cache.
 - Do not switch to system Chrome, bundled Chromium, Firefox, or WebKit for any testing, QA, or exploration task.
 - This applies to all contexts: QA verification, visual debugging, screenshot capture, and any other browser-based workflow.
+- Prefer CUAWright's `cuawright-web` skill for headless, one-shot, script-based browser tasks; keep Playwright MCP or `dev-browser --connect` for persistent/interactive flows. CUAWright is the renamed Webwright project (`microsoft/CUAWright`); Claude commands are `/cuawright:run` and `/cuawright:craft`, Codex uses `@cuawright-web`, and Pi uses `/skill:cuawright-web`.
+- CUAWright's upstream skill still defaults to Firefox: override it with Chrome for Testing and headless mode unless the user explicitly requests a visible window. Run scripts with `~/.claude/tools/cuawright-venv/bin/python`; resolve the executable using `subprocess.check_output([str(Path.home() / ".claude/bin/webwright-chrome-path")], text=True).strip()` (`Path` from `pathlib`) and pass it to `p.chromium.launch(headless=True, executable_path=cft)`. Do not rely on PATH, use shell `$(...)` in Python, install Firefox, or switch to cloud browsers/desktop VMs for browser QA.
 
 # External Communications Gate
 

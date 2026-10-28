@@ -59,14 +59,22 @@ function fixture(run) {
     '[specialist]\npi_model = "openai/gpt-5.6-terra"\npi_thinking = "xhigh"\n',
   );
 
+  const baseEnv = {
+    ...process.env,
+    HOME: home,
+    AF_REPO: repo,
+    PATH: `${bin}:${process.env.PATH}`,
+  };
   const invoke = (...args) =>
+    spawnSync("bash", [hook, ...args], { env: baseEnv, encoding: "utf8" });
+  const invokeWithEnv = (extraEnv, ...args) =>
     spawnSync("bash", [hook, ...args], {
-      env: { ...process.env, HOME: home, AF_REPO: repo, PATH: `${bin}:${process.env.PATH}` },
+      env: { ...baseEnv, ...extraEnv },
       encoding: "utf8",
     });
 
   try {
-    run({ root, home, repo, agentDir, invoke });
+    run({ root, home, repo, agentDir, invoke, invokeWithEnv });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -140,4 +148,18 @@ test("a failed Pi registry lookup reports a diagnostic without dumping configura
     assert.equal(result.status, 1);
     assert.match(result.stdout, /^MODEL ROUTE CHECK: could not read active Pi model registry:/);
     assert.doesNotMatch(result.stdout, /contextWindow|defaultModel/);
+  }));
+
+test("a hung Pi registry lookup times out with a concise diagnostic", () =>
+  fixture(({ root, invokeWithEnv }) => {
+    fs.writeFileSync(path.join(root, "bin", "pi"), "#!/bin/sh\nsleep 2\n", {
+      mode: 0o755,
+    });
+    const result = invokeWithEnv({ PI_MODEL_ROUTE_CHECK_TIMEOUT_S: "0.05" }, "--strict");
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stdout,
+      /^MODEL ROUTE CHECK: could not read active Pi model registry: timed out after 0\.05s/,
+    );
+    assert.equal(result.stderr, "");
   }));

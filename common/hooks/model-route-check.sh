@@ -50,13 +50,31 @@ def add(routes: list[tuple[str, str]], source: str, route: object) -> None:
         routes.append((source, normalized(route)))
 
 
-registry = subprocess.run(
-    ["pi", "--list-models"],
-    capture_output=True,
-    text=True,
-    encoding="utf-8",
-    errors="replace",
-)
+try:
+    registry_timeout_s = float(os.environ.get("PI_MODEL_ROUTE_CHECK_TIMEOUT_S", "20"))
+except ValueError:
+    registry_timeout_s = 20.0
+
+try:
+    registry = subprocess.run(
+        ["pi", "--list-models"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=registry_timeout_s,
+    )
+except subprocess.TimeoutExpired:
+    print(
+        "MODEL ROUTE CHECK: could not read active Pi model registry: "
+        f"timed out after {registry_timeout_s:g}s"
+    )
+    raise SystemExit(1 if strict else 0)
+except OSError as exc:
+    detail = exc.strerror or type(exc).__name__
+    print(f"MODEL ROUTE CHECK: could not read active Pi model registry: {detail}")
+    raise SystemExit(1 if strict else 0)
+
 if registry.returncode:
     detail = (registry.stderr or registry.stdout).strip().splitlines()
     suffix = f" {detail[-1][:240]}" if detail else f" exit {registry.returncode}"

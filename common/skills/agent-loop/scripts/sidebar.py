@@ -81,8 +81,100 @@ def _cmux() -> str | None:
 def _workspaces(run, binary) -> dict[str, str]:
     out = run([binary, "workspace", "list"], capture_output=True, text=True, timeout=TIMEOUT_S).stdout
     # Names may carry annotations such as "  [selected]".
-    return {re.sub(r"\s+\[[^\]]*\]$", "", m.group(2)).strip(): m.group(1)
-            for m in re.finditer(r"(workspace:\S+)\s+(.+)$", out or "", re.M)}
+    refs = {}
+    duplicates = set()
+    for match in re.finditer(r"(workspace:\S+)\s+(.+)$", out or "", re.M):
+        name = re.sub(r"\s+\[[^\]]*\]$", "", match.group(2)).strip().lower()
+        if name in refs:
+            duplicates.add(name)
+        refs[name] = match.group(1)
+    return {name: ref for name, ref in refs.items() if name not in duplicates}
+
+
+def _groups(run, binary):
+    result = run([binary, "workspace-group", "list", "--json", "--id-format", "both"],
+                 capture_output=True, text=True, timeout=TIMEOUT_S, check=True)
+    return json.loads(result.stdout)["groups"]
+
+
+def _routing_snapshot(cfg, key):
+    import cohort
+
+    tdir = cfg.ticket_dir(key)
+    if not (tdir / "state.json").is_file() or state.human_owned(tdir) or (tdir / "PARKED").exists():
+        return None
+    ticket = state.load(tdir)
+    if ticket.key != key or ticket.state != "human-gate-1" or not ticket.worktree:
+        return None
+    if not pathlib.Path(ticket.worktree).is_dir():
+        return None
+    return ticket, cohort._ci(tdir), cohort._head(ticket.worktree)
+
+
+def _route_review_ready(cfg, refs, run, binary, routes) -> None:
+    """Hand off each workspace/head once; never revisit a completed automatic move."""
+    import cohort
+    import watch
+
+    try:
+        groups = _groups(run, binary)
+        sources = [g for g in groups if g.get("name") == "In Progress"]
+        destinations = [g for g in groups if g.get("name") == "Ready for Review"]
+        if len(sources) != 1 or len(destinations) > 1:
+            return
+        source = sources[0]
+        members = source["member_workspace_refs"]
+        identities = dict(zip(members, source.get("member_workspace_ids", members)))
+        destination = destinations[0].get("ref") if destinations else None
+        if destinations and not destination:
+            return
+        for name, ref in refs.items():
+            if ref not in members or ref == source.get("anchor_workspace_ref"):
+                continue
+            if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9]*-\d+", name):
+                continue
+            key = name.upper()
+            snapshot = _routing_snapshot(cfg, key)
+            if snapshot is None:
+                continue
+            signature = [identities[ref], snapshot[2]]
+            if routes.get(key) == signature:
+                continue
+            evidence = cohort._review_evidence(cfg, key, pr_lookup=watch.pr_state, head_lookup=lambda _: snapshot[2])
+            if evidence is None or evidence[1] != "verified-human-gate-1":
+                continue
+            # GitHub verification can take time; recheck the user's group choice before moving.
+            groups = _groups(run, binary)
+            sources = [g for g in groups if g.get("name") == "In Progress"]
+            destinations = [g for g in groups if g.get("name") == "Ready for Review"]
+            if (len(sources) != 1 or ref not in sources[0]["member_workspace_refs"] or len(destinations) > 1
+                    or ref == sources[0].get("anchor_workspace_ref") or _routing_snapshot(cfg, key) != snapshot):
+                continue
+            destination = destinations[0]["ref"] if destinations else None
+            if destination is None:
+                result = run([binary, "workspace-group", "create", "--name", "Ready for Review",
+                              "--idempotency-key", "agent-loop-ready-for-review", "--json"],
+                             capture_output=True, text=True, timeout=TIMEOUT_S, check=True)
+                destination = json.loads(result.stdout)["group"]["ref"]
+            if _routing_snapshot(cfg, key) != snapshot:
+                continue
+            groups = _groups(run, binary)
+            sources = [g for g in groups if g.get("name") == "In Progress"]
+            destinations = [g for g in groups if g.get("name") == "Ready for Review"]
+            if len(sources) != 1 or len(destinations) != 1:
+                continue
+            current = sources[0]
+            current_members = current["member_workspace_refs"]
+            current_ids = dict(zip(current_members, current.get("member_workspace_ids", current_members)))
+            if (ref == current.get("anchor_workspace_ref") or current_ids.get(ref) != identities[ref]
+                    or current.get("id", current["ref"]) != source.get("id", source["ref"])):
+                continue
+            destination = destinations[0]["ref"]
+            run([binary, "workspace-group", "add", "--group", destination, "--workspace", ref],
+                capture_output=True, text=True, timeout=TIMEOUT_S, check=True)
+            routes[key] = signature
+    except Exception:  # noqa: BLE001 -- retry routing independently of the pill cache next pass
+        return
 
 
 def _desired(cfg) -> dict[str, Label]:
@@ -104,7 +196,7 @@ def _desired(cfg) -> dict[str, Label]:
 def sync(cfg, *, run=subprocess.run, force: bool = False) -> None:
     """Best-effort: never raises. Only touches the real sidebar for the production state root."""
     try:
-        if not force and pathlib.Path(cfg.state_root).resolve() != PRODUCTION_ROOT.resolve():
+        if pathlib.Path(cfg.state_root).resolve() != PRODUCTION_ROOT.resolve():
             return                                    # tests and dry state roots must not repaint Cody's sidebar
         binary = _cmux() or "cmux"
         refs = _workspaces(run, binary)
@@ -113,6 +205,14 @@ def sync(cfg, *, run=subprocess.run, force: bool = False) -> None:
             cache = json.loads(cache_path.read_text())
         except (OSError, ValueError):
             cache = {}
+        if not isinstance(cache, dict):
+            cache = {}
+        routes = cache.get("review_routes", {})
+        if not isinstance(routes, dict):
+            routes = {}
+        _route_review_ready(cfg, refs, run, binary, routes)
+        if routes:
+            cache["review_routes"] = routes
         for key, want in _desired(cfg).items():
             ref = refs.get(key.lower())
             if not ref:

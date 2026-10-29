@@ -14,7 +14,7 @@
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "failover/sol"              # Codex-first interactive default; Claude Opus 5.5 only on provider outage
+pi_model = "openai/gpt-6.1-sol"
 pi_thinking = "high"
 
 [specialist]

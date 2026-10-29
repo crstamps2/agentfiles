@@ -21,6 +21,8 @@ class FakeCmux:
         if self.fail:
             raise self.fail
         out = WORKSPACES if argv[1:3] == ["workspace", "list"] else "OK\n"
+        if argv[1:3] == ["workspace-group", "list"]:
+            out = json.dumps({"groups": []})
         return subprocess.CompletedProcess(argv, 0, out, "")
 
 
@@ -32,6 +34,9 @@ class SidebarTests(unittest.TestCase):
         toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
         (root / "hopper.toml").write_text(toml)
         self.cfg = config.load(root / "hopper.toml"); self.cfg.ensure_dirs()
+        production = patch("sidebar.PRODUCTION_ROOT", self.cfg.state_root)
+        production.start()
+        self.addCleanup(production.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -85,7 +90,8 @@ class SidebarTests(unittest.TestCase):
         first, second = FakeCmux(), FakeCmux()
         sidebar.sync(self.cfg, run=first, force=True)
         sidebar.sync(self.cfg, run=second, force=True)
-        self.assertEqual([c for c in second.calls if c[:2] != ["workspace", "list"]], [])
+        reads = (["workspace", "list"], ["workspace-group", "list"])
+        self.assertEqual([c for c in second.calls if c[:2] not in reads], [])
 
     def test_cmux_failures_never_raise(self):
         self.ticket("ZIP-1", "implement")
@@ -98,7 +104,8 @@ class SidebarTests(unittest.TestCase):
     def test_a_test_state_root_never_touches_the_real_sidebar(self):
         self.ticket("ZIP-1", "implement")
         cmux = FakeCmux()
-        sidebar.sync(self.cfg, run=cmux)
+        with patch("sidebar.PRODUCTION_ROOT", self.cfg.state_root / "not-production"):
+            sidebar.sync(self.cfg, run=cmux)
         self.assertEqual(cmux.calls, [])
 
 

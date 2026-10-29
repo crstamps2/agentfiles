@@ -10,7 +10,7 @@ const hook = fileURLToPath(new URL("./model-route-check.sh", import.meta.url));
 
 const REGISTRY = `provider      model                 context  max-out  thinking  images
 anthropic     claude-sonnet-5-5   1M       128K     yes       yes
-failover      sol                   0          0     yes       yes
+openai        gpt-6.1-sol        272K       128K     yes       yes
 ollama-local  gpt-oss:20b        128K        32K     yes       no
 openai        gpt-5.6-terra      272K       128K     yes       yes
 `;
@@ -33,8 +33,8 @@ function fixture(run) {
   fs.writeFileSync(
     path.join(agentDir, "settings.json"),
     JSON.stringify({
-      defaultProvider: "failover",
-      defaultModel: "sol",
+      defaultProvider: "openai",
+      defaultModel: "gpt-6.1-sol",
       subagents: { defaultModel: "openai/gpt-5.6-terra" },
     }),
   );
@@ -97,8 +97,8 @@ test("stale settings and model overrides report their exact configuration paths"
     fs.writeFileSync(
       path.join(agentDir, "settings.json"),
       JSON.stringify({
-        defaultProvider: "failover",
-        defaultModel: "sol",
+        defaultProvider: "openai",
+        defaultModel: "gpt-6.1-sol",
         subagents: { defaultModel: "openai-codex/gpt-5.6-terra" },
       }),
     );

@@ -22,7 +22,7 @@ class WorkerSourceTests(unittest.TestCase):
     def test_work_tiers_prefer_codex_and_review_gates_use_claude(self):
         t = tomllib.loads(TIERS.read_text())
         expected = {
-            "orchestrator": "failover/sol",
+            "orchestrator": "openai/gpt-6.1-sol",
             "specialist": "openai/gpt-5.6-terra",
             "specialist-execution": "openai/gpt-5.6-terra",
             "specialist-fast": "openai/gpt-6-luna",

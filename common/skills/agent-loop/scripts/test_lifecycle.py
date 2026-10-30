@@ -123,7 +123,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual([v for v, a in self.gh_writes], ["pr-edit-body"])
         lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)   # one more step at the gate
         self.assertIn("ZIP-7873 ready for review", self.notified)      # existing PR gets the plan-derived title/body
-        self.assertTrue(self.replies[0][1].endswith("on his behalf"))
+        self.assertEqual(self.replies[0][1], "No change needed; summary only.")
 
     def test_serial_execution_runs_a_later_prerequisite_before_its_dependent(self):
         manifest = self.wt / "planning/zip-7873/tasks.toml"

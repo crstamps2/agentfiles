@@ -105,8 +105,8 @@ spinup → plan → plan-review → implement → gates → draft-pr → ready �
   PR, linted for workflow vocabulary; title from the ticket summary. Screenshots via `gh image`.
 - **ready / bot-loop**: CI classified (wait / rerun / rebase / fix task / escalate), mark ready
   (triggers the Claude review workflows), comments adjudicated by `review-adjudicator` (fix / decline /
-  defer / question), replies posted with `— posted by Cody's AI agent (<model>) on his behalf`, fix
-  tasks `9nn` run, re-review, gate.
+  defer / question), replies posted without automatic AI-agent signatures, fix tasks `9nn` run,
+  re-review, gate.
 
 ## Self-healing (heal.py)
 

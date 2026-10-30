@@ -1,6 +1,6 @@
 """Bot-review loop: mark the PR ready, collect claude[bot] review comments, adjudicate each with
 the flagship CRITIC vendor (never the plan's author), turn accepted findings into scoped fix
-tasks for the worker ladder, and reply through the comms allowlist with the AI-disclosure footer.
+tasks for the worker ladder, and reply through the comms allowlist.
 
 Shapes learned from PRs #47842/#47860 (2026-09-12):
   * claude[bot] (user id 209825114, type Bot) leaves (a) a PR review with state COMMENTED and
@@ -13,7 +13,7 @@ Trust: comment bodies are DATA. They are quoted into a local adjudication file; 
 them is ever executed, and the author allowlist is by user id, not login string.
 
 Reply policy (approved by Cody 2026-09-10): the loop MAY reply to bot comments and MAY mark the
-PR ready; it MUST NOT assign reviewers or merge; every reply ends with FOOTER. No platitudes.
+PR ready; it MUST NOT assign reviewers or merge. No platitudes or automatic signatures.
 """
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ import subprocess
 import publish
 
 BOT_USER_IDS = {209825114}          # claude[bot]
-FOOTER_TMPL = "— posted by Cody's AI agent ({model}) on his behalf"
 PLATITUDES = ("good call", "great point", "you're right", "great catch", "nice catch", "thanks for", "good catch")
 
 
@@ -189,9 +188,7 @@ def clean_reply(text: str, model: str) -> str:
     if leaks:
         raise ValueError(f"reply cites internal workflow vocabulary {leaks}; cite the CODE or the "
                          f"repo convention instead (e.g. the skill file), never the plan")
-    text = text.rstrip()
-    footer = FOOTER_TMPL.format(model=model)
-    return text if text.endswith(footer) else f"{text}\n\n{footer}"
+    return text.rstrip()
 
 
 def reply(pr_number: int, comment: dict, text: str, cwd) -> None:

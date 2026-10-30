@@ -37,10 +37,12 @@ class FetchFilterTests(unittest.TestCase):
 
 
 class ReplyTests(unittest.TestCase):
-    def test_footer_appended_once(self):
-        r = botreview.clean_reply("Declined: the slot API mirrors ZUI::Card (card.rb:39).", "gpt-6-astra")
-        self.assertTrue(r.endswith("— posted by Cody's AI agent (gpt-6-astra) on his behalf"))
-        self.assertEqual(botreview.clean_reply(r, "gpt-6-astra"), r)
+    def test_reply_has_no_automatic_signature(self):
+        text = "Declined: the slot API mirrors ZUI::Card (card.rb:39)."
+        for model in ("gpt-6-astra", "claude-fable-5-1", ""):
+            with self.subTest(model=model):
+                self.assertEqual(botreview.clean_reply(text + "\n\n", model), text)
+                self.assertEqual(botreview.clean_reply(text, model), text)
 
     def test_platitudes_rejected(self):
         for bad in ("Good call, fixed.", "You're right about this", "Great catch!"):

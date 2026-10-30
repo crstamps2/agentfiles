@@ -136,11 +136,9 @@ This rule has been violated repeatedly. The orchestrator has had to sanitize fou
 - Match each intended operation against the live body, destination, resulting state, and returned comment or operation ID where available. Record which operations are confirmed complete, missing, or still uncertain, with links or IDs as evidence.
 - Resume only confirmed missing operations within the existing approval. Never repost a comment or repeat a transition speculatively. If live reads cannot resolve an uncertain write, stop and report that uncertainty instead of retrying.
 
-## AI-agent signatures
+## PR comment style
 
-- Never hardcode, guess, or copy a model identity from an older comment, transcript, agent name, or configured default. Include a model name only when supported current-session runtime metadata verifies the model that authored the message.
-- If that identity is unavailable, use a model-neutral signature such as `- posted by the user's AI agent on their behalf`, adapting the attribution to the actual user. Include the chosen signature in the draft presented for approval.
-- An approval of exact copy is not permission to silently change its signature. If a verified identity conflicts with an already approved signature, show the corrected body and obtain approval before posting.
+- Do not append AI-agent disclosure footers, model signatures, or on-behalf-of sign-offs to PR comments or review replies.
 
 ## External communications gate
 

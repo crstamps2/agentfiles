@@ -53,7 +53,7 @@ def _get(url: str, timeout=20) -> tuple[int, str]:
         return 0, str(e)
 
 
-def ensure_dev_server(wt) -> str:
+def ensure_dev_server(wt, component: str | None = None) -> str:
     """Make sure the worktree's dev server answers and migrations are current."""
     base = worktree_url(wt)
     code, body = _get(f"{base}/lookbook/")
@@ -72,6 +72,14 @@ def ensure_dev_server(wt) -> str:
             time.sleep(10)
     if code != 200:
         raise VisualGateError(f"{base}/lookbook/ answered {code}")
+    preview = pathlib.Path(wt) / "app/views/components/previews/zui" / f"{component}_preview.rb" if component else None
+    if preview and preview.is_file():
+        try:
+            preview_path(base, component)
+        except VisualGateError:
+            # A running server can retain an old Lookbook registry after a new preview is added (ZIP-4245).
+            subprocess.run(["bash", "-lc", "bin/wt dev --restart"], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
+            preview_path(base, component)
     return base
 
 

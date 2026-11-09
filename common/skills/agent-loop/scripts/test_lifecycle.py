@@ -1380,6 +1380,28 @@ after = ["001"]
         self.assertEqual(calls, ["repair"]); self.assertEqual(state.load(tdir).state, "implement")
         self.assertEqual((tdir / "plan-repairs.n").read_text(), "1")
 
+    def test_unstructured_plan_block_retries_planning_without_opening_a_defect(self):
+        """ZIP-9119: a planner's bare design request is a failed plan, not a human hold."""
+        import heal
+        import repair
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup", worktree=str(self.wt)))
+        (self.wt / "planning" / "zip-7873" / "plan-review.md").unlink()
+        blocked = {"result": "blocked", "reason": "blocked — design/product must decide whether to keep or replace the listbox pattern.",
+                   "rounds": [], "author_model": "A", "critic_model": "C"}
+        with patch.object(lifecycle.plan_mod, "plan_ticket", return_value=blocked):
+            first = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        current = state.load(tdir)
+        self.assertEqual(first.action, "paused")
+        self.assertEqual((current.state, current.previous), ("paused", "plan"))
+        self.assertTrue(current.reason.startswith("plan failed: blocked"))
+        self.assertEqual(heal.policy(current.reason)[0], "replan")
+        second = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(second.action, "self-heal: replan")
+        self.assertEqual(state.load(tdir).state, "plan")
+        self.assertIsNone(state.load(tdir).recovery["active"])
+        self.assertEqual(repair.open_defects(self.cfg), [])
+
     def test_plan_failed_pause_heals_back_to_plan_stage(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir); tt.state = "plan"; tt.previous = "spinup"; state.save(tdir, tt)
         tt = state.transition(tt, "paused", reason="plan failed: critic verdict 'revise' after 2 rounds"); state.save(tdir, tt)

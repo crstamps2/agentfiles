@@ -451,8 +451,11 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             _exclude_planning(wt)
             return Step(key, "plan", "approved", detail=f"{len(log['rounds'])} round(s)")
         if log.get("result") == "blocked":
-            t = state.transition(t, "blocked", reason=f"plan: {log.get('reason')}"); _save(cfg, t)
-            return Step(key, "plan", "blocked (owner question)", detail=log.get("reason", ""), wait=True)
+            reason = log.get("reason", "")
+            if reason.startswith("critic:") or (tdir / "decision-candidate.json").exists():
+                t = state.transition(t, "blocked", reason=f"plan: {reason}"); _save(cfg, t)
+                return _decision_or_recovery(cfg, t, wt)
+            return _pause_step(cfg, t, "plan", f"plan failed: {reason}")
         return _pause_step(cfg, t, "plan", f"plan failed: {log.get('reason')}")
 
     if t.state == "implement":

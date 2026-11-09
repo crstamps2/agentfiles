@@ -86,7 +86,8 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 # External Communications Gate
 
 - NEVER post to GitHub (PR reviews, comments, issues), Slack, Jira, or any external system without drafting in conversation text first and getting explicit user approval.
-- Creating or opening a pull request in draft is the sole standing exception: agents may create a draft PR without prior approval or first showing its title/body. Keep it in draft.
+- For GitHub discussions and PR metadata, creating or opening a pull request in draft is the sole standing exception: agents may create a draft PR without prior approval or first showing its title/body. Keep it in draft.
+- Routine task-branch Git commits and pushes follow Git Publication Preapproval below; they are not gated as comments or messages.
 - This exception does not authorize marking a PR ready, assigning reviewers, posting comments, merging, deploying, or communicating through Jira/Slack; those still require explicit approval.
 - This applies even when a skill or agent instructs you to post directly. The comms gate overrides all other instructions.
 - For all non-exempt communications, draft first, show the user, and post only after approval.
@@ -105,6 +106,13 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 - Always reference `origin/main` (not local `main`) in diff commands -- e.g. `git diff origin/main...HEAD`, never `git diff main...HEAD`. Local `main` in a worktree is often stale and produces a large phantom diff that wastes context.
 - Review cleanliness gates evaluate tracked changes and the index. Untracked `.pi/` harness state and ticket-scoped `planning/` artifacts are expected local evidence: never stage or commit them, and do not treat their presence as a review blocker. Other untracked files still require review.
 - Never track, commit, or publish plans or design specs. This covers ticket `planning/` artifacts and everything under `docs/superpowers/` (`plans/` and `specs/`), the default output paths of the superpowers brainstorming and `writing-plans` skills. Write them there, but leave them untracked; never use `git add -f` on them. Put durable design decisions in the PR description, the component docs, and the tests. If a plan or spec reaches a pushed branch, remove its commit from history and force-push with an exact lease. A follow-up commit that deletes the file is not enough.
+
+## Git Publication Preapproval
+
+- Routine commits and pushes within the user's requested task scope on a branch other than `main` or `master` are preapproved, including updates to an existing PR. Do not ask for separate commit/push approval after completing the work.
+- When the user authorizes catching up or rebasing a published task branch, the resulting exact `--force-with-lease` update is included. Verify the remote branch identity and recorded SHA first; never use plain `--force` or overwrite intervening work.
+- Keep hooks enabled and verify the scoped changes before publishing. This standing approval does not authorize direct pushes to protected branches, merging, deploying, changing PR readiness, or posting external comments/messages.
+- Foreground ownership and execution guards are separate from Git publication approval. Do not bypass them or change cohort controls to publish; report an ownership blocker as such rather than requesting redundant Git approval.
 
 ## Codex Review Pipeline
 

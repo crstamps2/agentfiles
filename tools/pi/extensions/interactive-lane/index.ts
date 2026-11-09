@@ -22,7 +22,9 @@ export default function (pi: ExtensionAPI) {
 		const args = [RUNNER, "interactive", action, "--worktree", ctx.cwd, "--session", ctx.sessionManager.getSessionId()];
 		// Cleanup can restore an interrupted attempt. Pi's exec timeout kills only the helper,
 		// not its git descendants, so never abandon a mutating handoff on a UI timeout.
-		const result = await pi.exec(PYTHON, args, { cwd: ctx.cwd, timeout: action === "status" ? 15_000 : 0 });
+		// A retained conversation can outlive its worktree. The controller runs from its
+		// own checkout; --worktree and --session still identify the unchanged ownership gate.
+		const result = await pi.exec(PYTHON, args, { cwd: REPO, timeout: action === "status" ? 15_000 : 0 });
 		if (result.killed || result.code !== 0) throw new Error(result.stderr || "interactive handoff did not finish");
 		const value = JSON.parse(result.stdout) as Ownership;
 		if (!["unmanaged", "autonomous", "yielding", "interactive", "queued", "human", "other-session"].includes(value.mode)) {

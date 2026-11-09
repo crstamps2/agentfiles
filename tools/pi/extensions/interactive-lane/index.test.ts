@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import register from "./index.ts";
 
-function harness(mode = "interactive", initial = "autonomous", cwd = "/tmp/zip-3") {
+type Exec = (command: string, args: string[], options: { cwd: string; timeout: number }) => Promise<{
+	code: number; killed: boolean; stdout: string; stderr: string;
+}>;
+
+function harness(mode = "interactive", initial = "autonomous", cwd = "/tmp/zip-3", execute?: Exec) {
 	const handlers = new Map<string, (event: any, ctx: any) => any>();
 	const commands = new Map<string, any>();
 	const calls: string[][] = [];
@@ -13,9 +21,10 @@ function harness(mode = "interactive", initial = "autonomous", cwd = "/tmp/zip-3
 	const pi = {
 		on: (name: string, callback: any) => handlers.set(name, callback),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
-		exec: async (_command: string, args: string[], options: { timeout: number }) => {
+		exec: async (command: string, args: string[], options: { cwd: string; timeout: number }) => {
 			calls.push(args);
 			timeouts.push(options.timeout);
+			if (execute) return execute(command, args, options);
 			if (fail) return { code: 2, stdout: "", stderr: "handoff failed" };
 			const action = args[args.indexOf("interactive") + 1];
 			return { code: 0, killed, stdout: JSON.stringify({ mode: action === "status" ? initial : action === "return" ? "queued" : mode, ticket: "ZIP-3" }), stderr: "" };
@@ -116,6 +125,27 @@ test("a killed helper is not treated as a successful ownership handoff", async (
 	h.kill();
 	await h.emit("input", { source: "interactive", text: "fix it" });
 	assert.equal((await h.emit("tool_call", { toolName: "edit" })).block, true);
+});
+
+test("a removed session directory does not prevent the ownership helper from verifying the handoff", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-handoff-removed-"));
+	rmSync(cwd, { recursive: true });
+	// Replace only the backend payload; really spawn a process using the extension's cwd.
+	// Pi returns an empty failed result when spawn fails with ENOENT for a removed cwd.
+	const execute: Exec = async (_command, _args, options) => new Promise(resolve => {
+		execFile(process.execPath, ["-e", 'process.stdout.write(JSON.stringify({ mode: "interactive", ticket: "ZIP-3" }))'],
+			{ cwd: options.cwd }, (error, stdout, stderr) => {
+				resolve({ code: error ? 1 : 0, killed: false, stdout, stderr });
+			});
+	});
+	const h = harness("interactive", "autonomous", cwd, execute);
+	await h.emit("input", { source: "interactive", text: "update the agent instructions" });
+	assert.equal(await h.emit("tool_call", { toolName: "read" }), undefined);
+	assert.equal(await h.emit("tool_call", { toolName: "edit" }), undefined);
+	assert.equal(h.calls.length, 3);
+	for (const args of h.calls) {
+		assert.deepEqual(args.slice(-4), ["--worktree", cwd, "--session", "session-a"]);
+	}
 });
 
 test("local user bash obeys the same handoff boundary", async () => {

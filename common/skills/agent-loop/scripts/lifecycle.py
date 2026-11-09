@@ -559,7 +559,7 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
         component = _component_name(wt)
         if any(x.visual for x in tasks) and component:
             try:
-                base = screenshots.ensure_dev_server(wt)
+                base = screenshots.ensure_dev_server(wt, component)
                 shots = screenshots.capture(base, component, tdir / "screenshots" / _head(wt)[:10])
                 (tdir / "screenshots.json").write_text(json.dumps({k: str(v) for k, v in shots.items()}))
             except screenshots.VisualGateError as e:

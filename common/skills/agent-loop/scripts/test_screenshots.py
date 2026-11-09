@@ -100,3 +100,22 @@ class EnsureDevServerTests(unittest.TestCase):
             screenshots.ensure_dev_server("/wt/zip-x")
         self.assertIn("bin/wt dev --start", cmds)
 
+    def test_a_stale_200_nav_with_an_existing_preview_restarts_the_server(self):
+        import pathlib, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            wt = pathlib.Path(d)
+            preview = wt / "app/views/components/previews/zui/tag_preview.rb"
+            preview.parent.mkdir(parents=True); preview.write_text("class TagPreview; end")
+            stale = '<a href="/lookbook/inspect/zui/card/variants">v</a>'
+            fresh = stale + '<a href="/lookbook/inspect/zui/tag/assigned">v</a>'
+            server, cmds = {"fresh": False}, []
+            def get(url, timeout=20):
+                return 200, fresh if server["fresh"] else stale
+            def restart(argv, **kwargs):
+                cmds.append(argv[-1]); server["fresh"] = True
+            with patch.object(screenshots, "_get", side_effect=get), \
+                 patch.object(screenshots.subprocess, "run", side_effect=restart):
+                base = screenshots.ensure_dev_server(wt, "tag")
+                self.assertEqual(screenshots.preview_path(base, "tag"), "zui/tag")
+            self.assertEqual(cmds, ["bin/wt dev --restart"])
+

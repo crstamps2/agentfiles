@@ -28,9 +28,17 @@ class WorkspaceSelectionTests(unittest.TestCase):
         wb.write(self.cfg.ticket_dir("ZIP-1"), wb.Binding(backend="orca", key="ZIP-1", worktree="/workspaces/existing"))
 
     def test_new_launch_defaults_to_orca(self):
+        self.ticket = state.Ticket(key="ZIP-1")
         self.assertEqual(self.select(new_launch=True), "orca")
 
+    def test_existing_legacy_launch_cannot_implicitly_switch_backend(self):
+        ticket = state.Ticket(key="ZIP-1", worktree="/worktrees/zip-1", workspace="workspace:1")
+        self.assertEqual(workspaces.backend_for(self.cfg, ticket, new_launch=True).name, "cmux")
+        with self.assertRaises(wb.BindingError):
+            workspaces.backend_for(self.cfg, ticket, new_launch=True, override="orca")
+
     def test_explicit_cmux_override(self):
+        self.ticket = state.Ticket(key="ZIP-1")
         self.assertEqual(self.select(new_launch=True, override="cmux"), "cmux")
         self.path.write_text(self.path.read_text() + '\n[workspace]\nbackend="cmux"\n')
         self.cfg = config.load(self.path)
@@ -63,6 +71,13 @@ class WorkspaceSelectionTests(unittest.TestCase):
         self.path.write_text(self.path.read_text() + '\n[workspace]\nbackend="typo"\n')
         with self.assertRaises(config.ConfigError):
             config.load(self.path)
+
+    def test_returned_orca_path_counts_as_in_flight(self):
+        import drip
+        path = self.path.parent / "native" / "zip-1"
+        path.mkdir(parents=True)
+        state.save(self.cfg.ticket_dir("ZIP-1"), state.Ticket(key="ZIP-1", state="implement", worktree=str(path)))
+        self.assertIn("ZIP-1", drip.in_flight(self.cfg))
 
     def test_workspace_paths_and_status_mapping_are_validated(self):
         self.path.write_text(self.path.read_text() + '\n[workspace]\nrepo="~/workspace/example-app"\n[workspace.statuses]\nready_for_review="status-5"\n')

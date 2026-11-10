@@ -17,15 +17,15 @@ Runs as a launchd job every 15 min (`runner.py supervise drip-start`), or once (
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import subprocess
-import sys
 import time
 
 import cohort
 import recovery
 import state
+import workspace_binding
+import workspaces
 
 IN_FLIGHT_STATES = {"spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop", "paused"}
 TERMINAL = {"human-gate-1", "done", "blocked", "colleague-loop", "human-gate-2"}
@@ -133,7 +133,7 @@ def in_flight(cfg) -> list[str]:
         t = state.load(td)
         if (td / "PARKED").exists() or state.human_owned(td):
             continue                              # held back by the 4-at-a-time throttle; resumed first when a slot frees
-        if t.state in IN_FLIGHT_STATES and (WORKTREES / t.key.lower()).exists():
+        if t.state in IN_FLIGHT_STATES and pathlib.Path(t.worktree or WORKTREES / t.key.lower()).is_dir():
             out.append(t.key)
     return sorted(out)
 
@@ -153,17 +153,21 @@ def candidates(cfg, log=print) -> list[dict]:
     for r in rows:
         spec = cfg.tickets.get(r["key"])
         if spec and spec.exclude:
-            log(f"  skip {r['key']}: excluded ({spec.exclude})"); continue
+            log(f"  skip {r['key']}: excluded ({spec.exclude})")
+            continue
         if r["key"] in flight or r["key"] in gated or state.human_owned(cfg.ticket_dir(r["key"])):
             continue
         if spec and any(d not in done for d in spec.deps):
-            log(f"  skip {r['key']}: deps not Done in Jira: {[d for d in spec.deps if d not in done]}"); continue
+            log(f"  skip {r['key']}: deps not Done in Jira: {[d for d in spec.deps if d not in done]}")
+            continue
         if r["status"] not in READY_STATUSES:
             # Only the board's "ready" column is fair game: In Progress means a person is working it
             # (Martin's adoption tickets); Triage/Backlog means it is not yet groomed.
-            log(f"  skip {r['key']}: status {r['status']!r} is not a ready column"); continue
+            log(f"  skip {r['key']}: status {r['status']!r} is not a ready column")
+            continue
         if cfg.drip.get("skip_assigned_to_others") and r["assignee"] and r["assignee"] != ME:
-            log(f"  skip {r['key']}: assigned to {r['assignee']}"); continue
+            log(f"  skip {r['key']}: assigned to {r['assignee']}")
+            continue
         out.append(r)
     return out
 
@@ -187,15 +191,8 @@ class SpinupFailed(RuntimeError):
         self.status, self.worktree = status, worktree
 
 
-def _spinup_modules():
-    sys.path.insert(0, str(SPINUP_SCRIPTS))
-    import cmux_chain, spinup_helper  # noqa: E402
-    return cmux_chain, spinup_helper
-
-
-def _chain_kwargs(cc, key: str) -> dict:
-    return {"prompt": f"/loop-watch {key}", "ref_url": f"{cc.JIRA_BROWSE_BASE}/{key}",
-            "group": getattr(cc, "GROUP_IN_PROGRESS", None), "harness": "pi"}
+def _spinup_modules(cfg):
+    return workspaces.load_helper(cfg, "spinup_helper")
 
 
 def _claim_in_jira(sh, ticket: dict, log) -> None:
@@ -208,55 +205,47 @@ def _claim_in_jira(sh, ticket: dict, log) -> None:
     subprocess.run(["acli", "jira", "workitem", "assign", "--key", key, "--assignee", ME], capture_output=True, timeout=60)
     try:
         sh.mark_spunup(key)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        log(f"{key}: spinup marker unavailable (continuing): {type(exc).__name__}")
 
 
-def spinup_with_panes(key: str, log=print) -> pathlib.Path:
-    """Cody's cmux chain with ALL panes: setup, dev server, browser, Jira; the agent tab runs /loop-watch."""
-    cc, sh = _spinup_modules()
+def _workspace_action(cfg, key, action, log=print):
+    try:
+        result = action()
+    except (workspaces.WorkspaceError, workspace_binding.BindingError) as exc:
+        t = state.load(cfg.ticket_dir(key))
+        try:
+            binding = workspace_binding.read(cfg.ticket_dir(key))
+        except workspace_binding.BindingError:
+            binding = None
+        status = exc.status if isinstance(exc, workspaces.WorkspaceError) else "workspace-binding-invalid"
+        raise SpinupFailed(status, binding.worktree if binding else t.worktree) from exc
+    if result.status not in CHAIN_OK:
+        raise SpinupFailed(result.status, result.binding.worktree)
+    for warning in result.warnings:
+        log(f"{key}: {warning}")
+    return pathlib.Path(result.binding.worktree)
+
+
+def spinup_with_panes(cfg, key: str, log=print) -> pathlib.Path:
+    """Create all workspace views using the shared lifecycle and configured backend."""
+    sh = _spinup_modules(cfg)
     ticket = sh.fetch_ticket(key)
     branch = sh.derive_branch(ticket["key"], ticket["issue_type"], ticket["title"])
-    name = cc.worktree_name_for_ticket(ticket["key"])
-    res = cc.run_chain(name=name, branch=branch, new_branch=True, **_chain_kwargs(cc, key))
-    log(f"{key}: spinup {res.get('status')} worktree={res.get('worktree')} workspace={res.get('workspace')}")
-    if res.get("status") not in CHAIN_OK:
-        raise SpinupFailed(res.get("status"), res.get("worktree"))
+    wt = _workspace_action(cfg, key, lambda: workspaces.launch(cfg, key, branch, f"/loop-watch {key}",
+                                                              f"https://example.atlassian.net/browse/{key}"), log=log)
+    log(f"{key}: spinup completed worktree={wt}")
     _claim_in_jira(sh, ticket, log)
-    (WORKTREES / ".metadata_never_index").touch()
-    return pathlib.Path(res["worktree"])
-
-
-def rerun_setup(worktree: str, name: str) -> tuple[bool, str]:
-    """Re-run bin/worktree-setup in an existing worktree, the way the setup tab runs it."""
-    cc, _ = _spinup_modules()
-    env = dict(os.environ, WORKTREE_NAME=name, WORKTREE_ROOT_PATH=str(cc.MAIN_REPO))
-    try:
-        r = subprocess.run(["bin/worktree-setup"], cwd=worktree, env=env, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=1800)
-    except subprocess.TimeoutExpired:
-        return False, "bin/worktree-setup timed out after 30 minutes"
-    return r.returncode == 0, (r.stdout + r.stderr)[-20000:]
+    return wt
 
 
 def retry_spinup(cfg, t: state.Ticket, log=print) -> pathlib.Path:
-    """Complete a failed spinup in place: same worktree and workspace, no duplicate."""
-    cc, sh = _spinup_modules()
-    name = cc.worktree_name_for_ticket(t.key)
-    workspace = cc.workspace_ref_for_name(name)
-    if not workspace:
-        raise SpinupFailed("workspace-closed", t.worktree)
-    ok, output = rerun_setup(t.worktree, name)
-    (cfg.ticket_dir(t.key) / "spinup-setup.log").write_text(output)
-    if not ok:
-        raise SpinupFailed("setup-failed", t.worktree)
-    (pathlib.Path(t.worktree) / ".cmux-setup-status").write_text("EXIT:0\n")
-    res = cc.finish_chain(name, workspace, t.worktree, **_chain_kwargs(cc, t.key))
-    log(f"{t.key}: spinup retry {res.get('status')} workspace={workspace}")
-    if res.get("status") not in CHAIN_OK:
-        raise SpinupFailed(res.get("status"), t.worktree)
+    """Retry in place using the recorded backend, never the new-launch default."""
+    wt = _workspace_action(cfg, t.key, lambda: workspaces.retry_setup(cfg, t, f"/loop-watch {t.key}",
+                                                                    f"https://example.atlassian.net/browse/{t.key}"), log=log)
+    sh = _spinup_modules(cfg)
     _claim_in_jira(sh, sh.fetch_ticket(t.key), log)
-    return pathlib.Path(t.worktree)
+    return wt
 
 
 def spinup_retries(cfg) -> list[state.Ticket]:
@@ -321,7 +310,7 @@ def tick(cfg, log=print, dry_run: bool = False) -> list[str]:
     Serialized by a lease: selection reads in-flight state, then mutates Jira and creates a worktree.
     A scheduled tick racing `/agent-loop start` could select the same ticket twice and build two
     workspaces and two supervisors for it (branch review 2026-09-23)."""
-    import locks, supervise
+    import locks
     if cohort_enabled(cfg):
         report = cohort.reconcile(cfg, dry_run=dry_run)
         for error in report.errors:
@@ -376,6 +365,8 @@ def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list
     if enabled:
         for slot in reserved:
             key = slot.ticket
+            if key is None:
+                continue
             if state.human_owned(cfg.ticket_dir(key)) or _spinup_waiting(cfg, key):
                 continue
             log(f"drip: retrying reserved {key}")
@@ -390,7 +381,7 @@ def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list
                 cohort.activate(cfg, key)
                 started.append(key)
                 continue
-            spin = (lambda t=t: retry_spinup(cfg, t, log)) if t.worktree and pathlib.Path(t.worktree).is_dir() else (lambda key=key: spinup_with_panes(key, log))
+            spin = (lambda t=t: retry_spinup(cfg, t, log)) if t.worktree and pathlib.Path(t.worktree).is_dir() else (lambda key=key: spinup_with_panes(cfg, key, log))
             try:
                 wt = spin()
             except SpinupFailed as e:
@@ -429,7 +420,7 @@ def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list
         return started
 
     work = [] if enabled else [(t.key, lambda t=t: retry_spinup(cfg, t, log), "retry setup") for t in spinup_retries(cfg)]
-    work += [(r["key"], lambda r=r: spinup_with_panes(r["key"], log), r["summary"][:60]) for r in candidates(cfg, log)]
+    work += [(r["key"], lambda r=r: spinup_with_panes(cfg, r["key"], log), r["summary"][:60]) for r in candidates(cfg, log)]
     for key, spin, what in work[:free]:
         log(f"drip: next → {key} {what}")
         if dry_run:

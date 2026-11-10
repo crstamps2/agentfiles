@@ -162,6 +162,37 @@ class RunnerHarness(unittest.TestCase):
         self.assertEqual(outcome, "accepted")
         self.assertEqual((rows[-1]["attempt"], rows[-1]["agent"]), (5, "cloud-worker"))   # numbering continues; ladder restarts cheap
 
+    def test_retry_restores_missing_committed_accepted_output_without_reset(self):
+        """ZIP-9116: a recovery retry restores accepted work that HEAD still contains."""
+        manifest = self.wt / "planning" / "zip-7873"
+        manifest.mkdir(parents=True)
+        (manifest / "tasks.toml").write_text(TASKS.replace('["app/components/**", "test/**"]', '["app/components/accepted.rb"]'))
+        task = contracts.load_tasks(manifest / "tasks.toml")[0]
+        source = self.wt / "app" / "components" / "accepted.rb"
+        source.write_text("accepted\n")
+        git(self.wt, "add", "app/components/accepted.rb")
+        git(self.wt, "commit", "-qm", "publish accepted work")
+        tree = git(self.wt, "rev-parse", "HEAD^{tree}").strip()
+        source.unlink()
+        adir = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"
+        adir.mkdir(parents=True)
+        (adir / "task.toml").write_text(attempt.task_toml(task))
+        (adir / "attempt.json").write_text(json.dumps({"outcome": "accepted", "observed_tree": tree}))
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        ticket = state.load(tdir)
+        ticket.worktree = str(self.wt)
+        for stage in ("spinup", "plan", "plan-review", "implement", "blocked"):
+            ticket = state.transition(ticket, stage, reason="owner" if stage == "blocked" else "")
+        ticket.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "slug": "touch"}]
+        state.save(tdir, ticket)
+
+        runner.retry_task(self.cfg, "ZIP-7873", "001", note="automatic recovery fix-1")
+
+        ticket = state.load(tdir)
+        self.assertEqual(source.read_text(), "accepted\n")
+        self.assertEqual(ticket.state, "implement")
+        self.assertFalse(any(row.get("outcome") == ladder.OPERATOR_RESET for row in ticket.attempts["ZIP-7873/001"]))
+
     def test_malformed_result_is_protocol_and_advances(self):
         outcome, rows = self.run_task("malformed", "pass")
         self.assertEqual(outcome, "accepted"); self.assertEqual(rows[0]["outcome"], "protocol")

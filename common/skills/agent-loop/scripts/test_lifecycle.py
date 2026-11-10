@@ -1369,6 +1369,55 @@ after = ["001"]
             step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
         self.assertEqual(published, ["001"]); self.assertIn("published previously accepted work", step.action)
 
+    def test_republish_restores_a_later_task_deleted_from_head_when_an_earlier_output_is_lost(self):
+        """ZIP-9116: never publish a deletion of accepted output that HEAD still has."""
+        import attempt as attempt_mod, contracts
+        git = lambda *a: subprocess.run(["git", "-C", str(self.wt), *a], capture_output=True, text=True, check=True).stdout.strip()
+        git("init", "-q")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test")
+        (self.wt / "README.md").write_text("base\n")
+        git("add", "README.md")
+        git("commit", "-qm", "base")
+        tasks = contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")
+
+        first = self.wt / "app" / "a.rb"
+        first.parent.mkdir(exist_ok=True)
+        first.write_text("accepted but never published\n")
+        git("add", "app/a.rb")
+        first_tree = git("write-tree")
+        git("reset", "-q")
+        first.unlink()
+
+        second = self.wt / "app" / "b.rb"
+        second.write_text("accepted and published\n")
+        git("add", "app/b.rb")
+        git("commit", "-qm", "accepted task 002")
+        second_tree = git("rev-parse", "HEAD^{tree}")
+        second.unlink()
+
+        tdir = self.cfg.ticket_dir("ZIP-7873")
+        ticket = state.load(tdir)
+        ticket.attempts = {
+            "ZIP-7873/001": [{"n": 1, "outcome": "accepted", "slug": "a"}],
+            "ZIP-7873/002": [{"n": 1, "outcome": "accepted", "slug": "b"}],
+        }
+        state.save(tdir, ticket)
+        for task, tree in zip(tasks, (first_tree, second_tree)):
+            adir = self.cfg.state_root / "attempts" / "ZIP-7873" / task.id / "1"
+            adir.mkdir(parents=True)
+            (adir / "task.toml").write_text(attempt_mod.task_toml(task))
+            (adir / "attempt.json").write_text(json.dumps({"outcome": "accepted", "observed_tree": tree}))
+
+        published = []
+        with patch("runner.publish_accepted", side_effect=lambda cfg, key, wt, task, ensure_pr=True: published.append(task.id)):
+            step = lifecycle.step(self.cfg, FakeRunner(self.cfg, []), None, "ZIP-7873", self.wt, hopper_index=2)
+
+        self.assertEqual(published, [])
+        self.assertEqual(second.read_text(), "accepted and published\n")
+        self.assertFalse(first.exists())
+        self.assertIn("restored accepted work", step.action)
+
     def test_failed_plan_with_revise_review_is_repaired_not_replanned(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.Ticket(key="ZIP-7873", state="plan", previous="spinup"); state.save(tdir, tt)
         (self.wt / "planning" / "zip-7873" / "plan.md").write_text("plan")

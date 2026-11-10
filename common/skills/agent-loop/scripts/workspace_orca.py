@@ -128,7 +128,8 @@ class Backend(Adapter):
     def workspace(self, binding, *, git_check=True):
         row = self.obj(self.command(["worktree", "show", "--worktree", self.selector(binding)]), "worktree")
         value = self.validate_worktree(binding, row, git_check=git_check)
-        recorded = binding.operations.get("create", {}).get("result", {}).get("identity")
+        recorded = (binding.operations.get("create", {}).get("result", {}).get("identity")
+                    or binding.operations.get("adopt", {}).get("result", {}).get("identity"))
         if recorded and value["identity"] != recorded:
             raise WorkspaceError("orca-identity-changed")
         return row, value
@@ -160,6 +161,10 @@ class Backend(Adapter):
                            and t.get("worktreeId") == binding.workspace_id and t.get("executionHostId") == "local" and t.get("orphaned") is not True]
                 if len(matches) != 1:
                     raise WorkspaceError("orca-terminal-stale")
+                if handle == agent.get("handle"):
+                    for name, native in (("pty_id", "ptyId"), ("incarnation_id", "incarnationId")):
+                        if agent.get(name) and matches[0].get(native) != agent[name]:
+                            raise WorkspaceError("orca-terminal-replaced")
         if agent.get("kind") == "chat":
             inventory = self.command(["worktree", "ps", "--limit", "10000"])
             rows = inventory.get("worktrees")
@@ -182,6 +187,25 @@ class Backend(Adapter):
             for page in pages:
                 if len([t for t in tabs if isinstance(t, dict) and t.get("browserPageId") == page and t.get("worktreeId") == binding.workspace_id]) != 1:
                     raise WorkspaceError("orca-browser-stale")
+
+    def observe_terminal(self, binding):
+        handle = binding.agent["handle"]
+        result = self.command(["terminal", "list", "--worktree", self.selector(binding)])
+        rows = result.get("terminals")
+        if result.get("truncated") is not False or not isinstance(rows, list):
+            raise WorkspaceError("adoption-terminal-unconfirmed")
+        matches = [row for row in rows if isinstance(row, dict) and row.get("handle") == handle]
+        if len(matches) != 1:
+            raise WorkspaceError("adoption-terminal-ambiguous-or-missing")
+        row = matches[0]
+        if (row.get("worktreeId") != binding.workspace_id or row.get("executionHostId") != "local"
+                or row.get("orphaned") is not False or row.get("connected") is not True or row.get("writable") is not True
+                or any(not isinstance(row.get(k), str) or not row[k] for k in ("ptyId", "incarnationId"))):
+            raise WorkspaceError("adoption-terminal-not-live-local")
+        terminal = self.obj(self.command(["terminal", "read", "--terminal", handle, "--limit", "1"]), "terminal")
+        if terminal.get("handle") != handle or terminal.get("status") != "running":
+            raise WorkspaceError("adoption-terminal-not-running")
+        return {"pty_id": row["ptyId"], "incarnation_id": row["incarnationId"]}
 
     def terminal(self, binding, stage, title, command):
         def create():

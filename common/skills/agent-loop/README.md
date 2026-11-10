@@ -20,7 +20,7 @@ branch `agent-loop-1`, whose checkout is used by launchd. Spinup changes live on
 | model tiers (author/critic/task-writer/workers) | `common/model-tiers.toml` → rendered agent defs in `~/.pi/agent/agents/*.md` (source: `common/agents/*.agent.md`) |
 | operator skill (fleet) | `/agent-loop` → `common/skills/agent-loop/SKILL.md` |
 | coordinator pane skill (one ticket) | `/loop-watch <TICKET>` → `common/skills/loop-watch/SKILL.md` |
-| runtime state | `~/.local/state/agent-loop/` — `tickets/<K>/{state.json,ci.json,heal.jsonl,bad-guards.md,gates.out,screenshots/}`, `attempts/<K>/<task>/<n>/`, `plans/`, `botreview/`, `usage.jsonl`, `locks/`, `launchd/*.log` |
+| runtime state | `~/.local/state/agent-loop/`: `tickets/<K>/{state.json,workspace.json,ci.json,heal.jsonl,bad-guards.md,gates.out,screenshots/}`, `attempts/<K>/<task>/<n>/`, `plans/`, `botreview/`, `usage.jsonl`, `locks/`, `launchd/*.log` |
 | per-ticket planning artifacts (never committed) | `<worktree>/planning/<key>/{plan.md,tasks.toml,plan-review.md,transcript.md}` (git-excluded via the repo's shared `info/exclude`) |
 | supervisors | `~/Library/LaunchAgents/com.cody.agent-loop.<ticket>.plist`, run via the codesigned `~/.local/bin/agent-loop-python` |
 
@@ -28,8 +28,103 @@ branch `agent-loop-1`, whose checkout is used by launchd. Spinup changes live on
 
 `drip.py`: children of the epic, board Rank order, only the ready column (`Selected for Work`), any
 assignee, minus `exclude`d tickets and tickets whose `deps` are not Done in Jira (no autonomous PR
-stacks). Each pick: full cmux spinup (agent tab runs `/loop-watch`), assign to Cody, In Progress,
-launchd supervisor. Runs every 15 min as `com.cody.agent-loop.drip` for board discovery.
+stacks). Each pick uses the shared workspace lifecycle, then assigns to Cody, marks In Progress, and
+starts its launchd supervisor. Runs every 15 min as `com.cody.agent-loop.drip` for board discovery.
+
+## Workspace backends and bindings
+
+### Selection
+
+New unbound launches use the configured `[workspace].backend`. Its default is `orca`. The intended
+production configuration supplies the local repository and status mapping:
+
+```toml
+[workspace]
+backend = "orca"
+repo = "~/workspace/example-app"
+
+[workspace.statuses]
+in_progress = "in-progress"
+ready_for_review = "status-5"
+```
+
+To intentionally make **future unbound** launches use cmux, set `[workspace].backend` to `cmux`:
+
+```toml
+[workspace]
+backend = "cmux"
+```
+
+A ticket with no binding but an existing worktree or workspace is legacy cmux, regardless of the
+current default. A recorded binding is immutable: changing the default never relocates it, and an
+explicit backend override that conflicts with it is refused. Do not delete or edit a binding to
+force a backend change.
+
+### Orca launch surface
+
+A new Orca workspace requests Pi with `--agent pi --surface chat` and delivers the prompt
+`/loop-watch KEY`, with `KEY` replaced by the ticket key. The binding records the actual native
+outcome. A structured outcome is recorded as chat with its returned session identity; a host-provided
+terminal fallback is retained and reported as that one agent. Do not start a second agent to obtain
+chat. If chat is refused before launch, report the limitation rather than falling back to cmux or
+another surface.
+
+This request and its transport receipt do not prove that native chat can run `/loop-watch`, load the
+Pi extension, or distinguish real-user input from automated or RPC input. Those compatibility checks,
+and the first complete real Orca setup lifecycle, remain required rollout evidence.
+
+### Recovery and status
+
+Each ticket binding lives at `tickets/<KEY>/workspace.json`, separately from `state.json`, so a
+legacy state writer cannot erase backend identity. It records the selected backend, local worktree,
+branch, native workspace and repository identities, terminal and view handles, the actual agent
+surface and session identity, phase, and bounded operation intents and receipts. It does not store
+terminal histories or credentials.
+
+An existing ticket with workspace/worktree metadata but no binding is legacy cmux. An unreadable, corrupt, or unsupported binding is
+an error. For an uncertain phase or pending operation, inspect the exact recorded resources and
+receipts before any recovery. Do not issue a fresh create, agent launch, or prompt delivery; delete
+the binding; or route the ticket through the other backend. A definite setup failure may use the
+normal recovery path for its recorded workspace, but uncertainty permits observation only until the
+identity and operation outcome are resolved.
+
+Shared policy renders the same workspace status across both backends. Verified Ready for Review is
+mapped to Orca status `status-5` through `[workspace.statuses].ready_for_review`; it is not the
+generic `in-review` status. If that mapping is absent, the board status remains unchanged. Status
+presentation, notification, and review routing do not create agents, relaunch workspaces, or change
+ownership.
+
+### Metadata enrollment
+
+```bash
+runner.py workspace-adopt --ticket KEY --backend orca --workspace EXACT-ID --agent-terminal EXACT-HANDLE
+```
+
+This command enrolls metadata for one explicitly named, already-existing resource. It first verifies
+the current ticket state, Git worktree, branch and repository, local native workspace, and exact live
+agent terminal. It performs no launch, setup, prompt send, supervisor, cohort, lifecycle, or ownership
+mutation.
+
+Adoption is idempotent only for the same verified binding and refuses a conflicting one. It does not
+auto-discover workspaces, bulk-adopt foreground work, trust stale handover evidence by itself, convert
+a terminal to chat, or start a duplicate agent. After a reviewed rollout, enrollment is limited to the
+six already-transferred canonical tickets, each freshly verified against current resources.
+
+### Ownership, rollback, and rollout limits
+
+Backend selection preserves the existing foreground and autonomous boundaries. It does not change
+cohort capacity, reservation, recovery targets, supervisors, `HUMAN` markers, or the rule that only
+`/agent-loop-auto` returns foreground work to autonomous admission. Existing jobs continue on their
+recorded backend, and legacy jobs continue through cmux.
+
+Rolling back the configured default affects only future unbound launches. It must not redirect an Orca
+binding to cmux-only handling, delete a binding, or relocate a running workspace. During a mixed-version
+refresh, older processes can still write `state.json`; the separate binding must remain intact. Do not
+activate a new default while an older in-flight launcher could create the same ticket. If backend or
+ownership continuity cannot be established, leave rollout pending and report the exact evidence.
+
+This guide describes the candidate operator contract. It does not assert live activation, publication,
+or completion of first-use verification.
 
 ## The cohort (two production background slots)
 
@@ -113,7 +208,7 @@ spinup → plan → plan-review → implement → gates → draft-pr → ready �
 Every `paused` reason has a policy and a per-reason budget. When the policy says `human` or a budget
 is spent, the ticket gets a structured recovery contract and a queued runner defect (it keeps its
 cohort slot); only a validated product/API decision request waits on Cody. Recoveries are logged to
-`tickets/<K>/heal.jsonl`. Notifications (cmux + macOS) fire at Human Gate 1 and for open product
+`tickets/<K>/heal.jsonl`. Notifications (the bound workspace + macOS) fire at Human Gate 1 and for open product
 decisions, re-raised every six hours while a decision stands.
 
 | pause reason | action | budget |
@@ -184,7 +279,7 @@ under the current shape planning is ~$6–20/ticket. Current model pricing may c
 
 - Intra-ticket task parallelism is built (`parallel.py`) but gated off (`tasks_parallel`) until
   `implement_task` is thread-safe per ticket.
-- Drip spinups launch the agent tab with `/loop-watch` directly; the manual `spinup` skill does not yet have a `--loop` flag (the
-  spinup skill; `/agent-loop start` does it in three steps.
+- Drip spinups launch `/loop-watch` directly on the selected backend's one agent surface; the manual
+  `spinup` skill does not yet have a `--loop` flag (`/agent-loop start` does it in three steps).
 - Figma Code Connect: workers produce a static mapping that parses; the handoff/publish step is an
   owner action and is listed among the tier-3 items in each Gate 1 report.

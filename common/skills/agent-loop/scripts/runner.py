@@ -903,6 +903,11 @@ def main(argv=None) -> int:
     it.add_argument("action", choices=["enter", "check", "status", "return"])
     it.add_argument("--worktree", required=True)
     it.add_argument("--session", default=None)
+    wa_adopt = sub.add_parser("workspace-adopt", help="verify and enroll an existing local Orca terminal; no launch or ownership transfer")
+    wa_adopt.add_argument("--ticket", required=True)
+    wa_adopt.add_argument("--backend", choices=["orca"], required=True)
+    wa_adopt.add_argument("--workspace", required=True)
+    wa_adopt.add_argument("--agent-terminal", required=True)
     ro = sub.add_parser("run-once", help="advance one ticket through plan -> implement -> gates -> draft PR -> CI -> ready -> bot review -> Human Gate 1")
     ro.add_argument("--ticket", required=True); ro.add_argument("--worktree", required=True)
     ro.add_argument("--max-steps", type=int, default=12); ro.add_argument("--wait-on-resource", type=int, default=0, metavar="MINUTES")
@@ -957,6 +962,18 @@ def main(argv=None) -> int:
                    help="overnight mode: when a task pauses for a RESOURCE reason (admission red / heavy lane held), "
                         "sleep 2 min and retry for up to MINUTES instead of exiting. PAUSE/HUMAN still exit.")
     a = ap.parse_args(argv); cfg = config.load(a.config); cfg.ensure_dirs()
+    if a.cmd == "workspace-adopt":
+        import workspaces
+        try:
+            requested = workspaces.Binding(backend=a.backend, key=a.ticket, workspace_id=a.workspace,
+                                           agent={"kind": "terminal", "handle": a.agent_terminal})
+            binding = workspaces.adopt(cfg, a.ticket, requested)
+        except (workspaces.WorkspaceError, workspaces.BindingError, OSError, ValueError) as exc:
+            print(f"workspace-adopt: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps({"ticket": binding.key, "backend": binding.backend, "workspace": binding.workspace_id,
+                          "agent_terminal": binding.agent["handle"]}))
+        return 0
     if a.cmd == "status":
         return Runner(cfg).status()
     if a.cmd == "interactive":

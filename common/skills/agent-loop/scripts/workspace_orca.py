@@ -89,7 +89,7 @@ class Backend(Adapter):
         binding.repo_id = repo["id"]
         self.checkpoint(binding)
 
-    def validate_worktree(self, binding, row):
+    def validate_worktree(self, binding, row, *, git_check=True):
         path = row.get("path")
         branch = row.get("branch", "").removeprefix("refs/heads/")
         if (not isinstance(path, str) or not pathlib.Path(path).is_absolute() or not pathlib.Path(path).is_dir()
@@ -98,9 +98,9 @@ class Backend(Adapter):
                 or (binding.worktree and pathlib.Path(binding.worktree).resolve() != pathlib.Path(path).resolve())
                 or (binding.workspace_id and binding.workspace_id != row["id"])):
             raise WorkspaceError("orca-worktree-mismatch")
-        if self.git("branch", "--show-current", cwd=path) != binding.branch:
+        if git_check and self.git("branch", "--show-current", cwd=path) != binding.branch:
             raise WorkspaceError("orca-branch-mismatch")
-        if self.git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=path) != self.git("rev-parse", "--path-format=absolute", "--git-common-dir"):
+        if git_check and self.git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=path) != self.git("rev-parse", "--path-format=absolute", "--git-common-dir"):
             raise WorkspaceError("orca-repo-mismatch")
         identity = self.obj(row, "identity").get("key")
         if not isinstance(identity, str) or not identity:
@@ -125,12 +125,24 @@ class Backend(Adapter):
         binding.workspace_id, binding.worktree = value["workspace_id"], value["worktree"]
         self.checkpoint(binding)
 
-    def inspect(self, binding):
+    def workspace(self, binding, *, git_check=True):
         row = self.obj(self.command(["worktree", "show", "--worktree", self.selector(binding)]), "worktree")
-        value = self.validate_worktree(binding, row)
+        value = self.validate_worktree(binding, row, git_check=git_check)
         recorded = binding.operations.get("create", {}).get("result", {}).get("identity")
         if recorded and value["identity"] != recorded:
             raise WorkspaceError("orca-identity-changed")
+        return row, value
+
+    def inspect(self, binding):
+        row, value = self.workspace(binding)
+        current = row.get("workspaceStatus")
+        lane = "in-progress" if current == self.cfg.workspace_statuses.get("in_progress", "in-progress") else "other"
+        if current == self.cfg.workspace_statuses.get("ready_for_review"):
+            lane = "ready-for-review"
+        return Snapshot(binding, value["identity"], lane)
+
+    def verify_resources(self, binding):
+        _, value = self.workspace(binding)
         handles = set(binding.terminals.values())
         dev = binding.operations.get("dev", {}).get("result", {}).get("handle")
         if dev:
@@ -170,11 +182,6 @@ class Backend(Adapter):
             for page in pages:
                 if len([t for t in tabs if isinstance(t, dict) and t.get("browserPageId") == page and t.get("worktreeId") == binding.workspace_id]) != 1:
                     raise WorkspaceError("orca-browser-stale")
-        current = row.get("workspaceStatus")
-        lane = "in-progress" if current == self.cfg.workspace_statuses.get("in_progress", "in-progress") else "other"
-        if current == self.cfg.workspace_statuses.get("ready_for_review"):
-            lane = "ready-for-review"
-        return Snapshot(binding, value["identity"], lane)
 
     def terminal(self, binding, stage, title, command):
         def create():
@@ -292,3 +299,46 @@ class Backend(Adapter):
                 return {"page": page}
             binding.views[role] = self.operation(binding, f"view-{role}", [url], create)["page"]
             self.checkpoint(binding)
+
+    def present(self, binding, value):
+        row, _ = self.workspace(binding)
+        previous = row.get("comment") or ""
+        if not isinstance(previous, str):
+            raise WorkspaceError("orca-comment-unconfirmed")
+        line = "agent-loop: " + ("working · " if value.spinner else "") + value.text
+        pattern = re.compile(r"(?m)^agent-loop: [^\r\n]*$")
+        if pattern.search(previous):
+            comment = pattern.sub(lambda _: line, previous)
+        else:
+            comment = previous + ("\n" if previous and not previous.endswith("\n") else "") + line
+        if previous == comment:
+            return
+        result = self.obj(self.command(["worktree", "set", "--worktree", self.selector(binding), "--comment", comment]), "worktree")
+        self.validate_worktree(binding, result)
+        if result.get("comment") != comment:
+            raise WorkspaceError("orca-comment-unconfirmed")
+
+    def move_to_review(self, binding, expected):
+        destination = self.cfg.workspace_statuses.get("ready_for_review")
+        if not destination or expected.lane != "in-progress":
+            return False
+        current = self.inspect(binding)
+        if current.identity != expected.identity or current.lane != "in-progress" or not self.before_move():
+            return False
+        current = self.inspect(binding)
+        if current.identity != expected.identity or current.lane != "in-progress":
+            return False
+        row = self.obj(self.command(["worktree", "set", "--worktree", self.selector(binding), "--workspace-status", destination]), "worktree")
+        value = self.validate_worktree(binding, row)
+        if value["identity"] != expected.identity or row.get("workspaceStatus") != destination:
+            raise WorkspaceError("orca-review-move-unconfirmed")
+        return True
+
+    def notify(self, binding, title, body):
+        row, _ = self.workspace(binding, git_check=False)
+        if row.get("isUnread") is True:
+            return
+        result = self.obj(self.command(["worktree", "set", "--worktree", self.selector(binding), "--unread"]), "worktree")
+        self.validate_worktree(binding, result, git_check=False)
+        if result.get("isUnread") is not True:
+            raise WorkspaceError("orca-notification-unconfirmed")

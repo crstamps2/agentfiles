@@ -1772,14 +1772,17 @@ class NotificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tdir = pathlib.Path(d)
             def fake(*a, **k):
-                sent.append(a[0][0]); return subprocess.CompletedProcess(a[0], 0, "", "")
-            with patch("subprocess.run", side_effect=fake):
+                sent.append(a[0][0])
+                return subprocess.CompletedProcess(a[0], 0, "", "")
+            with patch("subprocess.run", side_effect=fake), patch("workspaces.PRODUCTION_ROOT", tdir.parent.parent), patch("workspaces.notify", return_value=True) as app:
                 lifecycle._notify_once(tdir, "ZIP-7874", "needs an operator", "plan blocked")
                 lifecycle._notify_once(tdir, "ZIP-7874", "needs an operator", "plan blocked")
-                self.assertEqual(sent.count("cmux"), 1)          # not a stream
+                self.assertEqual(app.call_count, 1)
+                self.assertEqual(sent.count("osascript"), 1)
                 marker = next(tdir.glob(".notified-*"))
                 old = time.time() - lifecycle.RENOTIFY_S - 60
                 os.utime(marker, (old, old))
                 lifecycle._notify_once(tdir, "ZIP-7874", "needs an operator", "plan blocked")
-        self.assertEqual(sent.count("cmux"), 2)                  # ...but not silent either
+        self.assertEqual(app.call_count, 2)
+        self.assertEqual(sent.count("osascript"), 2)
 

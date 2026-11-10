@@ -37,6 +37,9 @@ class LocalOrca:
         self.chat_present = True
         self.page_handles = ["page-1", "page-2"]
         self.wait_satisfied = True
+        self.workspace_status = "in-progress"
+        self.comment = "Operator notes"
+        self.unread = False
         self.git("init", "-b", "main", str(cfg.workspace_repo))
         self.git("-C", str(cfg.workspace_repo), "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "fixture")
 
@@ -47,7 +50,8 @@ class LocalOrca:
     def row(self):
         return {"id": f"repo::{self.path}", "repoId": "repo", "hostId": "local", "path": str(self.path),
                 "branch": "refs/heads/internal/zip-1", "isMainWorktree": False,
-                "identity": {"key": self.identity}, "workspaceStatus": "in-progress", **self.row_overrides}
+                "identity": {"key": self.identity}, "workspaceStatus": self.workspace_status, "comment": self.comment,
+                "isUnread": self.unread, "linkedIssue": {"number": 99}, "linkedPR": {"number": 123}, **self.row_overrides}
 
     def __call__(self, argv, **kwargs):
         self.calls.append(argv)
@@ -106,7 +110,15 @@ class LocalOrca:
             result = {"truncated": False, "worktrees": [{"worktreeId": f"repo::{self.path}", "hostId": "local", "path": str(self.path),
                       "identity": {"key": self.identity}, "agents": [{"paneKey": "structured-agent-session-pi_test:session-1", "agentType": "pi",
                       "structuredHostOwned": True, "state": "waiting"}] if self.chat_present else []}]}
-        elif cmd not in (("reference", "add"), ("worktree", "set")):
+        elif cmd == ("worktree", "set"):
+            if "--workspace-status" in argv:
+                self.workspace_status = argv[argv.index("--workspace-status") + 1]
+            if "--comment" in argv:
+                self.comment = argv[argv.index("--comment") + 1]
+            if "--unread" in argv:
+                self.unread = True
+            result = {"worktree": self.row()}
+        elif cmd != ("reference", "add"):
             raise AssertionError(f"Unexpected Orca operation: {argv}")
         text = "invalid JSON" if self.corrupt else json.dumps({"ok": True, "result": result})
         return subprocess.CompletedProcess(argv, 0, text, "")
@@ -349,6 +361,92 @@ class OrcaLifecycleTests(unittest.TestCase):
         self.assertEqual(self.fake.count("terminal", "create"), 1)
         self.assertEqual(self.fake.count("agent", "launch"), 0)
         self.assertFalse(any("kill" in " ".join(c) for c in self.fake.calls))
+
+    def backend(self):
+        binding = wb.read(self.cfg.ticket_dir("ZIP-1"))
+        if binding is None:
+            self.fail("Expected launched workspace")
+        return workspaces.backend_for(self.cfg, state.Ticket(key="ZIP-1")).adapter(), binding
+
+    def test_ready_for_review_uses_status_5_not_in_review(self):
+        self.launch()
+        self.cfg = dataclasses.replace(self.cfg, workspace_statuses={"in_progress": "in-progress", "ready_for_review": "status-5"})
+        backend, binding = self.backend()
+        self.assertTrue(backend.move_to_review(binding, backend.inspect(binding)))
+        self.assertEqual(self.fake.workspace_status, "status-5")
+        self.assertFalse(any("in-review" in c for c in self.fake.calls if c[1:3] == ["worktree", "set"]))
+
+    def test_missing_mapping_preserves_board_status(self):
+        self.launch()
+        backend, binding = self.backend()
+        self.assertFalse(backend.move_to_review(binding, backend.inspect(binding)))
+        self.assertEqual(self.fake.workspace_status, "in-progress")
+        backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
+        self.assertIn("self-healing", self.fake.comment)
+
+    def test_comment_update_does_not_change_links_or_read_state(self):
+        self.launch()
+        backend, binding = self.backend()
+        backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
+        backend.present(binding, workspaces.Presentation(False, "needs Cody", "orange", "question"))
+        self.assertTrue(self.fake.comment.startswith("Operator notes\n"))
+        self.assertEqual(self.fake.comment.count("agent-loop:"), 1)
+        self.assertIn("needs Cody", self.fake.comment)
+        for command in (c for c in self.fake.calls if c[1:3] == ["worktree", "set"]):
+            self.assertFalse(set(command) & {"--issue", "--pr", "--unread", "--read", "--workspace-status"})
+        self.assertFalse(self.fake.unread)
+
+    def test_notification_uses_bound_workspace_only(self):
+        self.launch()
+        backend, binding = self.backend()
+        backend.notify(binding, "Needs Cody", "Choose public API")
+        command = self.fake.calls[-1]
+        self.assertEqual(command[1:3], ["worktree", "set"])
+        self.assertIn("--unread", command)
+        self.assertEqual(command[command.index("--worktree") + 1], "id:" + binding.workspace_id)
+        self.assertTrue(self.fake.unread)
+        self.assertFalse(any(c[1] == "notify" for c in self.fake.calls))
+
+    def test_human_move_before_native_write_is_preserved(self):
+        self.launch()
+        self.cfg = dataclasses.replace(self.cfg, workspace_statuses={"in_progress": "in-progress", "ready_for_review": "status-5"})
+        backend, binding = self.backend()
+        expected = backend.inspect(binding)
+        self.fake.workspace_status = "in-review"
+        self.assertFalse(backend.move_to_review(binding, expected))
+        self.assertEqual(self.fake.workspace_status, "in-review")
+
+    def test_duplicate_display_names_never_select_by_name(self):
+        self.launch()
+        backend, binding = self.backend()
+        self.fake.row_overrides["name"] = "duplicate-title"
+        start = len(self.fake.calls)
+        backend.present(binding, workspaces.Presentation(False, "needs Cody", "orange", "question"))
+        for command in self.fake.calls[start:]:
+            if command[1:3] in (["worktree", "show"], ["worktree", "set"]):
+                self.assertEqual(command[command.index("--worktree") + 1], "id:" + binding.workspace_id)
+        self.assertFalse(any(c[1:3] == ["worktree", "list"] for c in self.fake.calls[start:]))
+
+    def test_nonzero_status_command_never_changes_durable_ticket_state(self):
+        self.launch()
+        before = {p: p.read_bytes() for p in self.cfg.state_root.rglob("*") if p.is_file()}
+        with patch("workspaces.subprocess.run", return_value=subprocess.CompletedProcess([], 1)):
+            backend, binding = self.backend()
+            with self.assertRaises(workspaces.WorkspaceError):
+                backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
+        after = {p: p.read_bytes() for p in self.cfg.state_root.rglob("*") if p.is_file()}
+        self.assertEqual(before, after)
+
+    def test_status_remains_visible_when_agent_surface_disappears(self):
+        self.launch()
+        self.fake.chat_present = False
+        backend, binding = self.backend()
+        snapshot = backend.inspect(binding)
+        self.assertIsNone(snapshot.agent_live)
+        backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
+        self.assertIn("self-healing", self.fake.comment)
+        with self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
 
     def test_corrupt_response_fails_before_creating_resources(self):
         self.fake.corrupt = True

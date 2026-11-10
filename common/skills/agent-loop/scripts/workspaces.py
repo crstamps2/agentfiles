@@ -5,12 +5,16 @@ import dataclasses
 import importlib
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
+import tempfile
 import typing
 
 import state
 from workspace_binding import BACKENDS, Binding, BindingError, read, write
+
+PRODUCTION_ROOT = pathlib.Path("~/.local/state/agent-loop").expanduser()
 
 
 class Presentation(typing.NamedTuple):
@@ -93,6 +97,10 @@ class DefiniteFailure(WorkspaceError):
 class Adapter:
     def __init__(self, cfg, *, run, checkpoint):
         self.cfg, self.run, self.checkpoint = cfg, run, checkpoint
+        self.before_move = lambda: True
+
+    def verify_resources(self, binding: Binding) -> None:
+        """Strict resume preflight, separate from cosmetic workspace observation."""
 
     def operation(self, binding: Binding, stage: str, payload: list, action) -> dict:
         previous = binding.operations.get(stage, {})
@@ -144,6 +152,7 @@ def _execute(cfg, selection: WorkspaceBackend, binding: Binding, prompt: str, re
         adapter.prepare(binding)
         if binding.workspace_id:
             adapter.inspect(binding)
+            adapter.verify_resources(binding)
         else:
             adapter.create(binding)
         if binding.phase == "ready":
@@ -170,6 +179,57 @@ def launch(cfg, key: str, branch: str, prompt: str, ref_url: str, *, backend: st
     if binding.branch != branch:
         raise BindingError("Launch branch conflicts with recorded branch")
     return _execute(cfg, selection, binding, prompt, ref_url)
+
+
+def write_record(path: pathlib.Path, value) -> None:
+    """Persist a private shared-policy intent/receipt before any corresponding app write."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}-", delete=False) as stream:
+            temporary = pathlib.Path(stream.name)
+            json.dump(value, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def production_ticket(ticket_dir) -> bool:
+    path = pathlib.Path(ticket_dir)
+    return len(path.parents) >= 2 and path.parent.parent.resolve() == PRODUCTION_ROOT.resolve()
+
+
+def notify(ticket_dir, key: str, title: str, body: str, *, run=None) -> bool:
+    if not production_ticket(ticket_dir):
+        return False
+    binding = read(pathlib.Path(ticket_dir))
+    if binding is None:
+        ticket = state.load(pathlib.Path(ticket_dir))
+        if ticket.key != key:
+            return False
+        binding = Binding(backend="cmux", key=key, worktree=ticket.worktree,
+                          branch=ticket.branch, workspace_id=ticket.workspace)
+    if binding.key != key:
+        return False
+    adapter = WorkspaceBackend(None, binding.backend, binding).adapter(run=run)
+    adapter.notify(binding, title, body)
+    return True
+
+
+def observe(cfg, ticket: state.Ticket, *, run=None):
+    """Read normalized app identity without creating resources or adopting legacy tickets."""
+    selection = backend_for(cfg, ticket)
+    binding = selection.binding or Binding(backend=selection.name, key=ticket.key, worktree=ticket.worktree,
+                                           branch=ticket.branch, workspace_id=ticket.workspace)
+    adapter = selection.adapter(run=run)
+    return adapter, adapter.inspect(binding)
 
 
 def retry_setup(cfg, ticket: state.Ticket, prompt: str, ref_url: str) -> LaunchResult:

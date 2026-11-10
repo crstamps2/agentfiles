@@ -1068,23 +1068,37 @@ RENOTIFY_S = 6 * 3600          # a ticket waiting on a human says so again every
 
 
 def _notify_once(tdir, key: str, title: str, body: str) -> None:
-    """One macOS + cmux notification per (ticket, state, reason) -- the only two moments a human is
-    needed: a ticket at Human Gate 1, or a pause/block the heal policy will not retry."""
-    import hashlib, subprocess
+    """One delivered workspace/macOS alert per signature and standing-request interval."""
+    import hashlib
+    import logging
+
+    import workspaces
+
+    if not workspaces.production_ticket(tdir):
+        return
     sig = hashlib.sha256(f"{title}|{body}".encode()).hexdigest()[:12]
     marker = pathlib.Path(tdir) / f".notified-{sig}"
-    # Re-raise a standing request every RENOTIFY_S. One notification is a moment; a ticket that is
-    # BLOCKED ON A HUMAN is a standing state, and going silent hides it (ZIP-7874 waited 3 days and
-    # 1627 respawns after a single alert). Same signature, so it never becomes a stream.
+    # A standing human request resurfaces every RENOTIFY_S without becoming a stream.
     if marker.exists() and (time.time() - marker.stat().st_mtime) < RENOTIFY_S:
         return
-    marker.touch()
-    for cmd in (["cmux", "notify", "--title", title, "--body", body],
-                ["osascript", "-e", f'display notification {json.dumps(body)} with title {json.dumps(title)}']):
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=10)
-        except Exception:  # noqa: BLE001
-            pass
+    workspaces.write_record(marker, {"status": "pending"})
+    delivered, uncertain = False, False
+    try:
+        delivered = workspaces.notify(tdir, key, title, body, run=subprocess.run)
+    except Exception as exc:  # noqa: BLE001 -- preserve the separate macOS delivery channel
+        uncertain = True
+        logging.getLogger(__name__).debug("Workspace notification unavailable (%s)", type(exc).__name__)
+    try:
+        result = subprocess.run(["osascript", "-e", f'display notification {json.dumps(body)} with title {json.dumps(title)}'],
+                                capture_output=True, timeout=10)
+        delivered = delivered or result.returncode == 0
+    except Exception as exc:  # noqa: BLE001 -- an unknown delivery is not blindly replayed
+        uncertain = True
+        logging.getLogger(__name__).debug("macOS notification unavailable (%s)", type(exc).__name__)
+    if delivered:
+        workspaces.write_record(marker, {"status": "done"})
+    elif not uncertain:
+        marker.unlink(missing_ok=True)
 
 
 def _ruling_baseline(cfg, key: str, wt) -> str:

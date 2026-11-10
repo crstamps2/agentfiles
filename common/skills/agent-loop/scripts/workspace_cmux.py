@@ -1,13 +1,21 @@
 """cmux workspace mechanics, including legacy recovery and installed-helper compatibility."""
 from __future__ import annotations
 
+import dataclasses
 import inspect
+import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
 from workspaces import Adapter, DefiniteFailure, Snapshot, WorkspaceError, load_helper
+
+
+def binary():
+    fallback = pathlib.Path("/Applications/cmux.app/Contents/Resources/bin/cmux")
+    return shutil.which("cmux") or (str(fallback) if fallback.is_file() else "cmux")
 
 
 def helpers(cfg):
@@ -32,7 +40,7 @@ def helpers(cfg):
 class Backend(Adapter):
     def command(self, args):
         try:
-            result = self.run(["cmux", *args], capture_output=True, text=True, timeout=5)
+            result = self.run([binary(), *args], capture_output=True, text=True, timeout=5)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise WorkspaceError("cmux-unconfirmed", type(exc).__name__) from exc
         if result.returncode:
@@ -65,12 +73,54 @@ class Backend(Adapter):
             raise WorkspaceError("cmux-branch-mismatch")
         binding.branch = result.stdout.strip()
 
+    def json_command(self, args):
+        try:
+            value = json.loads(self.command(args))
+        except (ValueError, TypeError) as exc:
+            raise WorkspaceError("cmux-invalid-response") from exc
+        if not isinstance(value, dict):
+            raise WorkspaceError("cmux-invalid-response")
+        return value
+
+    def groups(self):
+        value = self.json_command(["workspace-group", "list", "--json", "--id-format", "both"])
+        groups = value.get("groups")
+        if not isinstance(groups, list):
+            raise WorkspaceError("cmux-groups-unconfirmed")
+        self.last_groups = groups
+        return groups
+
     def inspect(self, binding):
-        if self.refs().get(binding.key.lower()) != binding.workspace_id:
+        ref = self.refs().get(binding.key.lower())
+        if not ref:
             raise WorkspaceError("workspace-closed-or-ambiguous")
-        if not pathlib.Path(binding.worktree).is_dir():
-            raise WorkspaceError("workspace-missing")
-        return Snapshot(binding, binding.workspace_id, "other")
+        identity, lane = ref, "other"
+        try:
+            groups = self.groups()
+        except (WorkspaceError, ValueError):
+            groups = []
+        memberships = [g for g in groups if ref in g.get("member_workspace_refs", [])]
+        if len(memberships) == 1:
+            group = memberships[0]
+            members = group["member_workspace_refs"]
+            ids = group.get("member_workspace_ids", members)
+            if len(ids) != len(members):
+                raise WorkspaceError("cmux-identity-unconfirmed")
+            identity = ids[members.index(ref)]
+            if group.get("name") == "Ready for Review":
+                lane = "ready-for-review"
+            if (group.get("name") == "In Progress" and ref != group.get("anchor_workspace_ref")
+                    and len([g for g in groups if g.get("name") == "In Progress"]) == 1):
+                lane = "in-progress"
+                if not hasattr(self, "source_ids"):
+                    self.source_ids = {}
+                self.source_ids.setdefault(identity, group.get("id", group.get("ref")))
+        if binding.workspace_id and binding.workspace_id not in (ref, identity):
+            raise WorkspaceError("cmux-workspace-changed")
+        recorded = binding.operations.get("identity", {}).get("result", {}).get("identity")
+        if recorded and identity != recorded:
+            raise WorkspaceError("cmux-workspace-changed")
+        return Snapshot(dataclasses.replace(binding, workspace_id=ref), identity, lane)
 
     def create(self, binding):
         path = self.operation(binding, "git-create", [binding.key, binding.branch],
@@ -138,3 +188,43 @@ class Backend(Adapter):
                                    lambda url=url: {"handle": self.cc.cmux_new_surface(binding.workspace_id, surface_type="browser", url=url)})
             binding.views[role] = value["handle"]
             self.checkpoint(binding)
+
+    def present(self, binding, value):
+        self.command(["workspace", "loading", "on" if value.spinner else "off", "--id", "agent-loop", "--workspace", binding.workspace_id])
+        self.command(["set-status", "agent-loop", value.text, "--icon", value.icon, "--color", value.color,
+                      "--priority", "90", "--workspace", binding.workspace_id])
+
+    def move_to_review(self, binding, expected):
+        current = self.inspect(binding)
+        if current.identity != expected.identity or current.lane != "in-progress" or not self.before_move():
+            return False
+        groups = self.groups()
+        destinations = [g for g in groups if g.get("name") == "Ready for Review"]
+        if len(destinations) > 1:
+            return False
+        if not destinations:
+            value = self.json_command(["workspace-group", "create", "--name", "Ready for Review",
+                                       "--idempotency-key", "agent-loop-ready-for-review", "--json"])
+            if not value.get("group", {}).get("ref"):
+                raise WorkspaceError("cmux-group-unconfirmed")
+        if not self.before_move():
+            return False
+        current = self.inspect(binding)
+        groups = self.last_groups
+        sources = [g for g in groups if g.get("name") == "In Progress"]
+        destinations = [g for g in groups if g.get("name") == "Ready for Review"]
+        if (current.identity != expected.identity or current.lane != "in-progress" or len(sources) != 1 or len(destinations) != 1
+                or sources[0].get("id", sources[0].get("ref")) != self.source_ids.get(expected.identity)
+                or not destinations[0].get("ref")):
+            return False
+        try:
+            self.command(["workspace-group", "add", "--group", destinations[0]["ref"], "--workspace", current.binding.workspace_id])
+        except WorkspaceError as exc:
+            if exc.status == "cmux-failed":
+                raise DefiniteFailure("cmux-group-add-rejected") from exc
+            raise
+        return True
+
+    def notify(self, binding, title, body):
+        current = self.inspect(binding)
+        self.command(["notify", "--title", title, "--body", body, "--workspace", current.binding.workspace_id])

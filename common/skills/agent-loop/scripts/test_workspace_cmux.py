@@ -64,6 +64,9 @@ class CmuxLifecycleTests(unittest.TestCase):
         self.patcher = patch("workspace_cmux.helpers", return_value=self.cc)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
+        selected_binary = patch("workspace_cmux.binary", return_value="cmux")
+        selected_binary.start()
+        self.addCleanup(selected_binary.stop)
         self.runner = patch("workspaces.subprocess.run", side_effect=self.run_command)
         self.runner.start()
         self.addCleanup(self.runner.stop)
@@ -71,6 +74,8 @@ class CmuxLifecycleTests(unittest.TestCase):
     def run_command(self, argv, **kwargs):
         if argv[:3] == ["cmux", "workspace", "list"]:
             return subprocess.CompletedProcess(argv, 0, "workspace:19 zip-1\n", "")
+        if argv[:3] == ["cmux", "workspace-group", "list"]:
+            return subprocess.CompletedProcess(argv, 0, '{"groups": []}', "")
         if argv == ["bin/worktree-setup"]:
             return subprocess.CompletedProcess(argv, self.cc.exit_code, "setup output", "")
         if argv[0] == "git":

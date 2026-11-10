@@ -1,28 +1,26 @@
-"""Mirror each ticket's state into its cmux workspace sidebar: a loading spinner while work is moving,
-and one coloured status pill.
+"""Shared status, stall and verified-review policy over app-neutral workspace snapshots.
 
-Cosmetic and best-effort. Every cmux call has a short timeout and every failure is swallowed, so a
-missing cmux, a dead socket or a renamed workspace can never affect the loop.
+Cosmetic and best-effort: failures never change lifecycle, ownership or supervision.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
-import os
+import logging
 import pathlib
 import re
-import shutil
 import subprocess
 import typing
 
+import locks
 import state
+import workspace_binding
+import workspaces
 
-KEY = "agent-loop"
 PRODUCTION_ROOT = pathlib.Path("~/.local/state/agent-loop").expanduser()
-CMUX_FALLBACK = "/Applications/cmux.app/Contents/Resources/bin/cmux"
-TIMEOUT_S = 5
 GREEN, YELLOW, ORANGE, BLUE, GRAY, RED = "#34C759", "#FFCC00", "#FF9500", "#4C8DFF", "#8E8E93", "#FF3B30"
-STALL_S = 4 * 3600            # no state change this long while the machine owns the ticket
+STALL_S = 4 * 3600
 STAGE_TEXT = {"queued": "starting", "spinup": "starting", "plan": "planning", "plan-review": "planning",
               "implement": "implementing", "gates": "gates", "draft-pr": "CI", "ready": "CI", "bot-loop": "bot review"}
 PAST_REVIEW = frozenset(("human-gate-1", "colleague-loop", "human-gate-2", "done"))
@@ -41,7 +39,7 @@ def stalled_hours(t: state.Ticket) -> int:
         then = dt.datetime.fromisoformat((t.updated_utc or "").replace("Z", "+00:00"))
     except ValueError:
         return 0
-    age = (dt.datetime.now(dt.timezone.utc) - then).total_seconds()
+    age = (dt.datetime.now(dt.UTC) - then).total_seconds()
     return int(age // 3600) if age >= STALL_S else 0
 
 
@@ -74,29 +72,6 @@ def label(cfg, t: state.Ticket, queued: int | None = None) -> Label:
     return Label(True, STAGE_TEXT.get(t.state, t.state), GREEN, "hammer")
 
 
-def _cmux() -> str | None:
-    return shutil.which("cmux") or (CMUX_FALLBACK if os.path.exists(CMUX_FALLBACK) else None)
-
-
-def _workspaces(run, binary) -> dict[str, str]:
-    out = run([binary, "workspace", "list"], capture_output=True, text=True, timeout=TIMEOUT_S).stdout
-    # Names may carry annotations such as "  [selected]".
-    refs = {}
-    duplicates = set()
-    for match in re.finditer(r"(workspace:\S+)\s+(.+)$", out or "", re.M):
-        name = re.sub(r"\s+\[[^\]]*\]$", "", match.group(2)).strip().lower()
-        if name in refs:
-            duplicates.add(name)
-        refs[name] = match.group(1)
-    return {name: ref for name, ref in refs.items() if name not in duplicates}
-
-
-def _groups(run, binary):
-    result = run([binary, "workspace-group", "list", "--json", "--id-format", "both"],
-                 capture_output=True, text=True, timeout=TIMEOUT_S, check=True)
-    return json.loads(result.stdout)["groups"]
-
-
 def _routing_snapshot(cfg, key):
     import cohort
 
@@ -111,75 +86,57 @@ def _routing_snapshot(cfg, key):
     return ticket, cohort._ci(tdir), cohort._head(ticket.worktree)
 
 
-def _route_review_ready(cfg, refs, run, binary, routes) -> None:
-    """Hand off each workspace/head once; never revisit a completed automatic move."""
+def _route_review_ready(cfg, key, adapter, observed, routes, persist):
+    """Eligibility and rechecks are shared; adapters only translate the final move."""
     import cohort
     import watch
 
-    try:
-        groups = _groups(run, binary)
-        sources = [g for g in groups if g.get("name") == "In Progress"]
-        destinations = [g for g in groups if g.get("name") == "Ready for Review"]
-        if len(sources) != 1 or len(destinations) > 1:
-            return
-        source = sources[0]
-        members = source["member_workspace_refs"]
-        identities = dict(zip(members, source.get("member_workspace_ids", members)))
-        destination = destinations[0].get("ref") if destinations else None
-        if destinations and not destination:
-            return
-        for name, ref in refs.items():
-            if ref not in members or ref == source.get("anchor_workspace_ref"):
-                continue
-            if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9]*-\d+", name):
-                continue
-            key = name.upper()
-            snapshot = _routing_snapshot(cfg, key)
-            if snapshot is None:
-                continue
-            signature = [identities[ref], snapshot[2]]
-            if routes.get(key) == signature:
-                continue
-            evidence = cohort._review_evidence(cfg, key, pr_lookup=watch.pr_state, head_lookup=lambda _: snapshot[2])
-            if evidence is None or evidence[1] != "verified-human-gate-1":
-                continue
-            # GitHub verification can take time; recheck the user's group choice before moving.
-            groups = _groups(run, binary)
-            sources = [g for g in groups if g.get("name") == "In Progress"]
-            destinations = [g for g in groups if g.get("name") == "Ready for Review"]
-            if (len(sources) != 1 or ref not in sources[0]["member_workspace_refs"] or len(destinations) > 1
-                    or ref == sources[0].get("anchor_workspace_ref") or _routing_snapshot(cfg, key) != snapshot):
-                continue
-            destination = destinations[0]["ref"] if destinations else None
-            if destination is None:
-                result = run([binary, "workspace-group", "create", "--name", "Ready for Review",
-                              "--idempotency-key", "agent-loop-ready-for-review", "--json"],
-                             capture_output=True, text=True, timeout=TIMEOUT_S, check=True)
-                destination = json.loads(result.stdout)["group"]["ref"]
-            if _routing_snapshot(cfg, key) != snapshot:
-                continue
-            groups = _groups(run, binary)
-            sources = [g for g in groups if g.get("name") == "In Progress"]
-            destinations = [g for g in groups if g.get("name") == "Ready for Review"]
-            if len(sources) != 1 or len(destinations) != 1:
-                continue
-            current = sources[0]
-            current_members = current["member_workspace_refs"]
-            current_ids = dict(zip(current_members, current.get("member_workspace_ids", current_members)))
-            if (ref == current.get("anchor_workspace_ref") or current_ids.get(ref) != identities[ref]
-                    or current.get("id", current["ref"]) != source.get("id", source["ref"])):
-                continue
-            destination = destinations[0]["ref"]
-            run([binary, "workspace-group", "add", "--group", destination, "--workspace", ref],
-                capture_output=True, text=True, timeout=TIMEOUT_S, check=True)
-            routes[key] = signature
-    except Exception:  # noqa: BLE001 -- retry routing independently of the pill cache next pass
+    if observed.lane != "in-progress":
         return
+    before = _routing_snapshot(cfg, key)
+    if before is None:
+        return
+    signature = [observed.binding.backend, observed.identity, before[2]]
+    completed = routes.get(key)
+    if (completed == signature or (isinstance(completed, dict) and completed.get("pending") == signature)
+            or (observed.binding.backend == "cmux" and completed == signature[1:])):
+        return
+    recorded = workspace_binding.read(cfg.ticket_dir(key))
+    if recorded is not None and recorded.phase != "ready":
+        return
+    evidence = cohort._review_evidence(cfg, key, pr_lookup=watch.pr_state, head_lookup=lambda _: before[2])
+    if evidence is None or evidence[1] != "verified-human-gate-1":
+        return
+
+    def unchanged():
+        if _routing_snapshot(cfg, key) != before or workspace_binding.read(cfg.ticket_dir(key)) != recorded:
+            return False
+        current = adapter.inspect(observed.binding)
+        return current.identity == observed.identity and current.lane == "in-progress"
+
+    adapter.before_move = unchanged
+    if not unchanged():
+        return
+    routes[key] = {"pending": signature}
+    persist()
+    try:
+        moved = adapter.move_to_review(observed.binding, observed)
+    except workspaces.DefiniteFailure:
+        moved = False
+    # Unknown errors deliberately retain the durable pending intent: never replay a lost move.
+    if moved:
+        routes[key] = signature
+    elif completed is None:
+        routes.pop(key, None)
+    else:
+        routes[key] = completed
+    persist()
 
 
 def _desired(cfg) -> dict[str, Label]:
     import cohort
     import drip
+
     root = cfg.state_root / "tickets"
     tickets = {d.name: state.load(d) for d in sorted(root.iterdir()) if (d / "state.json").is_file()} if root.exists() else {}
     members = set(cohort.members(cfg)) if drip.cohort_enabled(cfg) else set(tickets)
@@ -194,12 +151,26 @@ def _desired(cfg) -> dict[str, Label]:
 
 
 def sync(cfg, *, run=subprocess.run, force: bool = False) -> None:
-    """Best-effort: never raises. Only touches the real sidebar for the production state root."""
+    """Serialize presentation journals without acquiring any lifecycle/ownership lease."""
+    lease = None
     try:
         if pathlib.Path(cfg.state_root).resolve() != PRODUCTION_ROOT.resolve():
-            return                                    # tests and dry state roots must not repaint Cody's sidebar
-        binary = _cmux() or "cmux"
-        refs = _workspaces(run, binary)
+            return
+        lease = locks.Lease(cfg.state_root / "locks" / "sidebar", "workspace presentation")
+        if lease.acquire(hold=True):
+            _sync(cfg, run=run)
+    except Exception as exc:  # noqa: BLE001 -- cosmetic failure cannot affect execution
+        logging.getLogger(__name__).debug("Workspace presentation unavailable (%s)", type(exc).__name__)
+    finally:
+        if lease is not None:
+            lease.release()
+
+
+def _sync(cfg, *, run):
+    """Best effort, with per-workspace isolation and success-only presentation caching."""
+    try:
+        if pathlib.Path(cfg.state_root).resolve() != PRODUCTION_ROOT.resolve():
+            return
         cache_path = cfg.state_root / "sidebar.json"
         try:
             cache = json.loads(cache_path.read_text())
@@ -210,37 +181,37 @@ def sync(cfg, *, run=subprocess.run, force: bool = False) -> None:
         routes = cache.get("review_routes", {})
         if not isinstance(routes, dict):
             routes = {}
-        _route_review_ready(cfg, refs, run, binary, routes)
-        if routes:
-            cache["review_routes"] = routes
+        def persist():
+            if routes:
+                cache["review_routes"] = routes
+            else:
+                cache.pop("review_routes", None)
+            workspaces.write_record(cache_path, cache)
         for key, want in _desired(cfg).items():
-            ref = refs.get(key.lower())
-            if not ref:
-                continue
-            signature = [ref, *want]
-            if cache.get(key) == signature:
-                continue
             try:
-                run([binary, "workspace", "loading", "on" if want.spinner else "off", "--id", KEY, "--workspace", ref],
-                    capture_output=True, text=True, timeout=TIMEOUT_S)
-                run([binary, "set-status", KEY, want.text, "--icon", want.icon, "--color", want.color,
-                     "--priority", "90", "--workspace", ref], capture_output=True, text=True, timeout=TIMEOUT_S)
-            except Exception:  # noqa: BLE001 -- cosmetic; retry on the next pass
+                adapter, observed = workspaces.observe(cfg, state.load(cfg.ticket_dir(key)), run=run)
+                with contextlib.suppress(Exception):
+                    _route_review_ready(cfg, key, adapter, observed, routes, persist)
+                signature = [observed.binding.backend, observed.identity, *want]
+                if cache.get(key) == signature:
+                    continue
+                adapter.present(observed.binding, workspaces.Presentation(*want))
+                cache[key] = signature
+            except Exception as exc:  # noqa: BLE001 -- one app failure cannot hide the rest of the fleet
+                logging.getLogger(__name__).debug("Workspace %s presentation unavailable (%s)", key, type(exc).__name__)
                 continue
-            cache[key] = signature
-        tmp = cache_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(cache, indent=2))
-        os.replace(tmp, cache_path)
-    except Exception:  # noqa: BLE001 -- the sidebar must never affect the loop
+        persist()
+    except Exception:  # noqa: BLE001 -- presentation must never affect execution
         return
 
 
 def watchdog(cfg) -> None:
-    """Notify Cody when a ticket the machine owns has made no progress for STALL_S. Best-effort."""
+    """Notify Cody when an owned ticket has made no progress for STALL_S."""
     try:
         import cohort
         import drip
         import lifecycle
+
         keys = cohort.members(cfg) if drip.cohort_enabled(cfg) else []
         for key in keys:
             tdir = cfg.ticket_dir(key)

@@ -176,6 +176,29 @@ def _accepted_source_paths(cfg, ticket_key: str, task_id: str, wt) -> list[str]:
             and ((pathlib.Path(wt) / p).exists() or p in tracked)]
 
 
+def missing_accepted_outputs(cfg, ticket_key: str, wt, task) -> list[str]:
+    """Literal accepted outputs for `task` that its observed tree had but the worktree lacks."""
+    import cohort_migration
+    import types
+    t = state.load(cfg.ticket_dir(ticket_key))
+    accepted = {task_id: (record, adir) for task_id, record, adir in cohort_migration._accepted_tasks(cfg, t)}
+    record, adir = accepted.get(task.id, ({}, None))
+    if record.get("slug") != task.slug:
+        return []
+    return cohort_migration._missing_outputs(types.SimpleNamespace(worktree=str(wt)), record, adir)
+
+
+def restore_accepted_outputs_from_head(wt, paths: list[str]) -> bool:
+    """Restore lost accepted outputs only when every path still exists in HEAD."""
+    if not paths:
+        return False
+    for path in paths:
+        present = subprocess.run(["git", "-C", str(wt), "cat-file", "-e", f"HEAD:{path}"], capture_output=True)
+        if present.returncode:
+            return False
+    return subprocess.run(["git", "-C", str(wt), "checkout", "HEAD", "--", *paths], capture_output=True).returncode == 0
+
+
 STALE_INDEX_LOCK_S = 24 * 60 * 60
 
 
@@ -815,14 +838,26 @@ def _hook_lint_paths(changed: list, wt) -> list:
 
 
 def retry_task(cfg, key: str, task_id: str, note: str = "") -> None:
-    """Give one task a fresh escalation ladder after its rejections turned out to be a runner defect.
-    Appends an operator-reset entry (earlier attempts stay on record; attempt numbers continue) and
-    moves a ticket blocked on that task back to implement."""
+    """Restore accepted output from HEAD when possible; otherwise give the task a fresh ladder.
+    An operator reset keeps earlier attempts on record and moves a blocked ticket to implement."""
     import ladder
     tdir = cfg.ticket_dir(key); t = state.load(tdir)
     lineage = f"{key}/{task_id}"
     if lineage not in t.attempts:
         raise SystemExit(f"{key} has no attempts for task {task_id}")
+    if t.worktree:
+        try:
+            tasks = contracts.load_tasks(pathlib.Path(t.worktree) / "planning" / key.lower() / "tasks.toml")
+        except (OSError, contracts.ManifestError):
+            tasks = []
+        task = next((item for item in tasks if item.id == task_id), None)
+        if task:
+            missing = missing_accepted_outputs(cfg, key, t.worktree, task)
+            if missing and restore_accepted_outputs_from_head(t.worktree, missing):
+                if t.state == "blocked":
+                    t = state.transition(t, "implement", reason=f"restored accepted task {task_id} from HEAD")
+                state.save(tdir, t)
+                return
     if note.startswith("automatic recovery ") and any(row.get("outcome") == ladder.OPERATOR_RESET and row.get("note") == note for row in t.attempts[lineage]):
         return
     t.attempts[lineage] = t.attempts[lineage] + [{"outcome": ladder.OPERATOR_RESET, "note": note, "utc": _now()}]

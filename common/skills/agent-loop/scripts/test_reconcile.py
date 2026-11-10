@@ -151,6 +151,33 @@ class FinalizeTests(ReconcileTestCase):
         self.assertEqual(stale.status, "FINALIZED")
         self.assertTrue(accepted_path.exists())
 
+    def test_late_interrupted_attempt_keeps_newer_committed_accepted_work(self):
+        """ZIP-9116: an interrupted stale attempt must not reset published accepted output."""
+        stale = self._create()
+        stale = attempt.transition(stale, "LAUNCHING")
+        stale = attempt.transition(stale, "RUNNING")
+        newer_task = make_task(summary="replacement task generation")
+        rung = ladder.Rung("cloud-worker", "cheap", 1)
+        newer = attempt.create(self.cfg, "TICK-1", newer_task, self.wt, 2,
+                               FakeAgent(), "cloud", rung, "run-abc")
+        accepted_path = self.wt / "app" / "accepted.rb"
+        accepted_path.write_text("accepted\n")
+        newer = attempt.transition(newer, "LAUNCHING")
+        newer = attempt.transition(newer, "RUNNING")
+        newer = attempt.transition(newer, "STAGE_DONE")
+        newer = attempt.transition(newer, "CLASSIFYING", observed_tree=worktree.snapshot(self.wt))
+        newer = attempt.transition(newer, "CLASSIFIED", outcome="accepted", reason="ok",
+                                   next_action="none")
+        reconcile.finalize(self.cfg, newer)
+        git(self.wt, "add", "app/accepted.rb")
+        git(self.wt, "commit", "-qm", "publish accepted work")
+
+        interrupted = reconcile.interrupt(self.cfg, stale)
+
+        self.assertEqual(interrupted.tree, "kept")
+        self.assertEqual(accepted_path.read_text(), "accepted\n")
+        self.assertEqual(git(self.wt, "status", "--porcelain").strip(), "")
+
     def test_accepted_keeps_worktree(self):
         rec = self._to_classified(
             "accepted", after_create=lambda: (self.wt / "app" / "b.rb").write_text("b\n"))

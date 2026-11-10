@@ -478,6 +478,12 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             if pending_lint_fix:
                 break
             if _task_accepted(cfg, key, tk) and runner_mod._uncommitted_allowlisted(wt, tk, getattr(cfg, "harness_artifact_globs", ())):
+                missing = runner_mod.missing_accepted_outputs(cfg, key, wt, tk)
+                if missing:
+                    if runner_mod.restore_accepted_outputs_from_head(wt, missing):
+                        return Step(key, "implement", f"task {tk.id}: restored accepted work from HEAD")
+                    runner_mod.retry_task(cfg, key, tk.id, note="accepted output disappeared before republish")
+                    return Step(key, "implement", f"task {tk.id}: retrying after accepted output disappeared")
                 runner_mod.publish_accepted(cfg, key, str(wt), tk, ensure_pr=False)
                 t = state.load(tdir)
                 if t.state == "paused":

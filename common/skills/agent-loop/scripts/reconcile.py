@@ -316,12 +316,12 @@ def fence(cfg, rec: attempt_mod.Record, reason: str, proc: dict | None = None) -
 def interrupt(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
     """Drive a non-terminal attempt found with no live group to INTERRUPTED: verify repo_id
     (a mismatch means the worktree at this path is no longer the repo this attempt belongs
-    to -- exit 3, nothing restored), snapshot the tree as found, restore to base_tree, and
-    verify the restore converged before recording anything.
+    to -- exit 3, nothing restored), snapshot the tree as found, and restore to base_tree
+    unless a newer accepted attempt would be overwritten.
 
     Sequencing note: a single INTERRUPTED transition carries `observed_tree`, `outcome`,
-    `next_action`, and `tree="restored"` together, written only AFTER restore+verify
-    succeed in memory -- two INTERRUPTED transitions are illegal (attempt.NEXT has no
+    `next_action`, and its `tree` disposition together, written only AFTER any restore+verify
+    succeeds in memory -- two INTERRUPTED transitions are illegal (attempt.NEXT has no
     INTERRUPTED -> INTERRUPTED edge), so the observed/outcome/tree fields cannot be split
     across two writes. The one accepted loss this creates: if the process crashes after a
     successful restore+verify but before this transition is durably written, the pre-restore
@@ -339,12 +339,15 @@ def interrupt(cfg, rec: attempt_mod.Record) -> attempt_mod.Record:
         raise FenceExit(f"{rec.attempt_id}: repo_id mismatch: recorded {rec.repo_id!r} "
                         f"!= actual {actual_repo_id!r} for {wt}")
     observed = worktree_mod.snapshot(wt)
-    worktree_mod.restore(wt, rec.base_tree)
-    if not worktree_mod.verify_restored(wt, rec.base_tree):
-        raise FenceExit(f"{rec.attempt_id}: restore did not converge to base_tree")
-    _maybe_crash("after-restore")
+    tree = "kept"
+    if not _has_newer_accepted_attempt(rec):
+        worktree_mod.restore(wt, rec.base_tree)
+        if not worktree_mod.verify_restored(wt, rec.base_tree):
+            raise FenceExit(f"{rec.attempt_id}: restore did not converge to base_tree")
+        tree = "restored"
+        _maybe_crash("after-restore")
     rec = attempt_mod.transition(rec, "INTERRUPTED", observed_tree=observed, outcome="interrupted",
-                                 next_action="none", tree="restored")
+                                 next_action="none", tree=tree)
     _ensure_diff_patch(rec)
     return project_all(cfg, rec)
 

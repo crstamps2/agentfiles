@@ -448,6 +448,22 @@ class OrcaLifecycleTests(unittest.TestCase):
         with self.assertRaises(workspaces.WorkspaceError):
             self.launch()
 
+    def test_missing_runtime_never_falls_back_or_starts_a_service(self):
+        with patch("workspaces.subprocess.run", side_effect=FileNotFoundError("orca")) as command, self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[0][1], "status")
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.fake.mutation_bindings, [])
+
+    def test_missing_chat_capabilities_never_launches_a_terminal_instead(self):
+        self.fake.capabilities = []
+        with self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
+        self.assertEqual(self.fake.count("agent", "launch"), 0)
+        self.assertEqual(self.fake.count("worktree", "create"), 0)
+        self.assertEqual(self.fake.mutation_bindings, [])
+
     def test_corrupt_response_fails_before_creating_resources(self):
         self.fake.corrupt = True
         with self.assertRaises(workspaces.WorkspaceError):

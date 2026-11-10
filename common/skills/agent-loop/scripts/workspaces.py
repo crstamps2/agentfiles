@@ -1,6 +1,7 @@
 """Shared workspace selection and lifecycle; app mechanics live in adapters."""
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import importlib
 import importlib.util
@@ -12,7 +13,7 @@ import tempfile
 import typing
 
 import state
-from workspace_binding import BACKENDS, Binding, BindingError, read, write
+from workspace_binding import BACKENDS, Binding, BindingError, read, validate, write
 
 PRODUCTION_ROOT = pathlib.Path("~/.local/state/agent-loop").expanduser()
 
@@ -46,10 +47,10 @@ class WorkspaceBackend:
     name: str
     binding: Binding | None
 
-    def adapter(self, *, run=None):
+    def adapter(self, *, run=None, checkpoint=None):
         module = importlib.import_module(f"workspace_{self.name}")
         return module.Backend(self.cfg, run=run or subprocess.run,
-                              checkpoint=lambda b: write(self.cfg.ticket_dir(b.key), b))
+                              checkpoint=checkpoint or (lambda b: write(self.cfg.ticket_dir(b.key), b)))
 
 
 def backend_for(cfg, ticket: state.Ticket, *, new_launch: bool = False, override: str | None = None) -> WorkspaceBackend:
@@ -221,6 +222,85 @@ def notify(ticket_dir, key: str, title: str, body: str, *, run=None) -> bool:
     adapter = WorkspaceBackend(None, binding.backend, binding).adapter(run=run)
     adapter.notify(binding, title, body)
     return True
+
+
+def adopt(cfg, key: str, binding: Binding, *, run=None) -> Binding:
+    """Explicit metadata enrollment. Hold existing writer/spawner leases; never run recovery."""
+    import locks
+
+    tdir = cfg.ticket_dir(key)
+    validate(binding, tdir)
+    if binding.key != key or binding.backend != "orca" or binding.agent.get("kind") != "terminal":
+        raise WorkspaceError("adoption-requires-explicit-orca-terminal")
+    if not (tdir / "state.json").is_file():
+        raise WorkspaceError("adoption-missing-ticket")
+    with contextlib.ExitStack() as held:
+        for name in ("drip", "runner", f"runner-{key.lower()}"):
+            path = cfg.state_root / "locks" / name
+            owner = locks.owner(path)
+            if path.exists():
+                if not isinstance(owner, dict) or not isinstance(owner.get("boot_id"), str) or not owner["boot_id"]:
+                    raise WorkspaceError("adoption-writer-unconfirmed")
+                try:
+                    pid = int(owner["pid"])
+                    if pid <= 0:
+                        raise ValueError("Invalid writer PID")
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise WorkspaceError("adoption-writer-unconfirmed") from exc
+                boot = locks.boot_id()
+                if not boot:
+                    raise WorkspaceError("adoption-writer-unconfirmed")
+                if owner["boot_id"] == boot and locks.pid_alive(pid):
+                    raise WorkspaceError("adoption-writer-active", name)
+            lease = locks.Lease(path, "workspace enrollment")
+            if not lease.acquire(hold=True):
+                raise WorkspaceError("adoption-writer-active", name)
+            held.callback(lease.release)
+        return _adopt_observed(cfg, key, binding, run=run)
+
+
+def _adopt_observed(cfg, key, requested, *, run):
+    tdir = cfg.ticket_dir(key)
+    path = tdir / "state.json"
+    if path.is_symlink():
+        raise WorkspaceError("adoption-ticket-unconfirmed")
+    before = path.read_bytes()
+    ticket = state.load(tdir)
+    if ticket.key != key or not ticket.worktree or not pathlib.Path(ticket.worktree).is_dir():
+        raise WorkspaceError("adoption-worktree-missing")
+    existing = read(tdir)
+    if existing and (existing.phase != "ready" or existing.backend != requested.backend
+                     or existing.workspace_id != requested.workspace_id
+                     or any(existing.agent.get(k) != requested.agent.get(k) for k in ("kind", "handle"))):
+        raise WorkspaceError("adoption-conflicting-binding")
+    candidate = dataclasses.replace(requested, worktree=requested.worktree or ticket.worktree,
+                                    branch=requested.branch or ticket.branch, agent=dict(requested.agent))
+    if pathlib.Path(candidate.worktree) != pathlib.Path(ticket.worktree):
+        raise WorkspaceError("adoption-ticket-path-mismatch")
+    adapter = WorkspaceBackend(cfg, "orca", candidate).adapter(run=run, checkpoint=lambda _: None)
+    actual_branch = adapter.git("branch", "--show-current", cwd=candidate.worktree)
+    if (candidate.branch and candidate.branch != actual_branch) or (ticket.branch and ticket.branch != actual_branch):
+        raise WorkspaceError("adoption-ticket-branch-mismatch")
+    candidate.branch = actual_branch
+    adapter.prepare(candidate)
+    target = existing or candidate
+    if existing and any(getattr(existing, k) != getattr(candidate, k) for k in ("worktree", "branch", "repo_id")):
+        raise WorkspaceError("adoption-conflicting-binding")
+    observed = adapter.inspect(target)
+    adapter.verify_resources(target)
+    identity = adapter.observe_terminal(target)
+    if existing and any(existing.agent.get(k) and existing.agent[k] != value for k, value in identity.items()):
+        raise WorkspaceError("adoption-terminal-changed")
+    if (path.read_bytes() != before or read(tdir) != existing or adapter.inspect(target).identity != observed.identity
+            or adapter.observe_terminal(target) != identity):
+        raise WorkspaceError("adoption-observation-changed")
+    if existing:
+        return existing
+    candidate.agent.update(identity)
+    candidate.phase = "ready"
+    candidate.operations = {"adopt": {"status": "done", "result": {"identity": observed.identity}}}
+    write(tdir, candidate)
+    return candidate
 
 
 def observe(cfg, ticket: state.Ticket, *, run=None):

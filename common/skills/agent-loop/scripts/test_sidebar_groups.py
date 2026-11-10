@@ -11,7 +11,9 @@ import state
 
 
 class GroupCmux:
-    def __init__(self, destination=True):
+    def __init__(self, destination=True, *, root, repo):
+        self.root, self.repo = root, repo
+        self.ref_by_identity = {}
         self.calls = []
         self.identities = {}
         self.workspaces = "workspace:11 zip-1\nworkspace:12 zip-2\n"
@@ -29,12 +31,21 @@ class GroupCmux:
                 "member_workspace_ids": [m.replace("workspace:", "workspace-id-") for m in members]}
 
     def __call__(self, argv, **kwargs):
+        if argv[0] == "git":
+            out = str(self.repo / ".git") if "--git-common-dir" in argv else str(self.root) if "--show-toplevel" in argv else "main"
+            return subprocess.CompletedProcess(argv, 0, out + "\n", "")
         args = argv[1:]
         self.calls.append(args)
         out = "OK\n"
         code = 0
-        if args == ["workspace", "list"]:
-            out = self.workspaces
+        if args[:2] == ["workspace", "list"]:
+            rows = []
+            for line in self.workspaces.splitlines():
+                ref, title = line.split()[:2]
+                identity = self.identities.setdefault(ref, ref.replace("workspace:", "workspace-id-"))
+                self.ref_by_identity[identity] = ref
+                rows.append({"id": identity, "ref": ref, "title": title, "current_directory": str(self.root), "remote": {"enabled": False}})
+            out = json.dumps({"workspaces": rows}) if "--json" in args else self.workspaces
         elif args == ["workspace-group", "list", "--json", "--id-format", "both"]:
             if self.fail_list:
                 return subprocess.CompletedProcess(argv, 1, "", "socket unavailable")
@@ -52,7 +63,8 @@ class GroupCmux:
             if self.fail_add:
                 code = 1
             else:
-                ref = args[args.index("--workspace") + 1]
+                selector = args[args.index("--workspace") + 1]
+                ref = self.ref_by_identity.get(selector, selector)
                 target = args[args.index("--group") + 1]
                 for group in self.groups:
                     group["member_workspace_refs"] = [m for m in group["member_workspace_refs"] if m != ref]
@@ -76,7 +88,7 @@ class ReviewGroupTests(unittest.TestCase):
         (self.root / "hopper.toml").write_text(toml)
         self.cfg = config.load(self.root / "hopper.toml")
         self.cfg.ensure_dirs()
-        self.cmux = GroupCmux()
+        self.cmux = GroupCmux(root=self.root, repo=self.cfg.workspace_repo)
         self.addCleanup(patch.stopall)
         patch("sidebar.PRODUCTION_ROOT", self.cfg.state_root).start()
         patch("watch.pr_state", return_value="ready").start()
@@ -122,7 +134,7 @@ class ReviewGroupTests(unittest.TestCase):
         self.ticket()
         for source in ("In Review", "Done", "Approved", "On Hold", "Archive"):
             with self.subTest(source=source):
-                self.cmux = GroupCmux()
+                self.cmux = GroupCmux(root=self.root, repo=self.cfg.workspace_repo)
                 self.cmux.groups[0]["name"] = source
                 self.sync()
                 self.assertEqual(self.cmux.members(source), ["workspace:98", "workspace:11", "workspace:12"])
@@ -130,7 +142,7 @@ class ReviewGroupTests(unittest.TestCase):
 
     def test_missing_destination_is_created_without_capturing_the_focused_workspace(self):
         self.ticket()
-        self.cmux = GroupCmux(destination=False)
+        self.cmux = GroupCmux(destination=False, root=self.root, repo=self.cfg.workspace_repo)
         self.sync()
         self.sync()
         self.assertEqual(sum(g["name"] == "Ready for Review" for g in self.cmux.groups), 1)
@@ -152,7 +164,7 @@ class ReviewGroupTests(unittest.TestCase):
     def test_unverified_gate_never_moves_or_creates_a_group(self):
         for stage in ("draft-pr", "ready", "bot-loop", "colleague-loop", "human-gate-2", "done"):
             with self.subTest(stage=stage):
-                self.cmux = GroupCmux(destination=False)
+                self.cmux = GroupCmux(destination=False, root=self.root, repo=self.cfg.workspace_repo)
                 self.ticket(stage=stage)
                 self.sync()
                 self.assertEqual(self.cmux.members("In Progress"), ["workspace:98", "workspace:11", "workspace:12"])
@@ -163,7 +175,7 @@ class ReviewGroupTests(unittest.TestCase):
         for pr_status, head in (("draft", "verified-head"), ("closed", "verified-head"),
                                 ("merged", "verified-head"), ("ready", "new-head")):
             with self.subTest(pr_status=pr_status, head=head):
-                self.cmux = GroupCmux()
+                self.cmux = GroupCmux(root=self.root, repo=self.cfg.workspace_repo)
                 with patch("watch.pr_state", return_value=pr_status), patch("cohort._head", return_value=head):
                     self.sync()
                 self.assertEqual(self.cmux.members("Ready for Review"), [])
@@ -173,7 +185,7 @@ class ReviewGroupTests(unittest.TestCase):
                       {"recovery": {"active": None, "queued": [{"id": "pending"}]}},
                       {"decision_request": {"id": "owner-question"}}):
             with self.subTest(extra=extra):
-                self.cmux = GroupCmux()
+                self.cmux = GroupCmux(root=self.root, repo=self.cfg.workspace_repo)
                 self.ticket(**extra)
                 self.sync()
                 self.assertEqual(self.cmux.members("Ready for Review"), [])
@@ -266,7 +278,7 @@ class ReviewGroupTests(unittest.TestCase):
         self.ticket()
         for marker in ("HUMAN", "INTERACTIVE.json", "PARKED"):
             with self.subTest(marker=marker):
-                self.cmux = GroupCmux()
+                self.cmux = GroupCmux(root=self.root, repo=self.cfg.workspace_repo)
                 path = self.cfg.ticket_dir("ZIP-1") / marker
                 path.write_text("{}")
                 self.sync()
@@ -282,7 +294,7 @@ class ReviewGroupTests(unittest.TestCase):
 
     def test_ticket_change_during_verification_prevents_group_creation(self):
         self.ticket()
-        self.cmux = GroupCmux(destination=False)
+        self.cmux = GroupCmux(destination=False, root=self.root, repo=self.cfg.workspace_repo)
 
         def revoke_gate(_):
             ticket = state.load(self.cfg.ticket_dir("ZIP-1"))
@@ -297,7 +309,7 @@ class ReviewGroupTests(unittest.TestCase):
 
     def test_gate_revocation_while_creating_the_group_prevents_the_move(self):
         self.ticket()
-        self.cmux = GroupCmux(destination=False)
+        self.cmux = GroupCmux(destination=False, root=self.root, repo=self.cfg.workspace_repo)
         delegate = self.cmux
 
         def revoke_after_create(argv, **kwargs):
@@ -314,7 +326,7 @@ class ReviewGroupTests(unittest.TestCase):
 
     def test_human_move_while_creating_the_group_is_preserved(self):
         self.ticket()
-        self.cmux = GroupCmux(destination=False)
+        self.cmux = GroupCmux(destination=False, root=self.root, repo=self.cfg.workspace_repo)
         delegate = self.cmux
 
         def move_after_create(argv, **kwargs):
@@ -330,7 +342,7 @@ class ReviewGroupTests(unittest.TestCase):
 
     def test_workspace_identity_change_while_creating_the_group_is_not_routed(self):
         self.ticket()
-        self.cmux = GroupCmux(destination=False)
+        self.cmux = GroupCmux(destination=False, root=self.root, repo=self.cfg.workspace_repo)
         delegate = self.cmux
 
         def replace_after_create(argv, **kwargs):

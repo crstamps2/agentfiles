@@ -13,14 +13,26 @@ WORKSPACES = "  workspace:11  zip-1\n  workspace:12  zip-2\n* workspace:13  zip-
 
 
 class FakeCmux:
-    def __init__(self, fail=None):
+    def __init__(self, fail=None, *, root=None, repo=None):
+        self.root = pathlib.Path(root) if root is not None else pathlib.Path(".")
+        self.repo = pathlib.Path(repo) if repo is not None else self.root / "repo"
         self.calls, self.fail = [], fail
 
     def __call__(self, argv, **kwargs):
+        if argv[0] == "git":
+            out = str(self.repo / ".git") if "--git-common-dir" in argv else str(self.root) if "--show-toplevel" in argv else "main"
+            return subprocess.CompletedProcess(argv, 0, out + "\n", "")
         self.calls.append(argv[1:])
         if self.fail:
             raise self.fail
-        out = WORKSPACES if argv[1:3] == ["workspace", "list"] else "OK\n"
+        out = "OK\n"
+        if argv[1:3] == ["workspace", "list"]:
+            rows = []
+            for line in WORKSPACES.splitlines():
+                ref, title = line.replace("*", "").split()[:2]
+                rows.append({"id": ref.replace("workspace:", "workspace-id-"), "ref": ref, "title": title,
+                             "current_directory": str(self.root), "remote": {"enabled": False}})
+            out = json.dumps({"workspaces": rows})
         if argv[1:3] == ["workspace-group", "list"]:
             out = json.dumps({"groups": []})
         return subprocess.CompletedProcess(argv, 0, out, "")
@@ -42,6 +54,7 @@ class SidebarTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def ticket(self, key, stage, reason="", **extra):
+        extra.setdefault("worktree", str(self.cfg.state_root.parent))
         t = state.Ticket(key=key, state=stage, reason=reason, **extra)
         state.save(self.cfg.ticket_dir(key), t)
         return t
@@ -73,21 +86,22 @@ class SidebarTests(unittest.TestCase):
 
     def test_sync_drives_spinner_and_pill_for_known_workspaces_only(self):
         self.ticket("ZIP-1", "implement"); self.ticket("ZIP-9", "implement")
-        cmux = FakeCmux()
+        cmux = FakeCmux(root=self.cfg.state_root.parent, repo=self.cfg.workspace_repo)
         sidebar.sync(self.cfg, run=cmux, force=True)
-        self.assertIn(["workspace", "loading", "on", "--id", "agent-loop", "--workspace", "workspace:11"], cmux.calls)
-        self.assertTrue(any(c[:3] == ["set-status", "agent-loop", "implementing"] and c[-1] == "workspace:11" for c in cmux.calls))
+        self.assertIn(["workspace", "loading", "on", "--id", "agent-loop", "--workspace", "workspace-id-11"], cmux.calls)
+        self.assertTrue(any(c[:3] == ["set-status", "agent-loop", "implementing"] and c[-1] == "workspace-id-11" for c in cmux.calls))
         self.assertFalse(any("ZIP-9" in " ".join(c) or "zip-9" in " ".join(c) for c in cmux.calls))
 
     def test_the_selected_workspace_is_still_found(self):
         self.ticket("ZIP-3", "implement")
-        cmux = FakeCmux()
+        cmux = FakeCmux(root=self.cfg.state_root.parent, repo=self.cfg.workspace_repo)
         sidebar.sync(self.cfg, run=cmux, force=True)
-        self.assertTrue(any(c[-1] == "workspace:13" for c in cmux.calls))
+        self.assertTrue(any(c[-1] == "workspace-id-13" for c in cmux.calls))
 
     def test_unchanged_state_sends_nothing_on_the_next_pass(self):
         self.ticket("ZIP-1", "implement")
-        first, second = FakeCmux(), FakeCmux()
+        first = FakeCmux(root=self.cfg.state_root.parent, repo=self.cfg.workspace_repo)
+        second = FakeCmux(root=self.cfg.state_root.parent, repo=self.cfg.workspace_repo)
         sidebar.sync(self.cfg, run=first, force=True)
         sidebar.sync(self.cfg, run=second, force=True)
         reads = (["workspace", "list"], ["workspace-group", "list"])
@@ -103,7 +117,7 @@ class SidebarTests(unittest.TestCase):
 
     def test_a_test_state_root_never_touches_the_real_sidebar(self):
         self.ticket("ZIP-1", "implement")
-        cmux = FakeCmux()
+        cmux = FakeCmux(root=self.cfg.state_root.parent, repo=self.cfg.workspace_repo)
         with patch("sidebar.PRODUCTION_ROOT", self.cfg.state_root / "not-production"):
             sidebar.sync(self.cfg, run=cmux)
         self.assertEqual(cmux.calls, [])

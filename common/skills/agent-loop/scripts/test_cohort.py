@@ -147,7 +147,7 @@ class CohortTests(unittest.TestCase):
                     self.cfg,
                     "ZIP-1",
                     pr_lookup=lambda pr, result=lookup_state: result,
-                    head_lookup=lambda path: "head-2" if name == "stale-sha" else "head-1",
+                    head_lookup=lambda path, current=name: "head-2" if current == "stale-sha" else "head-1",
                 ))
                 self.assertEqual(cohort.members(self.cfg), ["ZIP-1"])
 
@@ -188,6 +188,9 @@ class Supervisor:
 
 
 class ReconcileTests(unittest.TestCase):
+    cfg: config.Config
+    tmp: tempfile.TemporaryDirectory
+
     setUp = CohortTests.setUp
     tearDown = CohortTests.tearDown
 
@@ -219,7 +222,7 @@ class ReconcileTests(unittest.TestCase):
 
     def test_repair_event_resumes_contract_and_a_restart_does_not_repeat_it(self):
         import recovery
-        ticket = self.member("ZIP-1", "blocked")
+        self.member("ZIP-1", "blocked")
         contract = recovery.new_contract("ZIP-1", {"state": "gates", "head_sha": "head-1"}, {"kind": "resume-stage", "state": "gates"}, ("defect-1",))
         recovery.activate(self.cfg, "ZIP-1", contract)
         recovery.emit_event(self.cfg, {"id": "defect-1", "affected_tickets": [{"ticket": "ZIP-1", "recovery_id": contract["id"]}]}, "landed", "fix-1")
@@ -243,6 +246,7 @@ class ReconcileTests(unittest.TestCase):
 
     def test_resuming_recovery_without_an_event_replays_after_supervisor_failure(self):
         from unittest.mock import patch
+
         import recovery
         self.member("ZIP-1", "paused")
         contract = recovery.new_contract("ZIP-1", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"})
@@ -294,7 +298,8 @@ class ReconcileTests(unittest.TestCase):
         for n in range(2, 5):
             self.member(f"ZIP-{n}")
         for n, sequence in ((6, 20), (5, 10)):
-            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"; wt.mkdir()
+            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"
+            wt.mkdir()
             tdir = self.cfg.ticket_dir(f"ZIP-{n}")
             state.save(tdir, state.Ticket(key=f"ZIP-{n}", state="implement", worktree=str(wt)))
             (tdir / "PARKED").touch()
@@ -309,6 +314,7 @@ class ReconcileTests(unittest.TestCase):
 
     def test_reserved_setup_failure_retries_same_ticket_and_retains_reservation(self):
         from unittest.mock import patch
+
         import drip
         ticket = self.member("ZIP-1", "blocked", reserved=True)
         with patch("drip.retry_spinup", side_effect=drip.SpinupFailed("setup-failed", ticket.worktree)):
@@ -325,7 +331,8 @@ class ReconcileTests(unittest.TestCase):
         for n in range(1, 5):
             self.member(f"ZIP-{n}")
         (self.cfg.ticket_dir("ZIP-1") / "state.json").write_text("not-json")
-        ticket = state.load(self.cfg.ticket_dir("ZIP-2")); ticket.recovery["active"] = {"schema_version": 77}
+        ticket = state.load(self.cfg.ticket_dir("ZIP-2"))
+        ticket.recovery["active"] = {"schema_version": 77}
         state.save(self.cfg.ticket_dir("ZIP-2"), ticket)
         report = self.run_reconcile()
         self.assertEqual(len(cohort.members(self.cfg)), 4)
@@ -348,7 +355,8 @@ class ReconcileTests(unittest.TestCase):
         from unittest.mock import patch
         self.member("ZIP-1")
         tdir = self.cfg.ticket_dir("ZIP-5")
-        wt = pathlib.Path(self.tmp.name) / "zip-5"; wt.mkdir()
+        wt = pathlib.Path(self.tmp.name) / "zip-5"
+        wt.mkdir()
         state.save(tdir, state.Ticket(key="ZIP-5", state="implement", worktree=str(wt)))
         (tdir / "PARKED").touch()
         supervisor = Supervisor()
@@ -363,7 +371,7 @@ class ReconcileTests(unittest.TestCase):
             self.run_reconcile(supervisor)
         self.assertEqual(cohort.members(self.cfg), ["ZIP-1", "ZIP-5"])
         sequence = cohort.load(self.cfg).next_admission_sequence
-        report = self.run_reconcile(supervisor)
+        self.run_reconcile(supervisor)
         self.assertEqual(cohort.load(self.cfg).next_admission_sequence, sequence)
         self.assertEqual(supervisor.started, ["ZIP-1", "ZIP-5"])
         self.assertEqual(cohort.load(self.cfg).slots[1].phase, "active")
@@ -390,12 +398,14 @@ class ReconcileTests(unittest.TestCase):
     def test_concurrent_drip_reconcile_and_manual_resume_never_duplicate_admission(self):
         from concurrent.futures import ThreadPoolExecutor
         from unittest.mock import patch
+
         import drip
         import runner
         import supervise
         self.member("ZIP-1")
         for n in range(2, 9):
-            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"; wt.mkdir()
+            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"
+            wt.mkdir()
             tdir = self.cfg.ticket_dir(f"ZIP-{n}")
             state.save(tdir, state.Ticket(key=f"ZIP-{n}", state="implement", worktree=str(wt)))
             (tdir / "PARKED").touch()
@@ -417,10 +427,10 @@ class ReconcileTests(unittest.TestCase):
             self.member(f"ZIP-{n}")
         supervisor = Supervisor()
         original = supervisor.ensure_running
-        def flaky(key, *args):
+        def flaky(key, worktree, state_root):
             if key == "ZIP-1":
                 raise RuntimeError("launchctl bootstrap failed: 5")
-            return original(key, *args)
+            return original(key, worktree, state_root)
         supervisor.ensure_running = flaky
         from unittest.mock import patch
         with patch("drip.board", return_value=[]), patch("drip.done_in_jira", return_value=set()), patch("drip.shared_services_ready", return_value=True):
@@ -442,7 +452,8 @@ class ReconcileTests(unittest.TestCase):
 
     def test_dry_run_before_migration_reconciles_a_virtual_cohort(self):
         for n in range(1, 6):
-            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"; wt.mkdir()
+            wt = pathlib.Path(self.tmp.name) / f"zip-{n}"
+            wt.mkdir()
             (wt / "planning" / f"zip-{n}").mkdir(parents=True)
             (wt / "planning" / f"zip-{n}" / "transcript.md").write_text(f"## 2026-09-0{n}T00:00:00Z coordinator started\n")
             state.save(self.cfg.ticket_dir(f"ZIP-{n}"), state.Ticket(key=f"ZIP-{n}", state="implement", worktree=str(wt)))
@@ -453,11 +464,14 @@ class ReconcileTests(unittest.TestCase):
 
     def test_spinup_runs_outside_the_cohort_lease_and_backs_off_after_failures(self):
         from unittest.mock import patch
-        import drip, locks
+
+        import drip
+        import locks
         cohort.initialize(self.cfg)
         board = [{"key": "ZIP-9", "summary": "x", "status": "Selected for Work", "assignee": None}]
         held = []
-        def spinup(key, log=print):
+        def spinup(cfg, key, log=print):
+            self.assertIs(cfg, self.cfg)
             held.append(locks.is_held(self.cfg.state_root / "locks" / "cohort"))
             raise drip.SpinupFailed("setup-failed", None)
         with patch("drip.board", return_value=board), patch("drip.done_in_jira", return_value=set()), \

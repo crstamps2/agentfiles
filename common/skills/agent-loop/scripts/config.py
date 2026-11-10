@@ -1,10 +1,12 @@
 """Load hopper.toml into a typed Config and own the on-disk state layout."""
 from __future__ import annotations
+
 import dataclasses
 import os
 import pathlib
 import re
 import tomllib
+
 
 DEFAULT_PATH = pathlib.Path(__file__).resolve().parent.parent / "hopper.toml"
 REQUIRED_TABLES = ("hopper", "paths", "timeouts", "admission", "budgets", "protection", "arms", "outcomes")
@@ -64,6 +66,9 @@ class Config:
     drip: dict = dataclasses.field(default_factory=dict)
     cohort_capacity: int = 4
     hard_capacity: int = 7
+    workspace_backend: str = "orca"
+    workspace_repo: pathlib.Path = dataclasses.field(default_factory=lambda: pathlib.Path("~/workspace/example-app").expanduser())
+    workspace_statuses: dict = dataclasses.field(default_factory=dict)
 
     def ticket_index(self, key: str) -> int:
         """1-based hopper position, else the ticket number: drives author/critic vendor alternation, so
@@ -108,7 +113,7 @@ def load(path: pathlib.Path | None = None) -> Config:
         if not local_model:
             raise ConfigError("[local].model is required and must be ctx-pinned (…-ctx32k:…) when [local] is present")
         if not re.search(r"-ctx32k:", local_model):
-            raise ConfigError(f"local model must be a ctx-pinned derived model (…-ctx32k:…); Ollama's default 4K context truncates pi's system prompt")
+            raise ConfigError("local model must be a ctx-pinned derived model (…-ctx32k:…); Ollama's default 4K context truncates pi's system prompt")
         local_unload_after_attempt = bool(local_table.get("unload_after_attempt", True))
     drip = dict(raw.get("drip", {}))
     if int(drip.get("max_in_flight", 3)) > 7:
@@ -121,6 +126,15 @@ def load(path: pathlib.Path | None = None) -> Config:
     if unowned:
         raise ConfigError(f"{path}: [drip].epics {unowned} are not in [hopper].owned_epics; the spinup "
                           "work-listener would spin their tickets up as well")
+    workspace = raw.get("workspace", {})
+    if not isinstance(workspace, dict) or workspace.get("backend", "orca") not in ("orca", "cmux"):
+        raise ConfigError("[workspace].backend must be orca or cmux")
+    statuses = workspace.get("statuses", {})
+    if not isinstance(statuses, dict) or any(not isinstance(v, str) or not v.strip() for v in statuses.values()):
+        raise ConfigError("[workspace.statuses] IDs must be nonempty strings")
+    repo = workspace.get("repo", "~/workspace/example-app")
+    if not isinstance(repo, str) or not repo.strip():
+        raise ConfigError("[workspace].repo must be a nonempty path")
     return Config(
         epic=h["epic"],
         owned_epics=owned,
@@ -140,4 +154,7 @@ def load(path: pathlib.Path | None = None) -> Config:
         outcomes=dict(oc),
         local_model=local_model,
         local_unload_after_attempt=local_unload_after_attempt,
+        workspace_backend=workspace.get("backend", "orca"),
+        workspace_repo=_p(repo),
+        workspace_statuses=dict(statuses),
     )

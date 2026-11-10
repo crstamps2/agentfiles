@@ -287,16 +287,17 @@ def _adopt_observed(cfg, key, requested, *, run):
     if existing and any(getattr(existing, k) != getattr(candidate, k) for k in ("worktree", "branch", "repo_id")):
         raise WorkspaceError("adoption-conflicting-binding")
     observed = adapter.inspect(target)
-    adapter.verify_resources(target)
     identity = adapter.observe_terminal(target)
     if existing and any(existing.agent.get(k) and existing.agent[k] != value for k, value in identity.items()):
         raise WorkspaceError("adoption-terminal-changed")
+    if not existing:
+        candidate.agent.update(identity)
+    adapter.verify_resources(target)
     if (path.read_bytes() != before or read(tdir) != existing or adapter.inspect(target).identity != observed.identity
             or adapter.observe_terminal(target) != identity):
         raise WorkspaceError("adoption-observation-changed")
     if existing:
         return existing
-    candidate.agent.update(identity)
     candidate.phase = "ready"
     candidate.operations = {"adopt": {"status": "done", "result": {"identity": observed.identity}}}
     write(tdir, candidate)
@@ -321,7 +322,7 @@ def retry_setup(cfg, ticket: state.Ticket, prompt: str, ref_url: str) -> LaunchR
     if ticket.worktree and pathlib.Path(ticket.worktree).resolve() != pathlib.Path(binding.worktree).resolve():
         raise BindingError("Recovery worktree conflicts with recorded binding")
     adapter = selection.adapter()
-    if not binding.workspace_id:
+    if selection.binding is None:
         adapter.resolve_legacy(binding)
         write(cfg.ticket_dir(ticket.key), binding)
     return _execute(cfg, selection, binding, prompt, ref_url)

@@ -30,6 +30,8 @@ class LocalOrca:
         self.identity = "wt2:local:instance-1"
         self.row_overrides = {}
         self.terminal_handles = ["term-Setup", "term-Dev", "term-agent"]
+        self.terminal_overrides = {}
+        self.terminal_statuses = {}
         self.prompt_outcome = "journaled"
         self.prompt_overrides = {}
         self.receipt_overrides = {}
@@ -92,11 +94,21 @@ class LocalOrca:
             if title == "Setup":
                 (self.path / ".env").write_text("PORT=34567\n")
                 (self.path / ".overmind.sock").touch()
-            result = {"terminal": {"handle": f"term-{title}"}}
+            number = sum(c[1:3] == ["terminal", "create"] and c[c.index("--title") + 1] == title for c in self.calls if "--title" in c)
+            handle = f"term-{title}" if number == 1 else f"term-{title}-{number}"
+            if handle not in self.terminal_handles:
+                self.terminal_handles.append(handle)
+            result = {"terminal": {"handle": handle}}
         elif cmd == ("terminal", "wait"):
             result = {"wait": {"satisfied": self.wait_satisfied, "exitCode": self.exit_code}}
         elif cmd == ("terminal", "list"):
-            result = {"terminals": [{"handle": h, "worktreeId": f"repo::{self.path}", "executionHostId": "local"} for h in self.terminal_handles], "truncated": False}
+            result = {"terminals": [{"handle": h, "worktreeId": f"repo::{self.path}", "executionHostId": "local",
+                                     "orphaned": False, "connected": True, "writable": True,
+                                     "ptyId": f"pty-{h}", "incarnationId": f"incarnation-{h}", **self.terminal_overrides.get(h, {})}
+                                    for h in self.terminal_handles], "truncated": False}
+        elif cmd == ("terminal", "read"):
+            handle = argv[argv.index("--terminal") + 1]
+            result = {"terminal": {"handle": handle, "status": self.terminal_statuses.get(handle, "running")}}
         elif cmd == ("agent", "launch"):
             result = {"worktreeId": f"repo::{self.path}", "operationId": "launch-1",
                       "outcome": {"kind": self.kind, "handle": "chat-1" if self.kind == "structured" else "term-agent", "sessionId": "session-1", "tabId": "structured-agent-session-pi_test"},
@@ -171,6 +183,79 @@ class OrcaLifecycleTests(unittest.TestCase):
         self.assertEqual(self.fake.count("agent", "launch"), 1)
         self.assertEqual(self.fake.count("terminal", "create"), 2)
         self.assertEqual(self.fake.count("tab", "create"), 2)
+
+    def test_interrupted_setup_retry_waits_on_same_recorded_terminal(self):
+        self.fake.exit_code = 1
+        self.assertEqual(self.launch().status, "setup-failed")
+        self.fake.exit_code = 0
+        self.fake.fail = ("terminal", "wait")
+        ticket = state.Ticket(key="ZIP-1", worktree=str(self.fake.path), branch="internal/zip-1")
+        with self.assertRaises(workspaces.WorkspaceError):
+            workspaces.retry_setup(self.cfg, ticket, "/loop-watch ZIP-1", "https://example.test/ZIP-1")
+        binding = wb.read(self.cfg.ticket_dir("ZIP-1"))
+        if binding is None:
+            self.fail("Expected durable retry identity")
+        handle = binding.terminals["setup"]
+        self.fake.fail = None
+        result = workspaces.retry_setup(self.cfg, ticket, "/loop-watch ZIP-1", "https://example.test/ZIP-1")
+        self.assertEqual(result.status, "ok")
+        setups = [c for c in self.fake.calls if c[1:3] == ["terminal", "create"] and c[c.index("--title") + 1] == "Setup"]
+        self.assertEqual(len(setups), 2)
+        waits = [c for c in self.fake.calls if c[1:3] == ["terminal", "wait"]]
+        self.assertEqual(waits[-1][waits[-1].index("--terminal") + 1], handle)
+        self.assertEqual(self.fake.count("agent", "launch"), 1)
+
+    def test_only_a_conclusive_setup_failure_advances_the_attempt(self):
+        self.fake.exit_code = 1
+        self.assertEqual(self.launch().status, "setup-failed")
+        ticket = state.Ticket(key="ZIP-1", worktree=str(self.fake.path), branch="internal/zip-1")
+        self.assertEqual(workspaces.retry_setup(self.cfg, ticket, "/loop-watch ZIP-1", "https://example.test/ZIP-1").status, "setup-failed")
+        self.fake.exit_code = 0
+        self.assertEqual(workspaces.retry_setup(self.cfg, ticket, "/loop-watch ZIP-1", "https://example.test/ZIP-1").status, "ok")
+        setups = [c for c in self.fake.calls if c[1:3] == ["terminal", "create"] and c[c.index("--title") + 1] == "Setup"]
+        self.assertEqual(len(setups), 3)
+
+    def test_fallback_records_actual_native_terminal_identity(self):
+        self.fake.kind = "terminal"
+        result = self.launch()
+        self.assertEqual(result.binding.agent.get("pty_id"), "pty-term-agent")
+        self.assertEqual(result.binding.agent.get("incarnation_id"), "incarnation-term-agent")
+        self.assertEqual(self.fake.count("terminal", "read"), 1)
+
+    def test_fallback_restart_rejects_replaced_or_disconnected_terminal(self):
+        self.fake.kind = "terminal"
+        self.launch()
+        for changed in ({"ptyId": "replaced"}, {"incarnationId": "replaced"}, {"connected": False},
+                        {"writable": False}, {"orphaned": True}, {"ptyId": None}):
+            with self.subTest(changed=changed):
+                self.fake.terminal_overrides = {"term-agent": changed}
+                with self.assertRaises(workspaces.WorkspaceError):
+                    self.launch()
+                self.assertEqual(self.fake.count("agent", "launch"), 1)
+
+    def test_fallback_restart_rejects_exited_observer(self):
+        self.fake.kind = "terminal"
+        self.launch()
+        self.fake.terminal_statuses["term-agent"] = "exited"
+        with self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
+        self.assertEqual(self.fake.count("agent", "launch"), 1)
+
+    def test_unverifiable_fallback_retains_receipt_without_relaunch(self):
+        self.fake.kind = "terminal"
+        self.fake.terminal_statuses["term-agent"] = "exited"
+        with self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
+        binding = wb.read(self.cfg.ticket_dir("ZIP-1"))
+        if binding is None:
+            self.fail("Expected actual launch receipt despite failed liveness")
+        self.assertEqual(binding.phase, "uncertain")
+        self.assertEqual(binding.agent["handle"], "term-agent")
+        self.assertEqual(binding.operations["agent"]["status"], "pending")
+        self.assertEqual(binding.operations["agent"]["launch_receipt"]["operation_id"], "launch-1")
+        with self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
+        self.assertEqual(self.fake.count("agent", "launch"), 1)
 
     def test_setup_failure_retries_existing_workspace(self):
         self.fake.exit_code = 1

@@ -161,10 +161,12 @@ class Backend(Adapter):
                            and t.get("worktreeId") == binding.workspace_id and t.get("executionHostId") == "local" and t.get("orphaned") is not True]
                 if len(matches) != 1:
                     raise WorkspaceError("orca-terminal-stale")
-                if handle == agent.get("handle"):
-                    for name, native in (("pty_id", "ptyId"), ("incarnation_id", "incarnationId")):
-                        if agent.get(name) and matches[0].get(native) != agent[name]:
-                            raise WorkspaceError("orca-terminal-replaced")
+        if agent.get("kind") == "terminal":
+            if not binding.agent or any(not isinstance(agent.get(k), str) or not agent[k] for k in ("pty_id", "incarnation_id")):
+                raise WorkspaceError("orca-terminal-identity-unconfirmed")
+            observed = self.observe_terminal(binding)
+            if any(observed[k] != agent[k] for k in observed):
+                raise WorkspaceError("orca-terminal-replaced")
         if agent.get("kind") == "chat":
             inventory = self.command(["worktree", "ps", "--limit", "10000"])
             rows = inventory.get("worktrees")
@@ -219,9 +221,24 @@ class Backend(Adapter):
     def setup(self, binding):
         if binding.operations.get("setup", {}).get("status") == "done":
             return
-        failed = binding.operations.get("setup", {}).get("status") == "failed"
+        previous = binding.operations.get("setup", {})
+        selected = binding.operations.get("setup-attempt", {}).get("result", {})
         attempts = sum(key.startswith("setup-terminal-") for key in binding.operations)
-        number = attempts if failed else max(0, attempts - 1)
+        if not selected and attempts > 1:
+            raise WorkspaceError("setup-attempt-unconfirmed")
+        number = selected.get("number", 0)
+        if type(number) is not int or number < 0:
+            raise WorkspaceError("setup-attempt-unconfirmed")
+        if previous.get("status") == "failed":
+            failed_number = previous.get("attempt", 0)
+            if type(failed_number) is not int or number not in (failed_number, failed_number + 1):
+                raise WorkspaceError("setup-attempt-unconfirmed")
+            if number == failed_number:
+                number += 1
+        elif number != 0:
+            raise WorkspaceError("setup-attempt-unconfirmed")
+        binding.operations["setup-attempt"] = {"status": "done", "result": {"number": number}}
+        self.checkpoint(binding)
         command = shlex.join(["env", f"WORKTREE_NAME={binding.key.lower()}", f"WORKTREE_ROOT_PATH={self.cfg.workspace_repo}", "bin/worktree-setup"])
         command = f"cd {shlex.quote(binding.worktree)} && exec {command}"
         binding.terminals["setup"] = self.terminal(binding, f"setup-terminal-{number}", "Setup", command)
@@ -231,7 +248,7 @@ class Backend(Adapter):
             binding.phase = "uncertain"
             self.checkpoint(binding)
             raise WorkspaceError("setup-unconfirmed")
-        binding.operations["setup"] = {"status": "done" if value["exitCode"] == 0 else "failed", "exit_code": value["exitCode"]}
+        binding.operations["setup"] = {"status": "done" if value["exitCode"] == 0 else "failed", "exit_code": value["exitCode"], "attempt": number}
         self.checkpoint(binding)
         if value["exitCode"] != 0:
             raise DefiniteFailure("setup-failed")
@@ -303,8 +320,14 @@ class Backend(Adapter):
                 tab = outcome.get("tabId")
                 if isinstance(tab, str) and tab:
                     agent["tab_id"] = tab
-            return {"agent": agent, "operation_id": result.get("operationId"), "detail": receipt["detail"],
-                    "prompt": {"delivery": "submit", "outcome": proof, "message_id": message if proof == "journaled" else None}}
+            value = {"agent": agent, "operation_id": result.get("operationId"), "detail": receipt["detail"],
+                     "prompt": {"delivery": "submit", "outcome": proof, "message_id": message if proof == "journaled" else None}}
+            binding.agent = agent
+            binding.operations["agent"]["launch_receipt"] = value
+            self.checkpoint(binding)
+            if kind == "terminal":
+                agent.update(self.observe_terminal(binding))
+            return value
         value = self.operation(binding, "agent", ["pi", "chat", prompt], launch)
         binding.agent = value["agent"]
         self.checkpoint(binding)

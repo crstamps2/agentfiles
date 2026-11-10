@@ -62,14 +62,16 @@ class TenTicketSimulation(unittest.TestCase):
         for p in (patch.object(drip, "board", return_value=board), patch.object(drip, "done_in_jira", return_value=set()),
                   patch.object(drip, "shared_services_ready", return_value=True),
                   patch.object(drip, "spinup_with_panes", side_effect=self.spinup),
-                  patch.object(drip, "retry_spinup", side_effect=lambda cfg, t, log=print: self.spinup(t.key)),
+                  patch.object(drip, "retry_spinup", side_effect=lambda cfg, t, log=print: self.spinup(cfg, t.key, log)),
                   patch.object(drip.time, "time", side_effect=lambda: 1_800_000_000 + 60 * self.tick)):   # one reconcile per minute
-            p.start(); self.addCleanup(p.stop)
+            p.start()
+            self.addCleanup(p.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def spinup(self, key, log=print):
+    def spinup(self, cfg, key, log=print):
+        self.assertIs(cfg, self.cfg)
         wt = self.root / "wts" / key.lower()
         (wt / "planning" / key.lower()).mkdir(parents=True, exist_ok=True)
         if key in self.spinup_failures:
@@ -88,12 +90,13 @@ class TenTicketSimulation(unittest.TestCase):
             self.assertIn(key, members, f"{key} supervised outside the cohort")
         return report
 
-    def fail(self, key, *, resume, checkpoint=None, summary=None, model=None, status=None, attempts=None):
+    def inject_failure(self, key, *, resume, checkpoint=None, summary=None, model=None, status=None, attempts=None):
         """A failure boundary: record the defect, then activate its contract (production order)."""
         tdir = self.cfg.ticket_dir(key)
         t = state.load(tdir)
         if attempts:
-            t.attempts.update(attempts); state.save(tdir, t)
+            t.attempts.update(attempts)
+            state.save(tdir, t)
         checkpoint = dict(checkpoint or {"state": resume["state"]})
         if model:
             checkpoint["model"] = model
@@ -132,24 +135,29 @@ class TenTicketSimulation(unittest.TestCase):
         if trigger:
             trigger(key)
 
+    def test_assertion_failures_are_not_shadowed_by_injector(self):
+        with self.assertRaises(AssertionError):
+            self.assertEqual("expected", "different")
+
     def test_ten_tickets_reach_human_gate_one_without_exceeding_four_slots(self):
         shared = "verification dirties yarn.lock outside the task allowlist"
         injected = {
-            ("ZIP-1", "implement"): lambda k: self.fail(k, resume={"kind": "retry-task", "state": "implement", "task_id": "001", "task_slug": "a"},
+            ("ZIP-1", "implement"): lambda k: self.inject_failure(k, resume={"kind": "retry-task", "state": "implement", "task_id": "001", "task_slug": "a"},
                                                         checkpoint={"state": "implement", "task_id": "001", "task_slug": "a"},
                                                         summary="worker rejection: runner misread result.md",
                                                         attempts={f"{k}/001": [{"n": 1, "outcome": "rejected", "slug": "a"}]}),
-            ("ZIP-2", "gates"): lambda k: self.fail(k, resume={"kind": "resume-stage", "state": "gates"}, summary="gate parser crashed on screenshot table"),
-            ("ZIP-1", "plan"): lambda k: self.fail(k, resume={"kind": "replan", "state": "plan"}, summary=shared),
-            ("ZIP-2", "plan"): lambda k: self.fail(k, resume={"kind": "replan", "state": "plan"}, summary=shared),
-            ("ZIP-6", "draft-pr"): lambda k: self.fail(k, resume={"kind": "republish", "state": "implement"},
+            ("ZIP-2", "gates"): lambda k: self.inject_failure(k, resume={"kind": "resume-stage", "state": "gates"}, summary="gate parser crashed on screenshot table"),
+            ("ZIP-1", "plan"): lambda k: self.inject_failure(k, resume={"kind": "replan", "state": "plan"}, summary=shared),
+            ("ZIP-2", "plan"): lambda k: self.inject_failure(k, resume={"kind": "replan", "state": "plan"}, summary=shared),
+            ("ZIP-6", "draft-pr"): lambda k: self.inject_failure(k, resume={"kind": "republish", "state": "implement"},
                                                        checkpoint={"state": "implement"}, summary="publication left a stale index.lock"),
             ("ZIP-7", "implement"): self.provider_outage,
-            ("ZIP-8", "ready"): lambda k: self.fail(k, resume={"kind": "resume-stage", "state": "ready"}, summary="rebase conflict in generated todo file"),
+            ("ZIP-8", "ready"): lambda k: self.inject_failure(k, resume={"kind": "resume-stage", "state": "ready"}, summary="rebase conflict in generated todo file"),
             ("ZIP-9", "plan-review"): self.product_decision,
         }
         self.tick = 0
         self.decision_tick = None
+        tick, gated = 0, []
         while self.tick < 400:
             self.tick += 1
             tick = self.tick
@@ -181,7 +189,7 @@ class TenTicketSimulation(unittest.TestCase):
     def provider_outage(self, key):
         providers.mark_exhausted(self.cfg.state_root, "openai", "usage limit")
         providers.mark_exhausted(self.cfg.state_root, "anthropic", "usage limit")
-        self.fail(key, resume={"kind": "wait-provider", "state": "implement"}, model="openai/gpt-5.6-terra")
+        self.inject_failure(key, resume={"kind": "wait-provider", "state": "implement"}, model="openai/gpt-5.6-terra")
 
     def product_decision(self, key):
         decision.propose(self.cfg, key, {

@@ -252,9 +252,16 @@ class Backend(Adapter):
             result = self.command(["agent", "launch", "--worktree", self.selector(binding), "--agent", "pi", "--surface", "chat", "--prompt", prompt])
             outcome = self.obj(result, "outcome")
             delivery = self.obj(result, "prompt")
+            receipt = self.obj(result, "receipt")
             kind, handle = outcome.get("kind"), outcome.get("handle")
+            proof, message = delivery.get("outcome"), delivery.get("messageId")
             if (result.get("worktreeId") != binding.workspace_id or kind not in ("structured", "terminal")
-                    or not isinstance(handle, str) or not handle or delivery.get("outcome") not in ("journaled", "handed-to-terminal")):
+                    or not isinstance(handle, str) or not handle or delivery.get("delivery") != "submit"
+                    or receipt.get("mode") != kind or receipt.get("preferred") != "structured"
+                    or not isinstance(receipt.get("reason"), str) or not isinstance(receipt.get("detail"), str)
+                    or proof not in ("journaled", "handed-to-terminal")
+                    or (proof == "journaled" and (not isinstance(message, str) or not message))
+                    or (kind == "structured" and proof != "journaled")):
                 raise WorkspaceError("orca-agent-unconfirmed")
             agent = {"kind": "chat" if kind == "structured" else "terminal", "handle": handle}
             if kind == "structured":
@@ -265,7 +272,8 @@ class Backend(Adapter):
                 tab = outcome.get("tabId")
                 if isinstance(tab, str) and tab:
                     agent["tab_id"] = tab
-            return {"agent": agent, "operation_id": result.get("operationId"), "detail": self.obj(result, "receipt").get("detail", "")}
+            return {"agent": agent, "operation_id": result.get("operationId"), "detail": receipt["detail"],
+                    "prompt": {"delivery": "submit", "outcome": proof, "message_id": message if proof == "journaled" else None}}
         value = self.operation(binding, "agent", ["pi", "chat", prompt], launch)
         binding.agent = value["agent"]
         self.checkpoint(binding)

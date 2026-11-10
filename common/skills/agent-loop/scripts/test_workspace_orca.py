@@ -31,6 +31,8 @@ class LocalOrca:
         self.row_overrides = {}
         self.terminal_handles = ["term-Setup", "term-Dev", "term-agent"]
         self.prompt_outcome = "journaled"
+        self.prompt_overrides = {}
+        self.receipt_overrides = {}
         self.mutation_bindings = []
         self.chat_present = True
         self.page_handles = ["page-1", "page-2"]
@@ -94,8 +96,8 @@ class LocalOrca:
         elif cmd == ("agent", "launch"):
             result = {"worktreeId": f"repo::{self.path}", "operationId": "launch-1",
                       "outcome": {"kind": self.kind, "handle": "chat-1" if self.kind == "structured" else "term-agent", "sessionId": "session-1", "tabId": "structured-agent-session-pi_test"},
-                      "receipt": {"detail": "Requested surface" if self.kind == "structured" else "Chat unavailable; terminal fallback"},
-                      "prompt": {"outcome": self.prompt_outcome}}
+                      "receipt": {"mode": self.kind, "preferred": "structured", "reason": "explicit_surface", "detail": "Requested surface" if self.kind == "structured" else "Chat unavailable; terminal fallback", **self.receipt_overrides},
+                      "prompt": {"delivery": "submit", "outcome": self.prompt_outcome, "messageId": "message-1", **self.prompt_overrides}}
         elif cmd == ("tab", "create"):
             result = {"browserPageId": "page-" + str(sum(c[1:3] == ["tab", "create"] for c in self.calls))}
         elif cmd == ("tab", "list"):
@@ -301,6 +303,28 @@ class OrcaLifecycleTests(unittest.TestCase):
             self.launch()
         self.assertEqual(self.fake.count("terminal", "create"), 1)
         self.assertEqual(self.fake.count("agent", "launch"), 0)
+
+    def test_draft_prompt_is_not_counted_as_submitted(self):
+        self.fake.prompt_overrides = {"delivery": "draft"}
+        with self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
+        self.assertEqual(self.fake.count("agent", "launch"), 1)
+
+    def test_structured_prompt_requires_a_native_message_id(self):
+        self.fake.prompt_overrides = {"messageId": ""}
+        with self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
+        self.assertEqual(self.fake.count("agent", "launch"), 1)
+
+    def test_native_surface_receipt_must_match_actual_outcome(self):
+        self.fake.receipt_overrides = {"mode": "terminal"}
+        with self.assertRaises(workspaces.WorkspaceError):
+            self.launch()
+        self.assertEqual(self.fake.count("agent", "launch"), 1)
+
+    def test_submitted_prompt_receipt_is_retained(self):
+        result = self.launch()
+        self.assertEqual(result.binding.operations["agent"]["result"].get("prompt", {}).get("message_id"), "message-1")
 
     def test_missing_prompt_proof_never_relaunches(self):
         self.fake.prompt_outcome = "unconfirmed"

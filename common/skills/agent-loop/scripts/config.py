@@ -7,7 +7,6 @@ import pathlib
 import re
 import tomllib
 
-
 DEFAULT_PATH = pathlib.Path(__file__).resolve().parent.parent / "hopper.toml"
 REQUIRED_TABLES = ("hopper", "paths", "timeouts", "admission", "budgets", "protection", "arms", "outcomes")
 

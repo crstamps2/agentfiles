@@ -169,12 +169,22 @@ class Backend(Adapter):
         self.checkpoint(binding)
         _, binding.repo_id = self.git_identity(binding)
         self.checkpoint(binding)
+        if binding.operations.get("initial-group", {}).get("status") != "done":
+            try:
+                matches = [g for g in self.groups() if g.get("name") == "In Progress"]
+                if len(matches) > 1:
+                    raise WorkspaceError("cmux-in-progress-ambiguous")
+                if matches and (not isinstance(matches[0].get("id"), str) or not matches[0]["id"]):
+                    raise WorkspaceError("cmux-in-progress-unconfirmed")
+            except WorkspaceError as exc:
+                raise DefiniteFailure(exc.status) from exc
+            if matches:
+                binding.operations["initial-group"] = {"status": "done", "payload": ["In Progress"],
+                                                       "result": {"id": matches[0]["id"]}}
+                self.checkpoint(binding)
         def group():
-            matches = [g for g in self.groups() if g.get("name") == "In Progress"]
-            if len(matches) > 1:
-                raise WorkspaceError("cmux-in-progress-ambiguous")
-            value = matches[0] if matches else self.json_command(["workspace-group", "create", "--name", "In Progress",
-                    "--idempotency-key", "agent-loop-in-progress", "--json"]).get("group", {})
+            value = self.json_command(["workspace-group", "create", "--name", "In Progress",
+                                      "--idempotency-key", "agent-loop-in-progress", "--json"]).get("group", {})
             if not isinstance(value, dict) or not isinstance(value.get("id"), str) or not value["id"]:
                 raise WorkspaceError("cmux-in-progress-unconfirmed")
             return {"id": value["id"]}
@@ -228,8 +238,9 @@ class Backend(Adapter):
             raise DefiniteFailure("setup-failed")
 
     def start_dev(self, binding):
-        def start():
+        if binding.operations.get("dev", {}).get("status") != "done":
             self.verify_resources(binding)
+        def start():
             self.cc.cmux_focus_workspace(binding.workspace_id)
             return {"handle": self.cc.open_dev_server_tab(binding.workspace_id, binding.worktree)}
         value = self.operation(binding, "dev", [binding.workspace_id, binding.worktree], start)
@@ -240,8 +251,9 @@ class Backend(Adapter):
         self.checkpoint(binding)
 
     def start_agent(self, binding, prompt):
-        def start():
+        if binding.operations.get("agent", {}).get("status") != "done":
             self.verify_resources(binding)
+        def start():
             self.cc.cmux_focus_workspace(binding.workspace_id)
             return {"handle": self.cc.open_agent_tab(binding.workspace_id, prompt, binding.worktree, agent="pi")}
         value = self.operation(binding, "agent", [binding.workspace_id, prompt, "pi"], start)
@@ -253,10 +265,11 @@ class Backend(Adapter):
         if binding.operations.get("serving", {}).get("result", {}).get("ready"):
             urls["app"] = f"https://admin.{binding.key.lower()}.test"
         for role, url in urls.items():
-            value = self.operation(binding, f"view-{role}", [binding.workspace_id, url],
-                                   lambda url=url: self.new_view(binding, url))
-            binding.views[role] = value["handle"]
-            self.checkpoint(binding)
+            value = self.optional_view(binding, f"view-{role}", [binding.workspace_id, url],
+                                       lambda url=url: self.new_view(binding, url))
+            if value:
+                binding.views[role] = value["handle"]
+                self.checkpoint(binding)
 
     def new_view(self, binding, url):
         self.verify_resources(binding)

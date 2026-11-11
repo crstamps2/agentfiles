@@ -36,10 +36,10 @@ class Backend(Adapter):
             selected = shutil.which(name) or name
         self.binary = selected
 
-    def command(self, args, *, timeout=120):
+    def command(self, args, *, timeout=None):
         argv = [self.binary, *args, "--environment", "local", "--json"]
         try:
-            result = self.run(argv, capture_output=True, text=True, timeout=timeout)
+            result = self.run(argv, capture_output=True, text=True, timeout=self.timeout if timeout is None else timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise WorkspaceError("orca-unconfirmed", type(exc).__name__) from exc
         try:
@@ -62,7 +62,7 @@ class Backend(Adapter):
 
     def git(self, *args, cwd=None):
         try:
-            result = self.run(["git", "-C", str(cwd or self.cfg.workspace_repo), *args], capture_output=True, text=True, timeout=120)
+            result = self.run(["git", "-C", str(cwd or self.cfg.workspace_repo), *args], capture_output=True, text=True, timeout=self.timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise WorkspaceError("workspace-git-unconfirmed", type(exc).__name__) from exc
         if result.returncode:
@@ -108,16 +108,20 @@ class Backend(Adapter):
         return {"workspace_id": row["id"], "worktree": path, "identity": identity}
 
     def create(self, binding):
+        name = binding.key.lower()
+        if binding.operations.get("create", {}).get("status") != "done":
+            try:
+                self.git("check-ref-format", "--branch", binding.branch)
+                refs = self.git("for-each-ref", "--format=%(refname)", "refs/heads/", "refs/remotes/origin/").splitlines()
+                if any(ref in refs for ref in (f"refs/heads/{binding.branch}", f"refs/remotes/origin/{binding.branch}")) or self.git("ls-remote", "--heads", "origin", f"refs/heads/{binding.branch}"):
+                    raise WorkspaceError("workspace-collision", "Branch exists")
+                paths = self.git("worktree", "list", "--porcelain", "-z").split("\0")
+                if any(pathlib.Path(p[9:]).name == name for p in paths if p.startswith("worktree ")):
+                    raise WorkspaceError("workspace-collision", "Ticket worktree already exists")
+                self.git("fetch", "origin", "main")
+            except WorkspaceError as exc:
+                raise DefiniteFailure(exc.status) from exc
         def create():
-            name = binding.key.lower()
-            self.git("check-ref-format", "--branch", binding.branch)
-            refs = self.git("for-each-ref", "--format=%(refname)", "refs/heads/", "refs/remotes/origin/").splitlines()
-            if any(ref in refs for ref in (f"refs/heads/{binding.branch}", f"refs/remotes/origin/{binding.branch}")) or self.git("ls-remote", "--heads", "origin", f"refs/heads/{binding.branch}"):
-                raise WorkspaceError("workspace-collision", "Branch exists")
-            paths = self.git("worktree", "list", "--porcelain", "-z").split("\0")
-            if any(pathlib.Path(p[9:]).name == name for p in paths if p.startswith("worktree ")):
-                raise WorkspaceError("workspace-collision", "Ticket worktree already exists")
-            self.git("fetch", "origin", "main")
             row = self.obj(self.command(["worktree", "create", "--repo", f"id:{binding.repo_id}", "--name", name,
                                          "--branch", binding.branch, "--base-branch", "origin/main", "--no-parent", "--setup", "skip"]), "worktree")
             return self.validate_worktree(binding, row)
@@ -333,7 +337,7 @@ class Backend(Adapter):
         self.checkpoint(binding)
 
     def ensure_views(self, binding, ref_url):
-        self.operation(binding, "reference", [ref_url], lambda: self.command(["reference", "add", ref_url, "--worktree", self.selector(binding)]))
+        self.optional_view(binding, "reference", [ref_url], lambda: self.command(["reference", "add", ref_url, "--worktree", self.selector(binding)]))
         urls = {"reference": ref_url}
         if binding.operations.get("serving", {}).get("result", {}).get("ready"):
             urls["app"] = f"https://admin.{binding.key.lower()}.test"
@@ -344,8 +348,10 @@ class Backend(Adapter):
                 if not isinstance(page, str) or not page:
                     raise WorkspaceError("orca-browser-unconfirmed")
                 return {"page": page}
-            binding.views[role] = self.operation(binding, f"view-{role}", [url], create)["page"]
-            self.checkpoint(binding)
+            value = self.optional_view(binding, f"view-{role}", [url], create)
+            if value:
+                binding.views[role] = value["page"]
+                self.checkpoint(binding)
 
     def present(self, binding, value):
         row, _ = self.workspace(binding)

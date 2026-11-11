@@ -466,17 +466,18 @@ class OrcaLifecycleTests(unittest.TestCase):
         backend, binding = self.backend()
         self.assertFalse(backend.move_to_review(binding, backend.inspect(binding)))
         self.assertEqual(self.fake.workspace_status, "in-progress")
-        backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
-        self.assertIn("self-healing", self.fake.comment)
+        with self.assertRaisesRegex(workspaces.DefiniteFailure, "orca-comment-update-unsupported"):
+            backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
+        self.assertEqual(self.fake.comment, "Operator notes")
 
-    def test_comment_update_does_not_change_links_or_read_state(self):
+    def test_unsupported_comment_update_preserves_links_and_read_state(self):
         self.launch()
         backend, binding = self.backend()
-        backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
-        backend.present(binding, workspaces.Presentation(False, "needs Cody", "orange", "question"))
-        self.assertTrue(self.fake.comment.startswith("Operator notes\n"))
-        self.assertEqual(self.fake.comment.count("agent-loop:"), 1)
-        self.assertIn("needs Cody", self.fake.comment)
+        for value in (workspaces.Presentation(True, "self-healing", "yellow", "wrench"),
+                      workspaces.Presentation(False, "needs Cody", "orange", "question")):
+            with self.assertRaisesRegex(workspaces.DefiniteFailure, "orca-comment-update-unsupported"):
+                backend.present(binding, value)
+        self.assertEqual(self.fake.comment, "Operator notes")
         for command in (c for c in self.fake.calls if c[1:3] == ["worktree", "set"]):
             self.assertFalse(set(command) & {"--issue", "--pr", "--unread", "--read", "--workspace-status"})
         self.assertFalse(self.fake.unread)
@@ -506,7 +507,9 @@ class OrcaLifecycleTests(unittest.TestCase):
         backend, binding = self.backend()
         self.fake.row_overrides["name"] = "duplicate-title"
         start = len(self.fake.calls)
-        backend.present(binding, workspaces.Presentation(False, "needs Cody", "orange", "question"))
+        with self.assertRaisesRegex(workspaces.DefiniteFailure, "orca-comment-update-unsupported"):
+            backend.present(binding, workspaces.Presentation(False, "needs Cody", "orange", "question"))
+        self.assertTrue(self.fake.calls[start:])
         for command in self.fake.calls[start:]:
             if command[1:3] in (["worktree", "show"], ["worktree", "set"]):
                 self.assertEqual(command[command.index("--worktree") + 1], "id:" + binding.workspace_id)
@@ -522,14 +525,15 @@ class OrcaLifecycleTests(unittest.TestCase):
         after = {p: p.read_bytes() for p in self.cfg.state_root.rglob("*") if p.is_file()}
         self.assertEqual(before, after)
 
-    def test_status_remains_visible_when_agent_surface_disappears(self):
+    def test_missing_agent_does_not_prevent_workspace_observation(self):
         self.launch()
         self.fake.chat_present = False
         backend, binding = self.backend()
         snapshot = backend.inspect(binding)
         self.assertIsNone(snapshot.agent_live)
-        backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
-        self.assertIn("self-healing", self.fake.comment)
+        with self.assertRaisesRegex(workspaces.DefiniteFailure, "orca-comment-update-unsupported"):
+            backend.present(binding, workspaces.Presentation(True, "self-healing", "yellow", "wrench"))
+        self.assertEqual(self.fake.comment, "Operator notes")
         with self.assertRaises(workspaces.WorkspaceError):
             self.launch()
 

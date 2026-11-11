@@ -360,10 +360,8 @@ class Backend(Adapter):
             comment = previous + ("\n" if previous and not previous.endswith("\n") else "") + line
         if previous == comment:
             return
-        result = self.obj(self.command(["worktree", "set", "--worktree", self.selector(binding), "--comment", comment]), "worktree")
-        self.validate_worktree(binding, result)
-        if result.get("comment") != comment:
-            raise WorkspaceError("orca-comment-unconfirmed")
+        raise DefiniteFailure("orca-comment-update-unsupported",
+                              "Native CLI cannot conditionally update shared operator comments")
 
     def move_to_review(self, binding, expected):
         destination = self.cfg.workspace_statuses.get("ready_for_review")
@@ -375,6 +373,7 @@ class Backend(Adapter):
         current = self.inspect(binding)
         if current.identity != expected.identity or current.lane != "in-progress":
             return False
+        self.record_move()
         row = self.obj(self.command(["worktree", "set", "--worktree", self.selector(binding), "--workspace-status", destination]), "worktree")
         value = self.validate_worktree(binding, row)
         if value["identity"] != expected.identity or row.get("workspaceStatus") != destination:

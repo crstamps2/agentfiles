@@ -25,6 +25,7 @@ class App:
         self.moves = 0
         self.fail = False
         self.before_move = lambda: True
+        self.record_move = lambda: None
 
     def inspect(self, binding):
         return workspaces.Snapshot(binding, self.identity, self.lane)
@@ -37,6 +38,7 @@ class App:
     def move_to_review(self, binding, expected):
         if self.lane != "in-progress" or self.identity != expected.identity or not self.before_move():
             return False
+        self.record_move()
         self.lane = "ready-for-review"
         self.moves += 1
         return True
@@ -204,6 +206,7 @@ class MixedSidebarTests(unittest.TestCase):
         for key in self.apps:
             self.ticket(key, "human-gate-1")
         def lose_reply(app, binding, expected):
+            app.record_move()
             app.lane = "ready-for-review"
             app.moves += 1
             raise TimeoutError("reply lost after movement")

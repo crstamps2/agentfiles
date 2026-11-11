@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import typing
 
+import config
 import state
 from workspace_binding import BACKENDS, Binding, BindingError, read, validate, write
 
@@ -99,6 +100,7 @@ class Adapter:
     def __init__(self, cfg, *, run, checkpoint):
         self.cfg, self.run, self.checkpoint = cfg, run, checkpoint
         self.before_move = lambda: True
+        self.record_move = lambda: None
 
     def verify_resources(self, binding: Binding) -> None:
         """Strict resume preflight, separate from cosmetic workspace observation."""
@@ -219,7 +221,10 @@ def notify(ticket_dir, key: str, title: str, body: str, *, run=None) -> bool:
                           branch=ticket.branch, workspace_id=ticket.workspace)
     if binding.key != key:
         return False
-    adapter = WorkspaceBackend(None, binding.backend, binding).adapter(run=run)
+    cfg = config.load()
+    if cfg.ticket_dir(key).resolve() != pathlib.Path(ticket_dir).resolve():
+        return False
+    adapter = WorkspaceBackend(cfg, binding.backend, binding).adapter(run=run)
     adapter.notify(binding, title, body)
     return True
 

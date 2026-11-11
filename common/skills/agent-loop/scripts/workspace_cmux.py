@@ -291,6 +291,7 @@ class Backend(Adapter):
                 or sources[0].get("id", sources[0].get("ref")) != self.source_ids.get(expected.identity)
                 or not destinations[0].get("ref")):
             return False
+        self.record_move()
         try:
             self.command(["workspace-group", "add", "--group", destinations[0]["ref"], "--workspace", current.binding.workspace_id])
         except WorkspaceError as exc:

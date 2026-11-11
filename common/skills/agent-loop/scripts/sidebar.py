@@ -114,11 +114,21 @@ def _route_review_ready(cfg, key, adapter, observed, routes, persist):
         current = adapter.inspect(observed.binding)
         return current.identity == observed.identity and current.lane == "in-progress"
 
+    def record_move():
+        routes[key] = {"pending": signature}
+        try:
+            persist()
+        except Exception:
+            if completed is None:
+                routes.pop(key, None)
+            else:
+                routes[key] = completed
+            raise
+
     adapter.before_move = unchanged
+    adapter.record_move = record_move
     if not unchanged():
         return
-    routes[key] = {"pending": signature}
-    persist()
     try:
         moved = adapter.move_to_review(observed.binding, observed)
     except workspaces.DefiniteFailure:

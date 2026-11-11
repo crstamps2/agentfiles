@@ -88,11 +88,18 @@ the binding; or route the ticket through the other backend. A definite setup fai
 normal recovery path for its recorded workspace, but uncertainty permits observation only until the
 identity and operation outcome are resolved.
 
-Shared policy renders the same workspace status across both backends. Verified Ready for Review is
+Shared policy computes the same workspace status for both backends. Verified Ready for Review is
 mapped to Orca status `status-5` through `[workspace.statuses].ready_for_review`; it is not the
 generic `in-review` status. If that mapping is absent, the board status remains unchanged. Status
 presentation, notification, and review routing do not create agents, relaunch workspaces, or change
 ownership.
+
+Orca's installed CLI only replaces the whole shared comment, without a conditional update. When a
+status change would require that write, presentation reports `orca-comment-update-unsupported`
+instead of risking an operator's concurrent note. An already-current status requires no write;
+unread notifications remain independent. Comment rendering needs a supported conditional update
+or a separately owned status field before it can be enabled safely. Automatic board movement is
+limited to In Progress → Ready for Review and separately requires safe native source-status enforcement.
 
 ### Metadata enrollment
 

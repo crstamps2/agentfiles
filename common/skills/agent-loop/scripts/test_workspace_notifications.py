@@ -29,6 +29,9 @@ class NotificationTests(unittest.TestCase):
         production = patch("workspaces.PRODUCTION_ROOT", self.cfg.state_root)
         production.start()
         self.addCleanup(production.stop)
+        loaded_config = patch("config.load", return_value=self.cfg)
+        loaded_config.start()
+        self.addCleanup(loaded_config.stop)
 
     def test_notification_selects_binding_not_new_default(self):
         wb.write(self.tdir, wb.Binding(backend="orca", key="ZIP-1", workspace_id="repo::/worktree", worktree="/worktree", repo_id="repo"))

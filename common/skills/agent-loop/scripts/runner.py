@@ -1161,7 +1161,7 @@ def main(argv=None) -> int:
             cij = tdir / "ci.json"
             if cij.exists():
                 pr = "#" + str(json.loads(cij.read_text()).get("pr", "-"))
-            wt = pathlib.Path("~/workspace/example-worktrees").expanduser() / key.lower()
+            wt = pathlib.Path(t.worktree) if t and t.worktree else pathlib.Path("~/workspace/example-worktrees").expanduser() / key.lower()
             sup = supervise.status(key) if key in loaded else "-"
             print(f"{key:9} {(t.state if t else 'queued'):13} pr={pr:7} wt={'yes' if wt.exists() else 'no ':3} spend=${spend.get(key, 0):6.2f} deps={','.join(spec.deps) or '-':10} sup={sup[:40]}" + (f"  | {t.reason[:70]}" if t and t.reason else ""))
         return 0
@@ -1188,7 +1188,8 @@ def main(argv=None) -> int:
             supervise.stop_periodic("repair"); print("repair stopped"); return 0
         if a.action == "stop":
             supervise.stop(a.ticket); print("stopped", a.ticket); return 0
-        wt = a.worktree or str(pathlib.Path("~/workspace/example-worktrees").expanduser() / a.ticket.lower())
+        t = state.load(cfg.ticket_dir(a.ticket))
+        wt = a.worktree or t.worktree or str(pathlib.Path("~/workspace/example-worktrees").expanduser() / a.ticket.lower())
         print("started", supervise.start(a.ticket, wt, cfg.state_root)); return 0
     if a.cmd == "ledger":
         import ledger

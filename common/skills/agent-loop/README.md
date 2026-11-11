@@ -82,11 +82,17 @@ surface and session identity, phase, and bounded operation intents and receipts.
 terminal histories or credentials.
 
 An existing ticket with workspace/worktree metadata but no binding is legacy cmux. An unreadable, corrupt, or unsupported binding is
-an error. For an uncertain phase or pending operation, inspect the exact recorded resources and
-receipts before any recovery. Do not issue a fresh create, agent launch, or prompt delivery; delete
+an error. For an uncertain phase or pending required operation, inspect the exact recorded resources
+and receipts before any recovery. Do not issue a fresh create, agent launch, or prompt delivery; delete
 the binding; or route the ticket through the other backend. A definite setup failure may use the
 normal recovery path for its recorded workspace, but uncertainty permits observation only until the
 identity and operation outcome are resolved.
+
+Browser and reference steps are optional after confirmed agent submission. A failed view is reported
+as a warning without blocking launch completion or supervisor startup. Its pending intent and any
+receipt remain recorded, and it is not replayed on restart; this exception does not apply to workspace,
+setup, dev, or agent operations. Cosmetic observation, notification, and optional view commands use
+short timeouts independently of the longer setup and agent-launch budgets.
 
 Shared policy computes the same workspace status for both backends. Verified Ready for Review is
 mapped to Orca status `status-5` through `[workspace.statuses].ready_for_review`; it is not the

@@ -17,6 +17,7 @@ import state
 from workspace_binding import BACKENDS, Binding, BindingError, read, validate, write
 
 PRODUCTION_ROOT = pathlib.Path("~/.local/state/agent-loop").expanduser()
+OPTIONAL_VIEW_STAGES = frozenset({"reference", "view-reference", "view-app"})
 
 
 class Presentation(typing.NamedTuple):
@@ -48,10 +49,13 @@ class WorkspaceBackend:
     name: str
     binding: Binding | None
 
-    def adapter(self, *, run=None, checkpoint=None):
+    def adapter(self, *, run=None, checkpoint=None, timeout=None):
         module = importlib.import_module(f"workspace_{self.name}")
-        return module.Backend(self.cfg, run=run or subprocess.run,
-                              checkpoint=checkpoint or (lambda b: write(self.cfg.ticket_dir(b.key), b)))
+        adapter = module.Backend(self.cfg, run=run or subprocess.run,
+                                 checkpoint=checkpoint or (lambda b: write(self.cfg.ticket_dir(b.key), b)))
+        if timeout is not None:
+            adapter.timeout = timeout
+        return adapter
 
 
 def backend_for(cfg, ticket: state.Ticket, *, new_launch: bool = False, override: str | None = None) -> WorkspaceBackend:
@@ -99,6 +103,7 @@ class DefiniteFailure(WorkspaceError):
 class Adapter:
     def __init__(self, cfg, *, run, checkpoint):
         self.cfg, self.run, self.checkpoint = cfg, run, checkpoint
+        self.timeout = 120
         self.before_move = lambda: True
         self.record_move = lambda: None
 
@@ -123,7 +128,8 @@ class Adapter:
             self.checkpoint(binding)
             return result
         except Exception as exc:
-            binding.phase = "uncertain"
+            if stage not in OPTIONAL_VIEW_STAGES:
+                binding.phase = "uncertain"
             captured = getattr(exc, "output", None) or getattr(exc.__cause__, "output", None)
             if captured:
                 try:
@@ -137,17 +143,31 @@ class Adapter:
                 raise
             raise WorkspaceError("workspace-uncertain", f"{stage}: {type(exc).__name__}") from exc
 
+    def optional_view(self, binding: Binding, stage: str, payload: list, action) -> dict:
+        if stage not in OPTIONAL_VIEW_STAGES:
+            raise WorkspaceError("workspace-required-operation", stage)
+        try:
+            return self.operation(binding, stage, payload, action)
+        except WorkspaceError as exc:
+            binding.operations[stage]["warning"] = exc.status
+            self.checkpoint(binding)
+            return {}
+
 
 def _completed(binding: Binding) -> LaunchResult:
     ready = binding.operations.get("serving", {}).get("result", {}).get("ready")
     warnings = ()
     if binding.backend == "orca" and binding.agent.get("kind") == "terminal":
         warnings = ("Orca supplied one terminal fallback for requested Pi chat; retained that agent.",)
+    warnings += tuple(f"Optional workspace view unavailable ({stage}); retained its record without replay."
+                      for stage, record in binding.operations.items()
+                      if stage in OPTIONAL_VIEW_STAGES and (record.get("status") == "pending" or record.get("warning")))
     return LaunchResult("ok" if ready else "serving-timeout", binding, warnings)
 
 
 def _execute(cfg, selection: WorkspaceBackend, binding: Binding, prompt: str, ref_url: str) -> LaunchResult:
-    if binding.phase == "uncertain" or any(v.get("status") == "pending" for v in binding.operations.values()):
+    if binding.phase == "uncertain" or any(v.get("status") == "pending" for stage, v in binding.operations.items()
+                                           if stage not in OPTIONAL_VIEW_STAGES):
         raise WorkspaceError("workspace-uncertain", "Inspect recorded resources; no mutation was retried")
     adapter = selection.adapter()
     write(cfg.ticket_dir(binding.key), binding)
@@ -163,6 +183,7 @@ def _execute(cfg, selection: WorkspaceBackend, binding: Binding, prompt: str, re
         adapter.setup(binding)
         adapter.start_dev(binding)
         adapter.start_agent(binding, prompt)
+        adapter.timeout = 5
         adapter.ensure_views(binding, ref_url)
         binding.phase = "ready"
         write(cfg.ticket_dir(binding.key), binding)
@@ -224,7 +245,7 @@ def notify(ticket_dir, key: str, title: str, body: str, *, run=None) -> bool:
     cfg = config.load()
     if cfg.ticket_dir(key).resolve() != pathlib.Path(ticket_dir).resolve():
         return False
-    adapter = WorkspaceBackend(cfg, binding.backend, binding).adapter(run=run)
+    adapter = WorkspaceBackend(cfg, binding.backend, binding).adapter(run=run, timeout=5)
     adapter.notify(binding, title, body)
     return True
 
@@ -314,7 +335,7 @@ def observe(cfg, ticket: state.Ticket, *, run=None):
     selection = backend_for(cfg, ticket)
     binding = selection.binding or Binding(backend=selection.name, key=ticket.key, worktree=ticket.worktree,
                                            branch=ticket.branch, workspace_id=ticket.workspace)
-    adapter = selection.adapter(run=run)
+    adapter = selection.adapter(run=run, timeout=5)
     return adapter, adapter.inspect(binding)
 
 

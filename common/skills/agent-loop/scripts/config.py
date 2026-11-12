@@ -68,6 +68,7 @@ class Config:
     workspace_backend: str = "orca"
     workspace_repo: pathlib.Path = dataclasses.field(default_factory=lambda: pathlib.Path("~/workspace/example-app").expanduser())
     workspace_statuses: dict = dataclasses.field(default_factory=dict)
+    workspace_limit: int | None = None
 
     def ticket_index(self, key: str) -> int:
         """1-based hopper position, else the ticket number: drives author/critic vendor alternation, so
@@ -131,6 +132,9 @@ def load(path: pathlib.Path | None = None) -> Config:
     statuses = workspace.get("statuses", {})
     if not isinstance(statuses, dict) or any(not isinstance(v, str) or not v.strip() for v in statuses.values()):
         raise ConfigError("[workspace.statuses] IDs must be nonempty strings")
+    workspace_limit = workspace.get("max_open")
+    if workspace_limit is not None and (type(workspace_limit) is not int or not 1 <= workspace_limit <= 10):
+        raise ConfigError("[workspace].max_open must be an integer between 1 and 10")
     repo = workspace.get("repo", "~/workspace/example-app")
     if not isinstance(repo, str) or not repo.strip():
         raise ConfigError("[workspace].repo must be a nonempty path")
@@ -156,4 +160,5 @@ def load(path: pathlib.Path | None = None) -> Config:
         workspace_backend=workspace.get("backend", "orca"),
         workspace_repo=_p(repo),
         workspace_statuses=dict(statuses),
+        workspace_limit=workspace_limit,
     )

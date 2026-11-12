@@ -60,7 +60,7 @@ class RunnerHarness(unittest.TestCase):
         (self.wt / "app" / "components").mkdir(parents=True); (self.wt / "app" / "components" / ".keep").write_text("")
         git(self.wt, "add", "-A"); git(self.wt, "commit", "-qm", "init")
         agents = root / "agents"; agents.mkdir()
-        toml_source = (HERE.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
+        toml_source = (HERE.parent / "hopper.toml").read_text().replace("\nmax_open = 10", "\n# max_open = 10").replace("\ncapacity = 2 ", "\ncapacity = 4 ")
         # Production no longer configures a [local] model (retired 2026-10-06), but the opt-in [local]
         # plumbing stays covered: the fixture supplies one, and local-worker must render it.
         self.local_model_default = "ollama-local/gpt-oss-ctx32k:20b"

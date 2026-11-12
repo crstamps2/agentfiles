@@ -398,13 +398,31 @@ def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list
     if free <= 0:
         return started
 
+    import workspace_capacity
+    workspace_plan = 0
+
+    def reserve_new(key, source):
+        nonlocal workspace_plan
+        try:
+            if enabled and not dry_run:
+                cohort.reserve(cfg, key, source)
+            elif cfg.workspace_limit is not None:
+                inventory = workspace_capacity.observe(cfg)
+                value = cohort.load(cfg) if enabled else None
+                workspace_plan += workspace_capacity.check(
+                    cfg, inventory, key=key, cohort=value, extra=workspace_plan if dry_run else 0)
+        except (cohort.WorkspaceCapacityError, workspace_capacity.CapacityError) as exc:
+            log(f"drip: {exc}")
+            return False
+        return True
+
     occupied = set(flight)
     parked_started = 0
     for key in [candidate for candidate in parked(cfg) if candidate not in occupied and not state.human_owned(cfg.ticket_dir(candidate))][:free]:
+        if not reserve_new(key, "parked"):
+            return started
         log(f"drip: resuming parked {key}")
         if not dry_run:
-            if enabled:
-                cohort.reserve(cfg, key, "parked")
             (cfg.ticket_dir(key) / "PARKED").unlink(missing_ok=True)
             (cfg.ticket_dir(key) / "PARKED.json").unlink(missing_ok=True)
             if enabled:
@@ -422,12 +440,12 @@ def _tick_locked(cfg, log=print, dry_run: bool = False, supervisor=None) -> list
     work = [] if enabled else [(t.key, lambda t=t: retry_spinup(cfg, t, log), "retry setup") for t in spinup_retries(cfg)]
     work += [(r["key"], lambda r=r: spinup_with_panes(cfg, r["key"], log), r["summary"][:60]) for r in candidates(cfg, log)]
     for key, spin, what in work[:free]:
+        if not reserve_new(key, "drip"):
+            return started
         log(f"drip: next → {key} {what}")
         if dry_run:
             started.append(key)
             continue
-        if enabled:
-            cohort.reserve(cfg, key, "drip")
         try:
             wt = spin()
         except SpinupFailed as e:

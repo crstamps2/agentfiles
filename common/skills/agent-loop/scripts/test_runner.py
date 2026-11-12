@@ -880,6 +880,16 @@ class RunnerHarness(unittest.TestCase):
         bad = self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md"
         self.assertIn("app/views/components/zui/ai_feedback/ai_feedback.rb", bad.read_text())
 
+    def test_premium_owner_request_to_land_an_unallowed_path_is_a_contract_complaint(self):
+        """ZIP-4274: an external prerequisite must replan instead of blocking for an owner."""
+        outcome, rows = self.run_task("fail", "fail", "owner_land_boundary", "owner_land_boundary")
+        self.assertEqual(outcome, "paused")
+        self.assertEqual([r["outcome"] for r in rows[2:]], ["environment", "environment"])
+        t = state.load(self.cfg.ticket_dir("ZIP-7873"))
+        self.assertEqual(t.state, "paused"); self.assertTrue(t.reason.startswith("contract complaint (owner):"))
+        bad = self.cfg.ticket_dir("ZIP-7873") / "bad-guards.md"
+        self.assertIn("linters/rubocop/zui/prefer_zui_toast.rb", bad.read_text())
+
     def test_markdown_around_allowed_files_does_not_turn_a_contract_request_into_an_owner_question(self):
         for phrase in ("Expand allowed_files", "Expand `allowed_files`", "Expand **allowed_files**"):
             with self.subTest(phrase=phrase):

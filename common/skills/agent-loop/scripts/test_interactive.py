@@ -11,6 +11,7 @@ import config
 import drip
 import locks
 import state
+from test_config import fixture_toml
 
 
 class Supervisor:
@@ -29,7 +30,7 @@ class InteractiveTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = pathlib.Path(self.tmp.name)
-        text = (pathlib.Path(__file__).parent.parent / "hopper.toml").read_text()
+        text = fixture_toml()
         text = text.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         path = root / "hopper.toml"
         path.write_text(text)
@@ -129,7 +130,7 @@ class InteractiveTests(unittest.TestCase):
         import attempt
         import ladder
         import reconcile
-        from test_reconcile import make_repo, make_task, FakeAgent
+        from test_reconcile import FakeAgent, make_repo, make_task
         wt = make_repo(self.worktrees["ZIP-3"])
         rec = attempt.create(self.cfg, "ZIP-3", make_task(), wt, 1, FakeAgent(), "cloud",
                              ladder.Rung("cloud-worker", "cheap", 1), "abandoned-run")
@@ -145,7 +146,7 @@ class InteractiveTests(unittest.TestCase):
         interactive = self.module()
         import attempt
         import ladder
-        from test_reconcile import make_repo, make_task, FakeAgent
+        from test_reconcile import FakeAgent, make_repo, make_task
         wt = make_repo(self.worktrees["ZIP-3"])
         attempt.create(self.cfg, "ZIP-3", make_task(), wt, 1, FakeAgent(), "cloud",
                        ladder.Rung("cloud-worker", "cheap", 1), "old-run")
@@ -161,10 +162,11 @@ class InteractiveTests(unittest.TestCase):
     def test_legacy_takeover_with_a_recorded_live_worker_refuses_handoff_without_restoring(self):
         interactive = self.module()
         import os
+
         import attempt
         import ladder
         import procid
-        from test_reconcile import make_repo, make_task, FakeAgent
+        from test_reconcile import FakeAgent, make_repo, make_task
         wt = make_repo(self.worktrees["ZIP-3"])
         rec = attempt.create(self.cfg, "ZIP-3", make_task(), wt, 1, FakeAgent(), "cloud",
                              ladder.Rung("cloud-worker", "cheap", 1), "old-run")
@@ -235,8 +237,8 @@ class InteractiveTests(unittest.TestCase):
     def test_overview_and_sidebar_show_foreground_separately_not_as_queued_or_stalled(self):
         self.module().enter(self.cfg, self.worktrees["ZIP-3"], supervisor=self.supervisor)
         (self.cfg.ticket_dir("ZIP-3") / "PARKED").touch()
-        import watch
         import sidebar
+        import watch
         overview = watch.fleet(self.cfg, pr_lookup=lambda _: "ready", sup_status=lambda _: "running")
         self.assertIn("COHORT 2/2", overview)
         self.assertIn("INTERACTIVE (outside cohort)", overview)

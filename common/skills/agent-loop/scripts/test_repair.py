@@ -1,4 +1,5 @@
 import json
+from test_config import fixture_toml
 import re
 import pathlib
 import subprocess
@@ -26,7 +27,7 @@ class Fixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         root = pathlib.Path(self.tmp.name)
-        toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+        toml = fixture_toml()
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         (root / "hopper.toml").write_text(toml)
         self.cfg = config.load(root / "hopper.toml"); self.cfg.ensure_dirs()

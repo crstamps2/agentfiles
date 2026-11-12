@@ -960,9 +960,6 @@ def _exclude_planning(wt) -> None:
         ex.write_text(cur.rstrip("\n") + "\n" + "\n".join(add) + "\n")
 
 
-HOUSE_STYLE_EXAMPLE_PR = 47860     # a PR of Cody's whose structure/voice is the target
-
-
 def _pr_house_style(cfg, key, wt, t) -> tuple[str, str]:
     import prbody
     summary = _ticket_summary(cfg, key)
@@ -977,7 +974,9 @@ def _pr_house_style(cfg, key, wt, t) -> tuple[str, str]:
         shots = {k: pathlib.Path(v) for k, v in json.loads(shots_p.read_text()).items()}
         shots_md = screenshots.screenshots_table(shots, screenshots.upload(list(shots.values()), wt))
     gates_out = (cfg.ticket_dir(key) / "gates.out").read_text(errors="replace") if (cfg.ticket_dir(key) / "gates.out").exists() else ""
-    example = _sh(["gh", "pr", "view", str(HOUSE_STYLE_EXAMPLE_PR), "--repo", publish.REPO, "--json", "body", "--jq", ".body"], wt, 60).stdout
+    example = (_sh(["gh", "pr", "view", str(cfg.house_style_example_pr), "--repo", publish.REPO,
+                    "--json", "body", "--jq", ".body"], wt, 60).stdout
+               if cfg.house_style_example_pr else "")
     stage = cfg.state_root / "prbody" / key / time.strftime("%Y%m%dT%H%M%S")
     try:
         body = prbody.write_body(cfg, key, wt, t, summary, example, shots_md, gates_out, stage)

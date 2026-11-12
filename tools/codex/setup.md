@@ -107,6 +107,21 @@ directory automatically -- no separate step is needed. Do not create an `openai.
 skill that doesn't already have one; that file is optional per-skill metadata, not a required
 artifact of this setup.
 
+### Agent-loop private configuration
+
+Linking the `agent-loop` skill delivers only public source. This setup must not create, copy, read,
+or migrate its ignored local runtime configuration. After setup, an operator who intends to use the
+loop creates it manually:
+
+```bash
+cd "$AF_REPO/common/skills/agent-loop"
+cp -n hopper.example.toml hopper.toml
+```
+
+Complete the local file before a runner command. A missing or invalid `hopper.toml` fails closed;
+`hopper.example.toml` is never a runtime fallback. Keep credentials in environment variables or the
+approved credential store. See `common/skills/agent-loop/README.md` for required project settings.
+
 ## 3. Agents (transform each `*.agent.md` -> `.toml`)
 
 Source agents live at `$AF_REPO/common/agents/<name>.agent.md`. For each source agent whose

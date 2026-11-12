@@ -18,6 +18,7 @@ import providers
 import recovery
 import repair
 import state
+from test_config import fixture_toml
 
 KEYS = [f"ZIP-{n}" for n in range(1, 11)]
 FORWARD = ("queued", "spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop", "human-gate-1")
@@ -48,7 +49,7 @@ class TenTicketSimulation(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.tmp.name)
-        text = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text().replace("\nmax_open = 10", "\n# max_open = 10").replace("\ncapacity = 2 ", "\ncapacity = 4 ")
+        text = fixture_toml().replace("\nmax_open = 10", "\n# max_open = 10").replace("\ncapacity = 2 ", "\ncapacity = 4 ")
         text = text.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{self.root}/state"')
         text = text.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{self.root}/agents"')
         (self.root / "hopper.toml").write_text(text)

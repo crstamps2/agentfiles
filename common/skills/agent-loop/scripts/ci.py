@@ -5,7 +5,7 @@ The runner (not a model) decides. Shapes learned from PR #47888 (2026-09-12):
     Enforce Code Freeze -- `bucket` in {pass, fail, pending, skipping, cancel}.
   * `claude-review` / `claude-security-review` are SKIPPED on draft PRs and run only once the
     PR is marked ready. The bot-review loop therefore sits after mark-ready, never before.
-  * CircleCI `example` (the Rails suite) reports through the commit status API with a
+  * CircleCI (the application test suite) reports through the commit status API with a
     circleci.com link; it is the slow, flaky one.
 
 Decision table (design §CI):
@@ -22,6 +22,8 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass, field
+
+import publish
 
 MAX_CI_ATTEMPTS = 5
 
@@ -73,7 +75,7 @@ def pr_mergeable(pr_number: int, cwd) -> str:
     on a conflicting PR, so CI and bot review silently never start (ZIP-4288)."""
     import json, time
     for attempt in range(3):
-        r = subprocess.run(["gh", "pr", "view", str(pr_number), "--repo", "example/example-app", "--json", "mergeable"],
+        r = subprocess.run(["gh", "pr", "view", str(pr_number), "--repo", publish.REPO, "--json", "mergeable"],
                            cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         try:
             value = json.loads(r.stdout or "{}").get("mergeable", "UNKNOWN")
@@ -175,7 +177,7 @@ def circleci_workflow_id(link: str) -> str | None:
 # ----------------------------------------------------------------------------- CircleCI
 
 CIRCLE_API = "https://circleci.com/api/v2"
-CIRCLE_PROJECT = "gh/example/example-app"
+CIRCLE_PROJECT = "gh/example-org/example-app"
 
 
 def _circle(path: str):

@@ -101,7 +101,7 @@ class GuardAttributionSignatureTests(unittest.TestCase):
 
     def test_signatures_ignore_paths_and_line_numbers(self):
         a = guards.failure_signature("/tmp/al-base-9/app/x.rb:12:5: C: Metrics/AbcSize: too high")
-        b = guards.failure_signature("example/wt/app/x.rb:404:1: C: Metrics/AbcSize: too high")
+        b = guards.failure_signature("/Users/example/wt/app/x.rb:404:1: C: Metrics/AbcSize: too high")
         self.assertTrue(a & b)
 
     def test_no_attempt_evidence_keeps_the_previous_behaviour(self):

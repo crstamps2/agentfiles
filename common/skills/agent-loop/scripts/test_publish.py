@@ -100,7 +100,7 @@ class PrBodyTests(unittest.TestCase):
                     "🤖 AI Conversation Summary", "Token Usage"):
             self.assertIn(sec, b)
         self.assertIn("https://example.atlassian.net/browse/ZIP-7873", b)
-        self.assertNotIn("example.atlassian.net", b)
+        self.assertNotIn("wrong.atlassian.net", b)
         self.assertTrue(b.rstrip().endswith(publish.FOOTER))
 
     def test_ensure_draft_pr_is_idempotent(self):

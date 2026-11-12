@@ -13,6 +13,7 @@ import pathlib
 import time
 
 import ledger
+import publish
 import state
 import supervise
 
@@ -153,7 +154,7 @@ def run(cfg, key: str, once: bool = False, interval: int = 20) -> int:
         elif time.time() - last_beat > 120:
             print(f"{_now()}  · watching — still {s['state']}" + (f", {s['attempt'].split('[')[0].strip()}" if s.get('attempt') else "") + f"  ${cost:.2f}", flush=True); last_beat = time.time()
         if once or s["state"] in ("human-gate-1", "done"):
-            if s["state"] in ("human-gate-1", "done"): print(f"{_now()}  READY FOR CODY" + (f": https://github.example/example-app/pull/{s['pr']}" if s.get('pr') else ""), flush=True)
+            if s["state"] in ("human-gate-1", "done"): print(f"{_now()}  READY FOR CODY" + (f": https://github.com/{publish.REPO}/pull/{s['pr']}" if s.get('pr') else ""), flush=True)
             return 0
         time.sleep(interval)
 
@@ -215,12 +216,15 @@ def pr_state(pr: int) -> str:
     """Cached (60 s) GitHub truth for the PR: draft / ready / merged / closed. The ticket stage `ready`
     means the runner is WORKING ON getting it ready; Cody reads this field to know whether it is."""
     import subprocess, time as _t
-    now = _t.time(); hit = _PR_CACHE.get(pr)
+    now = _t.time()
+    cache_key = (publish.REPO, pr)
+    hit = _PR_CACHE.get(cache_key)
     if hit and now - hit[0] < 60:
         return hit[1]
-    r = subprocess.run(["gh", "pr", "view", str(pr), "--repo", "example/example-app", "--json", "isDraft,state", "--jq", r'"\(.state) \(.isDraft)"'],
+    r = subprocess.run(["gh", "pr", "view", str(pr), "--repo", publish.REPO, "--json", "isDraft,state", "--jq", r'"\(.state) \(.isDraft)"'],
                        capture_output=True, text=True, timeout=30)
     out = r.stdout.strip().split()
     st = "?" if len(out) != 2 else ("merged" if out[0] == "MERGED" else "closed" if out[0] == "CLOSED" else "draft" if out[1] == "true" else "ready")
-    _PR_CACHE[pr] = (now, st); return st
+    _PR_CACHE[cache_key] = (now, st)
+    return st
 

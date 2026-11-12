@@ -71,7 +71,7 @@ class GitHubCheckTests(unittest.TestCase):
         result = ci.subprocess.CompletedProcess([], 0, ci.json.dumps(runs), "")
         with patch.object(ci.subprocess, "run", return_value=result):
             excerpt = ci.github_check_failure_excerpt(ci.Check("example", "fail", link=link),
-                                                       "example/example-app", "abc123", ".")
+                                                       "example-org/example-app", "abc123", ".")
         self.assertEqual(excerpt, "Workflow: example\n* unit_tests - Failed")
 
 

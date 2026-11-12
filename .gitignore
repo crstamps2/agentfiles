@@ -1,6 +1,8 @@
 __pycache__/
 .DS_Store
 common/scripts/denylist.local
+common/skills/agent-loop/hopper.toml
+planning/
 docs/cross-tool-config-HANDOFF.md
 docs/superpowers/
 .pi/

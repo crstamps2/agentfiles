@@ -135,6 +135,23 @@ hook/MCP operations do not duplicate entries. It preserves external or uncertain
 targets and reports any needed migration for approval, so a rerun can stop with an
 approval-required outcome rather than materializing every similarly named artifact.
 
+## Agent loop local configuration
+
+The optional agent loop has a public template and a private runtime configuration. After bootstrap,
+create the ignored local configuration manually from the tracked sample:
+
+```bash
+cd "<agentfiles checkout>/common/skills/agent-loop"
+cp -n hopper.example.toml hopper.toml
+```
+
+Complete `hopper.toml` with project-specific repository, issue tracker, operator, worktree, and
+operational settings before running the loop. The runner loads only `hopper.toml` and fails closed
+when it is missing or invalid; it never runs the example automatically. Keep tokens and credentials
+in environment variables or the approved credential store, never in either hopper file. See the
+[agent-loop operator guide](common/skills/agent-loop/README.md) for required configuration and
+operating safeguards.
+
 ## Supported platforms & prerequisites
 
 - **macOS or Linux.** `bootstrap.sh` detects the OS via `uname` and adjusts

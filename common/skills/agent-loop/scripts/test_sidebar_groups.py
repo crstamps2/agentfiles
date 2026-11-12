@@ -8,6 +8,7 @@ from unittest.mock import patch
 import config
 import sidebar
 import state
+from test_config import fixture_toml
 
 
 class GroupCmux:
@@ -83,7 +84,7 @@ class ReviewGroupTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = pathlib.Path(self.tmp.name)
-        toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+        toml = fixture_toml()
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{self.root}/state"')
         (self.root / "hopper.toml").write_text(toml)
         self.cfg = config.load(self.root / "hopper.toml")

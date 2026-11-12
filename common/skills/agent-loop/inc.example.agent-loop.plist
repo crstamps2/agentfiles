@@ -4,10 +4,10 @@
   <key>Label</key><string>inc.example.agent-loop</string>
   <key>ProgramArguments</key><array>
     <string>/bin/bash</string>
-    <string>example/.pi/agent/skills/agent-loop/scripts/agent-loop-tick.sh</string>
+    <string>/Users/example/.pi/agent/skills/agent-loop/scripts/agent-loop-tick.sh</string>
   </array>
   <key>StartInterval</key><integer>300</integer>
   <key>RunAtLoad</key><false/>
-  <key>StandardOutPath</key><string>example/.local/state/agent-loop/launchd.out.log</string>
-  <key>StandardErrorPath</key><string>example/.local/state/agent-loop/launchd.err.log</string>
+  <key>StandardOutPath</key><string>/Users/example/.local/state/agent-loop/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/example/.local/state/agent-loop/launchd.err.log</string>
 </dict></plist>

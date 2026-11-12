@@ -13,6 +13,7 @@ import config
 import lifecycle
 import procs
 import state
+from test_config import fixture_toml
 
 MANIFEST = '''[[tasks]]
 id = "001"
@@ -51,7 +52,7 @@ class FakeRunner:
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); root = pathlib.Path(self.tmp.name)
-        toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
+        toml = fixture_toml().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
         (root / "hopper.toml").write_text(toml)
@@ -749,7 +750,8 @@ after = ["001"]
                   "test/system/components/zui/tophat_test.rb:12:3: C: Style/Foo: fix it.")
         tid = lifecycle._lint_fix_task(tdir, reason, self.wt / "planning" / "zip-7873" / "tasks.toml",
                                        cfg=self.cfg, key="ZIP-7873")
-        import contracts, worktree
+        import contracts
+        import worktree
         fix = [t for t in contracts.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml") if t.id == tid][0]
         self.assertEqual(worktree.check_allowlist(
             ["test/system/components/zui/tophat_test.rb"], fix,
@@ -758,7 +760,8 @@ after = ["001"]
     def test_waiting_duration_is_reported_in_the_reminder(self):
         tdir = self.cfg.ticket_dir("ZIP-7873"); tdir.mkdir(parents=True, exist_ok=True)
         state.save(tdir, state.Ticket(key="ZIP-7873", state="paused", previous="plan", reason="x"))
-        import os, time as _t
+        import os
+        import time as _t
         old = _t.time() - 3 * 86400
         os.utime(tdir / "state.json", (old, old))
         self.assertEqual(lifecycle._waiting_since(tdir, None), " (waiting 3d)")
@@ -766,7 +769,8 @@ after = ["001"]
     def test_a_prettier_hook_rejection_also_becomes_a_fix_task(self):
         """ZIP-7874: the pre-commit prettier check rejected a .ts controller. The classifier only knew
         rubocop-style cop names, so it fell through to republish and retried the same rejected commit."""
-        import publish, heal
+        import heal
+        import publish
         reason = ("gates failed: pre-commit lint rejected the commit: Checking formatting... "
                   "[warn] app/assets/javascripts/controllers/zui_dropzone_controller.ts\n"
                   "Code style issues found in the above file(s).")
@@ -981,7 +985,8 @@ after = ["001"]
     def test_a_stale_approve_cannot_skip_the_opposite_vendor_review(self):
         """Branch review 2026-09-23: an `approve` older than the plan/manifest advanced straight to
         implement, bypassing the review the whole two-vendor design rests on."""
-        import os, time as _t
+        import os
+        import time as _t
         tdir = self.cfg.ticket_dir("ZIP-7873")
         state.save(tdir, state.Ticket(key="ZIP-7873", state="plan", previous="spinup"))
         pd = self.wt / "planning" / "zip-7873"
@@ -1101,7 +1106,8 @@ after = ["001"]
     def test_accepted_task_is_recognised_from_real_attempt_layout(self):
         """Live 2026-09-14: slug lives in task.toml (attempt.py writes both); checking task.md never matched,
         so task 001 was re-run/re-published in a loop until max_steps."""
-        import attempt as attempt_mod, contracts as c
+        import attempt as attempt_mod
+        import contracts as c
         task = c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")[0]
         d = self.cfg.state_root / "attempts" / "ZIP-7873" / "001" / "1"; d.mkdir(parents=True)
         (d / "task.toml").write_text(attempt_mod.task_toml(task)); (d / "task.md").write_text(attempt_mod.task_md(task, d, self.wt))
@@ -1231,7 +1237,8 @@ after = ["001"]
         """config/locales/en.yml conflicts during rebase are resolved by keeping HEAD for each
         conflicting hunk (preserving non-conflicting additions) and running i18n-tasks normalize.
         The ticket must NOT be paused. (ZIP-7875)"""
-        import os, tempfile
+        import os
+        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             en_yml = os.path.join(tmp, "config", "locales", "en.yml")
             os.makedirs(os.path.dirname(en_yml))
@@ -1357,7 +1364,8 @@ after = ["001"]
         self.assertEqual(len([title for title in self.notified if "decision" in title]), 2)  # fixture records calls; real notifier dedupes
 
     def test_accepted_but_uncommitted_task_is_republished_before_new_work(self):
-        import contracts as c, attempt as attempt_mod
+        import attempt as attempt_mod
+        import contracts as c
         tasks = c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
         tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "rung": {"agent": "x", "tier": "cheap", "n": 1}}]; state.save(tdir, tt)
@@ -1371,7 +1379,8 @@ after = ["001"]
 
     def test_republish_restores_a_later_task_deleted_from_head_when_an_earlier_output_is_lost(self):
         """ZIP-9116: never publish a deletion of accepted output that HEAD still has."""
-        import attempt as attempt_mod, contracts
+        import attempt as attempt_mod
+        import contracts
         git = lambda *a: subprocess.run(["git", "-C", str(self.wt), *a], capture_output=True, text=True, check=True).stdout.strip()
         git("init", "-q")
         git("config", "user.email", "test@example.com")
@@ -1584,7 +1593,8 @@ after = ["001"]
         self.assertEqual(ticket.state, "paused")
 
     def test_orphaned_recovery_without_any_defect_record_is_relinked(self):
-        import recovery, repair
+        import recovery
+        import repair
         tdir = self.cfg.ticket_dir("ZIP-7873")
         state.save(tdir, state.Ticket(key="ZIP-7873", state="blocked", previous="implement", reason="owner", worktree=str(self.wt)))
         orphan = recovery.new_contract("ZIP-7873", {"state": "implement"}, {"kind": "resume-stage", "state": "implement"}, ("missing-defect",))
@@ -1631,7 +1641,10 @@ after = ["001"]
         # 001's ladder and blocked each ticket with ITS OWN reason, never `task 001: ladder exhausted`. Their resume-stage contracts
         # re-entered implement, which re-blocked at once without running a worker and filed a second defect; the task was only
         # retried after that one resolved too.
-        import ladder, recovery, repair, runner
+        import ladder
+        import recovery
+        import repair
+        import runner
         tdir = self.cfg.ticket_dir("ZIP-7873")
         reason = "verification introduced forbidden change: yarn.lock: not in allowed_files for task 001"
         history = self.attempt_entries("rejected", "rejected", "blocked", "rejected", "environment", "rejected", "interrupted")   # ZIP-8697's
@@ -1660,7 +1673,8 @@ after = ["001"]
 
     def accept_task_001(self, *observed_files):
         """Task 001 accepted in attempt 1. The tree that attempt observed held `observed_files`; the working copy has none of them."""
-        import attempt as attempt_mod, contracts
+        import attempt as attempt_mod
+        import contracts
         git = lambda *a: subprocess.run(["git", "-C", str(self.wt), *a], capture_output=True, text=True, check=True).stdout.strip()
         git("init", "-q")
         for path in observed_files:
@@ -1685,7 +1699,10 @@ after = ["001"]
         # Task 002 then ran over a tree without it: every worker reported the missing prerequisite and the premium report was `blocked/owner`,
         # so the ticket blocked with the bare reason `owner`. Its resume-stage contract resumes implement, which dispatches task 002's
         # premium rung over the same tree again, and the repair agent sees nothing but `owner`.
-        import contracts, recovery, repair, runner
+        import contracts
+        import recovery
+        import repair
+        import runner
         tdir = self.cfg.ticket_dir("ZIP-7873")
         self.accept_task_001("app/a.rb")
         self.block_on_task_002(tdir)
@@ -1742,7 +1759,9 @@ after = ["001"]
         self.assertIsNone(state.load(tdir).recovery["active"])
 
     def test_operator_reset_after_acceptance_reopens_the_task(self):
-        import contracts as c, attempt as attempt_mod, ladder
+        import attempt as attempt_mod
+        import contracts as c
+        import ladder
         tasks = c.load_tasks(self.wt / "planning" / "zip-7873" / "tasks.toml")
         tdir = self.cfg.ticket_dir("ZIP-7873"); tt = state.load(tdir)
         tt.attempts["ZIP-7873/001"] = [{"n": 1, "outcome": "accepted", "rung": {"agent": "x", "tier": "cheap", "n": 1}}]

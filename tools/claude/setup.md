@@ -92,6 +92,21 @@ uncertain same-name destination untouched, report it separately, and stop that e
 migration approval. Skip (with a note in the summary) any entry under `common/skills/` that is
 not a directory.
 
+### Agent-loop private configuration
+
+Linking the `agent-loop` skill delivers only public source. This setup must not create, copy, read,
+or migrate its ignored local runtime configuration. After setup, an operator who intends to use the
+loop creates it manually:
+
+```bash
+cd "$AF_REPO/common/skills/agent-loop"
+cp -n hopper.example.toml hopper.toml
+```
+
+Complete the local file before a runner command. A missing or invalid `hopper.toml` fails closed;
+`hopper.example.toml` is never a runtime fallback. Keep credentials in environment variables or the
+approved credential store. See `common/skills/agent-loop/README.md` for required project settings.
+
 ## 3. Agents (transform each `*.agent.md` -> `.md`)
 
 Source agents live at `$AF_REPO/common/agents/<name>.agent.md`. For each source agent whose

@@ -1,0 +1,79 @@
+# Copy to hopper.toml, then replace the example project values before running.
+# hopper.toml is private local configuration. Never commit credentials here.
+[project]
+configured = false # Set true only after replacing and checking the project values.
+github_repo = "example-org/example-app"
+jira_base_url = "https://example.atlassian.net/browse"
+operator_email = "operator@example.org"
+worktrees_root = "~/workspace/worktrees"
+# circleci_project = "gh/example-org/example-app"
+# house_style_example_pr = 42
+pr_footer = "— opened by the agent loop on the operator's behalf"
+
+[hopper]
+epic = "DEMO-100"
+owned_epics = ["DEMO-100"]
+[[hopper.tickets]]
+key = "DEMO-101"
+[[hopper.tickets]]
+key = "DEMO-102"
+deps = ["DEMO-101"]
+
+[drip]
+epics = ["DEMO-100"]
+max_in_flight = 2
+issue_types = ["Task", "Story"]
+skip_assigned_to_others = false
+jql_extra = ""
+
+[workspace]
+backend = "orca"
+repo = "~/workspace/example-app"
+max_open = 10
+# These status IDs are examples; confirm the IDs in your Orca environment.
+[workspace.statuses]
+in_progress = "in-progress"
+ready_for_review = "status-5"
+in_review = "in-review"
+approved = "status-7"
+done = "completed"
+on_hold = "status-6"
+
+[paths]
+state_root = "~/.local/state/agent-loop"
+cmux_chain_dir = "~/workspace/project-tools/skills/spinup/scripts"
+pi_agents_dir = "~/.pi/agent/agents"
+
+[timeouts]
+heavy_stage_s = 4500
+light_stage_s = 2400
+
+[admission]
+compressor_pct_max = 60.0
+load_per_core_max = 2.0
+disk_free_gb_min = 15.0
+require_ac_power = false
+defer_max_s = 3600
+
+[budgets]
+preimplementation_usd = 30.0
+premium_daily_usd = 25.0
+premium_monthly_usd = 250.0
+total_unattended_daily_usd = 50.0
+ci_rerun_max = 5
+
+[protection]
+protected_paths = [".git/", "bin/", ".github/", ".circleci/", "AGENTS.md", "CLAUDE.md", "config/ci/", "config/credentials/", ".env"]
+test_path_globs = ["test/**", "spec/**", "**/fixtures/**", "**/__snapshots__/**", "**/*.test.*"]
+harness_artifact_globs = ["planning/**", "docs/superpowers/**", ".pi/**", ".superpowers/**", ".ruby-lsp/**", ".claude/**", ".codex/**", ".pi-subagents/**"]
+
+[arms]
+workers_parallel = 1
+alternate = ["cloud", "cloud"]
+
+[outcomes]
+primary = "verified completion"
+secondary = ["cost", "duration"]
+
+[cohort]
+capacity = 2

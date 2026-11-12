@@ -8,6 +8,7 @@ import config
 import drip
 import state
 import supervise as _supervise
+from test_config import fixture_toml
 from workspace_binding import Binding
 from workspaces import LaunchResult
 
@@ -16,9 +17,9 @@ REAL_SUPERVISE_START = _supervise.start
 BOARD = [
     {"key": "ZIP-4281", "summary": "Nav Tabs", "status": "Selected for Work", "assignee": None},
     {"key": "ZIP-4293", "summary": "Section", "status": "Selected for Work", "assignee": None},
-    {"key": "ZIP-7872", "summary": "Nav Link", "status": "In Progress", "assignee": "example"},
+    {"key": "ZIP-7872", "summary": "Nav Link", "status": "In Progress", "assignee": "operator@example.org"},
     {"key": "ZIP-7874", "summary": "Dropzone", "status": "Selected for Work", "assignee": None},
-    {"key": "ZIP-7875", "summary": "Stepper", "status": "In Progress", "assignee": "example"},
+    {"key": "ZIP-7875", "summary": "Stepper", "status": "In Progress", "assignee": "operator@example.org"},
     {"key": "ZIP-8025", "summary": "Adopt forms", "status": "In Progress", "assignee": "martin@example.inc"},
     {"key": "ZIP-8079", "summary": "Migrate wells", "status": "Triage", "assignee": None},
     {"key": "ZIP-9001", "summary": "Someone else's ready ticket", "status": "Selected for Work", "assignee": "ann@example.inc"},
@@ -29,10 +30,14 @@ class DripFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = pathlib.Path(self.tmp.name)
-        toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text().replace("\nmax_open = 10", "\n# max_open = 10").replace("\ncapacity = 2 ", "\ncapacity = 4 ")
+        toml = fixture_toml().replace("\nmax_open = 10", "\n# max_open = 10").replace("\ncapacity = 2 ", "\ncapacity = 4 ")
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"').replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
         (root / "hopper.toml").write_text(toml)
         self.cfg = config.load(root / "hopper.toml")
+        self.cfg.tickets.update({
+            "ZIP-4281": config.TicketSpec(key="ZIP-4281", deps=["ZIP-7872"]),
+            "ZIP-4293": config.TicketSpec(key="ZIP-4293", exclude="excluded fixture"),
+        })
         self.cfg.ensure_dirs()
         self.wts = root / "wts"
         (self.wts / "zip-7875").mkdir(parents=True)          # 7875 in flight; 7872 at the gate
@@ -320,7 +325,7 @@ class DripSerializationTests(unittest.TestCase):
         import locks
         with tempfile.TemporaryDirectory() as d:
             root = _p.Path(d)
-            toml = (_p.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = fixture_toml()
             toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
             (root / "hopper.toml").write_text(toml)
             cfg = config.load(root / "hopper.toml")

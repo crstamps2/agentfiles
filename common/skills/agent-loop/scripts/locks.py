@@ -68,7 +68,7 @@ class Lease:
     def _flock_path(self) -> pathlib.Path:
         return self.path.with_suffix(self.path.suffix + ".flock")
 
-    def acquire(self, heartbeat_s: int = 60, hold: bool = False) -> bool:
+    def acquire(self, heartbeat_s: int = 60, hold: bool = False, respect_pid_owner: bool = False) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if hold:
             fl = open(self._flock_path(), "w")
@@ -78,6 +78,17 @@ class Lease:
                 fl.close()
                 return False
             try:
+                if respect_pid_owner:
+                    rec = owner(self.path)
+                    current_boot = boot_id()
+                    if self.path.is_symlink() or (self.path.exists() and (
+                            not isinstance(rec, dict) or type(rec.get('pid')) is not int
+                            or rec['pid'] <= 0 or not isinstance(rec.get('boot_id'), str)
+                            or not rec['boot_id'].strip() or rec['boot_id'].lower().startswith('unknown')
+                            or not current_boot or current_boot.lower().startswith('unknown')
+                            or (rec['boot_id'] == current_boot and self._is_owner_alive(rec)))):
+                        fl.close()
+                        return False
                 self._write()
             except BaseException:
                 fcntl.flock(fl, fcntl.LOCK_UN)

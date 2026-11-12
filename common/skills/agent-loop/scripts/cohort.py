@@ -68,14 +68,15 @@ _HELD = threading.local()
 
 
 @contextlib.contextmanager
-def _lease(cfg):
+def _lease(cfg, *, respect_pid_owner=False):
     key = str(cfg.state_root.resolve())
     held = getattr(_HELD, "roots", set())
     if key in held:
         yield True
         return
     lease = locks.Lease(cfg.state_root / "locks" / "cohort", "cohort")
-    acquired = lease.acquire(hold=True)
+    acquired = (lease.acquire(hold=True, respect_pid_owner=True)
+                if respect_pid_owner else lease.acquire(hold=True))
     if acquired:
         _HELD.roots = held | {key}
     try:
@@ -204,6 +205,19 @@ def reserve(cfg, key: str, source: str) -> Slot:
         value = _load_unlocked(cfg)
         if state.human_owned(cfg.ticket_dir(key)):
             raise CohortError(f"{key} is under foreground control")
+        for row in value.history:
+            if (row.get('ticket') == key and row.get('event') == 'released'
+                    and row.get('reason') == 'verified-external-review'):
+                proof = row.get('review_evidence')
+                obsolete = proof.get('obsolete_recovery_id') if isinstance(proof, dict) else None
+                pending = state.load(cfg.ticket_dir(key)).recovery
+                if (not obsolete or not isinstance(pending, dict)
+                        or not isinstance(pending.get('queued', []), list)):
+                    raise CohortError('external-review recovery handback is unverified')
+                contracts = [pending.get('active'), *pending.get('queued', [])]
+                if any(item is not None and (not isinstance(item, dict)
+                       or item.get('id') == obsolete) for item in contracts):
+                    raise CohortError('externally reviewed recovery requires explicit resolution before re-entry')
         existing = _find(value, key)
         if existing:
             return existing

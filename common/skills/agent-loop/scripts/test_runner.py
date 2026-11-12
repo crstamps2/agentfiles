@@ -29,6 +29,23 @@ def git(wt, *a):
     return subprocess.run(["git", "-C", str(wt), *a], capture_output=True, text=True, check=True).stdout
 
 
+def cli_subprocess_with_reading(argv, **kwargs):
+    """Exercise the real child CLI with deterministic host-resource truth."""
+    bootstrap = """
+import runpy
+import sys
+from unittest.mock import patch
+import admission
+reading = admission.Reading(compressor_pct=1.0, load1=0.0, cores=8, on_ac=True,
+                            therm_limited=False, disk_free_gb=100.0,
+                            pressure_level="normal", thermal_level=0, thermal_state=0)
+sys.argv = sys.argv[1:]
+with patch("admission.probe", return_value=reading):
+    runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+    return subprocess.run([sys.executable, "-c", bootstrap, *argv], **kwargs)
+
+
 def worker_rows(state_root):
     """Metrics now writes one row per executed stage (worker, verify-0, ...), all stamped
     with the same attempt-level outcome/reason/agent/tier/arm -- filter to the worker row
@@ -324,7 +341,7 @@ class RunnerHarness(unittest.TestCase):
     def test_overview_in_cohort_mode_prints_fleet_sections(self):
         self.full_cohort()
         out = io.StringIO()
-        with patch("supervise.active", return_value=[]), patch("ledger.collect", return_value=[]), patch("watch.pr_state", return_value="draft"), contextlib.redirect_stdout(out):
+        with patch("supervise.active", return_value=[]), patch("supervise.status", return_value="state=running"), patch("ledger.collect", return_value=[]), patch("watch.pr_state", return_value="draft"), contextlib.redirect_stdout(out):
             self.assertEqual(self.cli("overview"), 0)
         for section in ("COHORT 4/4", "WAITING ADMISSION", "REVIEW READY"):
             self.assertIn(section, out.getvalue())
@@ -1104,7 +1121,7 @@ after = ["001"]
         sentinel = shim / "PI_WAS_CALLED"
         (shim / "pi").write_text(f"#!/bin/sh\ntouch {sentinel}\nexit 1\n"); (shim / "pi").chmod(0o755)
         env = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "AL_SCENARIO": "pass"}
-        r = subprocess.run([sys.executable, str(HERE / "runner.py"), "--config", str(self.cfg.state_root.parent / "hopper.toml"),
+        r = cli_subprocess_with_reading([str(HERE / "runner.py"), "--config", str(self.cfg.state_root.parent / "hopper.toml"),
                             "dry-run", "--worktree", str(self.wt), "--tasks", str(self.cfg.state_root.parent / "tasks.toml"), "--skip-admission"],
                            capture_output=True, text=True, env=env, cwd=HERE, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1134,8 +1151,8 @@ after = ["001"]
         toml = re.sub(r'compressor_pct_max = [\d.]+', 'compressor_pct_max = 0.0', toml)
         red_toml = root / "hopper_red.toml"
         red_toml.write_text(toml)
-        # Run dry-run WITHOUT --skip-admission; should hit real admission probe, get red decision, return rc 1, paused
-        r = subprocess.run([sys.executable, str(HERE / "runner.py"), "--config", str(red_toml),
+        # Real admission decision sees a deterministic reading above this test's zero threshold.
+        r = cli_subprocess_with_reading([str(HERE / "runner.py"), "--config", str(red_toml),
                             "dry-run", "--worktree", str(self.wt), "--tasks", str(root / "tasks.toml")],
                            capture_output=True, text=True, cwd=HERE, timeout=120)
         self.assertEqual(r.returncode, 1, f"Expected rc 1 but got {r.returncode}. stderr: {r.stderr}")

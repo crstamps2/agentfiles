@@ -186,6 +186,7 @@ class CohortAdmissionTests(DripFixture):
         import supervise
         self.ready = patch.object(drip, "shared_services_ready", return_value=True).start()
         self.start = patch.object(supervise, "start", return_value="label").start()
+        self.status = patch.object(supervise, "status", return_value="state=running").start()
         self.addCleanup(patch.stopall)
 
     def worktree(self, key):

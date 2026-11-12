@@ -375,6 +375,46 @@ def _head(worktree):
     return result.stdout.strip()
 
 
+def release_on_hold(cfg, key, *, inventory=None, supervisor=None) -> bool:
+    """Honor operator On Hold without parking, clearing decisions, or admitting work."""
+    import supervise
+    import workspace_capacity
+    supervisor = supervisor or supervise
+    if str(cfg.state_root.resolve()) in getattr(_HELD, "roots", set()):
+        raise CohortError("On Hold status must be observed outside the cohort lease")
+    inventory = inventory if inventory is not None else workspace_capacity.observe(cfg)
+    if not workspace_capacity.on_hold(cfg, key, inventory):
+        return False
+    admission = locks.Lease(cfg.state_root / "locks" / "drip", "on-hold-handback")
+    if not admission.acquire(hold=True, respect_pid_owner=True):
+        return False
+    try:
+        with _lease(cfg, respect_pid_owner=True) as acquired:
+            if not acquired:
+                return False
+            value = _load_unlocked(cfg)
+            slot = _find(value, key)
+            if slot is None:
+                return False
+            writer = locks.Lease(cfg.state_root / "locks" / f"runner-{key.lower()}", "on-hold-handback")
+            if not writer.acquire(hold=True, respect_pid_owner=True):
+                return False
+            try:
+                if not workspace_capacity.on_hold(cfg, key, inventory):
+                    return False
+                supervisor.stop(key)
+                if supervisor.status(key) != "not loaded":
+                    raise CohortError(f"{key}: supervisor still loaded; On Hold slot retained")
+                _release(value, slot, None, "operator-on-hold")
+                value.history[-1]["supervisor_stopped"] = True
+                _save_unlocked(cfg, value)
+                return True
+            finally:
+                writer.release()
+    finally:
+        admission.release()
+
+
 def reconcile(cfg, *, dry_run=False, pr_lookup=None, supervisor=None, head_lookup=None) -> CohortReport:
     import supervise
     import watch
@@ -382,9 +422,22 @@ def reconcile(cfg, *, dry_run=False, pr_lookup=None, supervisor=None, head_looku
     pr_lookup = pr_lookup or watch.pr_state
     head_lookup = head_lookup or _head
     supervisor = supervisor or supervise
+    import workspace_capacity
+    try:
+        inventory = workspace_capacity.observe(cfg)
+        membership = (_virtual(cfg) if dry_run and not _path(cfg).exists() else load(cfg)) if inventory else None
+        on_hold = frozenset(slot.ticket for slot in membership.slots
+                            if slot.ticket and workspace_capacity.on_hold(cfg, slot.ticket, inventory)) if membership else frozenset()
+        if not dry_run:
+            for key in sorted(on_hold):
+                if release_on_hold(cfg, key, inventory=inventory, supervisor=supervisor):
+                    report.released.append(key)
+    except (CohortError, OSError, ValueError, TypeError) as exc:
+        report.errors.append(f"On Hold reconciliation: {exc}")
+        return report
     if dry_run:
         try:
-            return _reconcile_locked(cfg, report, True, pr_lookup, head_lookup, supervisor)
+            return _reconcile_locked(cfg, report, True, pr_lookup, head_lookup, supervisor, on_hold=on_hold)
         except (CohortError, OSError, ValueError, TypeError) as exc:
             report.errors.append(str(exc))
             return report
@@ -393,7 +446,7 @@ def reconcile(cfg, *, dry_run=False, pr_lookup=None, supervisor=None, head_looku
             report.errors.append("cohort lease is already held; retry next cycle")
             return report
         try:
-            _reconcile_locked(cfg, report, False, pr_lookup, head_lookup, supervisor)
+            _reconcile_locked(cfg, report, False, pr_lookup, head_lookup, supervisor, on_hold=on_hold)
         except (CohortError, OSError, ValueError, TypeError) as exc:
             report.errors.append(str(exc))
             return report
@@ -427,7 +480,7 @@ def _virtual(cfg) -> Cohort:
     return Cohort(SCHEMA_VERSION, cfg.cohort_capacity, cfg.hard_capacity, 1, len(order) + 1, slots)
 
 
-def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
+def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor, *, on_hold=frozenset()):
     import decision
     import drip
     import providers
@@ -445,7 +498,7 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
 
     def can_resume(key):
         tdir = cfg.ticket_dir(key)
-        return _find(value, key) is not None and not state.human_owned(tdir) and not (tdir / "PARKED").exists()
+        return key not in on_hold and _find(value, key) is not None and not state.human_owned(tdir) and not (tdir / "PARKED").exists()
 
     if not dry_run:
         try:
@@ -460,6 +513,14 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
     for slot in list(value.slots):
         key = slot.ticket
         if not key:
+            continue
+        if key in on_hold:
+            if dry_run:
+                _release(value, slot, None, "operator-on-hold")
+                report.released.append(key)
+            else:
+                report.retained.append(key)
+                report.waits[key] = "On Hold: handback waiting for current writer/admission lease"
             continue
         tdir = cfg.ticket_dir(key)
         import interactive

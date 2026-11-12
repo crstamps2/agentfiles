@@ -20,6 +20,7 @@ class CapacityError(ValueError):
 class Inventory:
     paths: frozenset[tuple[str, str]]
     observed_at: float
+    on_hold_paths: frozenset[tuple[str, str]] = frozenset()
 
     @property
     def count(self):
@@ -51,6 +52,7 @@ def observe(cfg):
             ("in_review", "in-review"), ("approved", "approved"), ("done", "completed"), ("on_hold", "on-hold"))}
         excluded.update(("in-review", "approved", "done", "on-hold", "completed"))
         paths = set()
+        on_hold_paths = set()
         for row in rows:
             if (not isinstance(row, dict) or type(row.get("isMainWorktree")) is not bool
                     or not isinstance(row.get("path"), str) or not pathlib.Path(row["path"]).is_absolute()
@@ -59,10 +61,14 @@ def observe(cfg):
             if row["isMainWorktree"]:
                 continue
             status = row.get("workspaceStatus")
+            path = ("local", str(pathlib.Path(row["path"]).resolve()))
+            if isinstance(status, str) and _normalize(status) in {
+                    "on-hold", _normalize(cfg.workspace_statuses.get("on_hold", "on-hold"))}:
+                on_hold_paths.add(path)
             if isinstance(status, str) and _normalize(status) in excluded:
                 continue
-            paths.add(("local", str(pathlib.Path(row["path"]).resolve())))
-        return Inventory(frozenset(paths), time.monotonic())
+            paths.add(path)
+        return Inventory(frozenset(paths), time.monotonic(), frozenset(on_hold_paths))
     except (WorkspaceError, OSError, TypeError, ValueError) as exc:
         if isinstance(exc, CapacityError):
             raise
@@ -76,6 +82,20 @@ def represented(cfg, key, inventory):
     return any(("local", str(pathlib.Path(path).resolve())) in inventory.paths for path in paths if path)
 
 
+def on_hold(cfg, key, inventory):
+    if inventory is None:
+        return False
+    if time.monotonic() - inventory.observed_at > 30:
+        raise CapacityError("workspace status unavailable: refresh Orca inventory")
+    ticket = state.load(cfg.ticket_dir(key))
+    binding = workspace_binding.read(cfg.ticket_dir(key))
+    paths = [ticket.worktree, binding.worktree if binding else None]
+    resolved = {str(pathlib.Path(path).resolve()) for path in paths if path}
+    if ticket.key != key or len(resolved) > 1:
+        raise CapacityError("workspace identity disagrees; On Hold handback deferred")
+    return any(("local", path) in inventory.on_hold_paths for path in resolved)
+
+
 def check(cfg, inventory, *, key, cohort=None, extra=0):
     """Return the incremental workspace charge, or refuse without mutating anything.
 
@@ -87,6 +107,8 @@ def check(cfg, inventory, *, key, cohort=None, extra=0):
         return 0
     if inventory is None or time.monotonic() - inventory.observed_at > 30:
         raise CapacityError("workspace capacity unavailable: refresh Orca inventory")
+    if on_hold(cfg, key, inventory):
+        raise CapacityError(f"{key} is On Hold; autonomous admission refused")
     try:
         pending = {row.ticket for row in cohort.slots if row.ticket and row.phase == "reserved"
                    and not represented(cfg, row.ticket, inventory)} if cohort else set()

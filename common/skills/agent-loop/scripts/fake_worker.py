@@ -57,6 +57,8 @@ if scenario == "owner":
     result("blocked", "owner", [], "Is the close control part of the header slot?"); sys.exit(0)
 if scenario == "owner_boundary":
     result("blocked", "owner", [], "Permit an edit to `app/views/components/zui/ai_feedback/ai_feedback.rb` outside allowed_files"); sys.exit(0)
+if scenario == "owner_land_boundary":
+    result("blocked", "owner", [], "Authorize or land a REPLACES constant in `linters/rubocop/zui/prefer_zui_toast.rb`, then rerun this catalog-only task."); sys.exit(0)
 if scenario == "owner_stop_condition":
     result("blocked", "owner", [],
            "Owner decision needed: preserve the generator-produced removals for the five unrelated cops, or resolve their separate migration/generator discrepancy before this task can proceed.",

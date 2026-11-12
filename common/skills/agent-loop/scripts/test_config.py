@@ -1,5 +1,5 @@
 # test_config.py
-import os, pathlib, tempfile, unittest
+import os, pathlib, re, tempfile, unittest
 import config
 
 MINI = """
@@ -39,7 +39,21 @@ alternate = ["cloud", "local"]
 [outcomes]
 primary = "p"
 secondary = []
+[project]
+configured = true
+github_repo = "example-org/example-app"
+jira_base_url = "https://example.atlassian.net/browse"
+operator_email = "operator@example.org"
+worktrees_root = "{root}/worktrees"
 """
+
+def fixture_toml():
+    """Public template with explicit unit-test settings, never the operator's file."""
+    text = config.EXAMPLE_PATH.read_text()
+    text = re.sub(r"^configured = false.*$", "configured = true", text, flags=re.M)
+    text = re.sub(r"^capacity = 2.*$", "capacity = 4", text, flags=re.M)
+    return re.sub(r"^max_open = 10.*$", "# Workspace-capacity tests enable their own mocked inventory.", text, flags=re.M)
+
 
 class ConfigTests(unittest.TestCase):
     def setUp(self):
@@ -63,10 +77,10 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             config.load(self.path)
 
-    def test_the_real_hopper_drips_phase_3_first_and_owns_every_drip_epic(self):
-        cfg = config.load()
+    def test_example_owns_every_drip_epic(self):
+        cfg = config.load(config.EXAMPLE_PATH)
         epics = cfg.drip["epics"]
-        self.assertEqual(epics[0], "ZIP-6774")
+        self.assertEqual(epics[0], "DEMO-100")
         self.assertTrue(set(epics) <= set(cfg.owned_epics))
 
     def test_ticket_index_alternates_for_tickets_outside_the_hopper_list(self):
@@ -86,17 +100,17 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             config.load(self.path)
 
-    def test_production_runs_two_workspaces_at_a_time(self):
-        # Cody, 2026-10-15: usage limits -- at most 2 tickets actively in the works.
-        self.assertEqual(config.load().cohort_capacity, 2)
-        self.assertEqual(config.load().drip["max_in_flight"], 2)
+    def test_example_runs_two_workspaces_at_a_time(self):
+        self.assertEqual(config.load(config.EXAMPLE_PATH).cohort_capacity, 2)
+        self.assertEqual(config.load(config.EXAMPLE_PATH).drip["max_in_flight"], 2)
 
     def test_more_than_seven_tickets_in_flight_is_refused(self):
         # Cody, 2026-10-08: never more than 7 tickets processing.
         self.path.write_text(MINI.format(root=self.tmp.name + "/state") + '\n[drip]\nmax_in_flight = 8\n')
         with self.assertRaises(config.ConfigError):
             config.load(self.path)
-        self.assertLessEqual(config.load().drip.get("max_in_flight", config.load().cohort_capacity), 7)
+        example = config.load(config.EXAMPLE_PATH)
+        self.assertLessEqual(example.drip.get("max_in_flight", example.cohort_capacity), 7)
 
     def test_paths_expand_user_and_ticket_dir(self):
         c = config.load(self.path)

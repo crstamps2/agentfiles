@@ -12,7 +12,7 @@ class PlistTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); root = pathlib.Path(self.tmp.name)
         self.p_agents = patch.object(supervise, "AGENTS_DIR", root / "LaunchAgents"); self.p_agents.start()
-        self.p_launcher = patch.object(supervise, "ensure_launcher", return_value="example/.local/bin/agent-loop-python"); self.p_launcher.start()
+        self.p_launcher = patch.object(supervise, "ensure_launcher", return_value="/Users/example/.local/bin/agent-loop-python"); self.p_launcher.start()
         self.state_root = root / "state"
 
     def tearDown(self):
@@ -22,7 +22,7 @@ class PlistTests(unittest.TestCase):
         p = supervise.write_plist("ZIP-7872", "/wt/zip-7872", self.state_root)
         d = plistlib.loads(p.read_bytes())
         self.assertEqual(d["Label"], "com.cody.agent-loop.zip-7872")
-        self.assertEqual(d["ProgramArguments"][0], "example/.local/bin/agent-loop-python")        # stable TCC identity, not homebrew python
+        self.assertEqual(d["ProgramArguments"][0], "/Users/example/.local/bin/agent-loop-python")        # stable TCC identity, not homebrew python
         self.assertIn("--supervised", d["ProgramArguments"]); self.assertIn("ZIP-7872", d["ProgramArguments"])
         path = d["EnvironmentVariables"]["PATH"].split(":")
         self.assertTrue(path[0].endswith("mise/shims"), path[0])                                      # system Ruby 2.6 broke bin/wt prepare (cb32b32)

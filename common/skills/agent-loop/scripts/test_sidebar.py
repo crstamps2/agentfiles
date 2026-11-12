@@ -8,6 +8,7 @@ from unittest.mock import patch
 import config
 import sidebar
 import state
+from test_config import fixture_toml
 
 WORKSPACES = "  workspace:11  zip-1\n  workspace:12  zip-2\n* workspace:13  zip-3  [selected]\n  workspace:14  other\n"
 
@@ -41,7 +42,7 @@ class FakeCmux:
 class SidebarTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); root = pathlib.Path(self.tmp.name)
-        toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+        toml = fixture_toml()
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
         (root / "hopper.toml").write_text(toml)
@@ -165,7 +166,7 @@ class ReconcileIsolationTests(unittest.TestCase):
         import cohort
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
-            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = fixture_toml()
             toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
             (root / "hopper.toml").write_text(toml)
             cfg = config.load(root / "hopper.toml"); cfg.ensure_dirs()

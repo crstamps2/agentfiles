@@ -1,39 +1,47 @@
 ---
 name: agent-loop
-description: Use when Cody asks about autonomous fleet status, admission, recovery, spending, or product/API decisions across agent-loop tickets.
+description: Use when the user asks about autonomous fleet status, admission, recovery, spending, or product/API decisions across configured agent-loop tickets.
 ---
 
 # /agent-loop [status | start | resume | pause | unpause | stop | decide | spend | ledger | hopper]
 
-Fleet operator surface for autonomous work. The canonical policy is
-[Operations policy](references/operations-policy.md). Read that required reference before control
-or maintenance actions.
+Fleet operator surface for configured autonomous work. Read the required
+[Operations policy](references/operations-policy.md) before a control or maintenance action. Read
+[the operator guide](README.md) before creating or changing local configuration.
+
+## Configuration gate
+
+The runner requires the ignored local `hopper.toml` beside the tracked `hopper.example.toml`. If the
+local file is missing, invalid, or incomplete, stop and report the configuration failure. Do not run
+against the sample, synthesize defaults, or create a local configuration from service credentials.
+The sample is never a runtime fallback. Credentials remain in environment variables or the approved
+credential store.
 
 ## Role and capacity
 
-- These limits govern autonomous fleet operation. A direct user request to fix the runner switches
-  to authorized maintenance under the shared preflight. Act on that approval rather than stopping
-  at diagnosis or asking again. Ticket application work uses foreground ownership.
-- Production autonomous capacity is **2**. The `Config` fallback of 4 is an omitted-config
-  default, not a production quota. The legacy drip count is also 2.
+- These limits govern autonomous fleet operation. A direct user request for one worktree is
+  foreground work and follows the shared ownership policy.
+- `cohort.capacity` is the configured admission limit. Worker slots, workspace limits, code
+  fallbacks, and hard caps do not authorize a larger fleet.
 - Foreground work is outside the autonomous cohort. Do not stop, park, or resume unrelated work to
   make room for it. Only `/agent-loop-auto` in the owning foreground pane returns a ticket to
   normal autonomous admission.
-- Higher-authority repository, security, communications, readiness, and deployment policy wins.
-  This skill grants no permission to post, mark ready, assign reviewers, merge, or deploy.
+- Higher-authority repository, security, communications, readiness, review, and deployment policy
+  wins. This skill grants no permission to post, mark ready, assign reviewers, merge, or deploy.
 
 ## Bounded status
 
+Set `R` to the scripts directory in the local checkout:
+
 ```bash
-R="$HOME/workspace/agentfiles/common/skills/agent-loop/scripts"
-cd "$R"
-python3 runner.py overview
-python3 runner.py supervise status
+R="<agentfiles checkout>/common/skills/agent-loop/scripts"
+python3 "$R/runner.py" overview
+python3 "$R/runner.py" supervise status
 ```
 
-Report the autonomous slots, foreground ownership separately, real product/API decisions, active
-recovery or repair waits, verified Human Gate 1 candidates, and next admission. Do not open panes,
-tabs, agents, watches, or loops merely to get status. Do not model-poll.
+Report autonomous cohort slots, foreground ownership separately, real product or API decisions,
+active recovery or repair waits, verified Human Gate 1 candidates, and the next eligible admission.
+Do not open panes, tabs, agents, watches, or loops merely to obtain status. Do not model-poll.
 
 ## Explicit operations
 
@@ -42,52 +50,49 @@ tabs, agents, watches, or loops merely to get status. Do not model-poll.
 Preview before an explicitly authorized fleet start:
 
 ```bash
-cd "$R"
-python3 runner.py drip --dry-run
+python3 "$R/runner.py" drip --dry-run
 ```
 
-Run `python3 runner.py drip` only on an explicit user request or existing higher-authority fleet
-authorization. It can create workspaces and surfaces. It must not admit a third autonomous ticket.
+Run `python3 "$R/runner.py" drip` only on an explicit user request or existing higher-authority
+fleet authorization. It can create workspaces and surfaces. It must not exceed the configured
+cohort capacity.
 
 ### Autonomous resume
 
 ```bash
-cd "$R"
-python3 runner.py resume --ticket "$TICKET"
+python3 "$R/runner.py" resume --ticket "$TICKET"
 ```
 
 Use only for an autonomous ticket after reading evidence. Do not override foreground ownership, a
 legacy `HUMAN` takeover, a live writer lease, an active recovery contract, or a repair wait.
 `resume --all` intentionally skips foreground and `HUMAN` ownership.
 
-### Actual product/API guidance
+### Actual product or API guidance
 
-After Cody supplies real guidance to a validated product/API decision:
+After the user supplies guidance to a validated product or API decision:
 
 ```bash
-cd "$R"
-python3 runner.py decision-answer --ticket "$TICKET" --guidance "$GUIDANCE"
+python3 "$R/runner.py" decision-answer --ticket "$TICKET" --guidance "$GUIDANCE"
 ```
 
 Do not invent a ruling to clear planning spend, a retry budget, a bad manifest, a runner defect, or
-an ordinary recovery. Planning spend is advisory; routine recovery is bounded and evidence-based.
+ordinary recovery. Planning spend is advisory; routine recovery is bounded and evidence-based.
 
 ## Other operator commands
 
-Only run control actions on explicit authorization; status and spend remain read-only.
+Only run control actions on explicit authorization. Status and spend remain read-only.
 
 | Request | Supported command from `$R` |
 | --- | --- |
-| Stop one autonomous supervisor, preserving ticket state | `python3 runner.py supervise stop --ticket "$TICKET"` |
-| Deliberately park and release a slot | `python3 runner.py park --ticket "$TICKET"` |
-| Inspect admission without starting work | `python3 runner.py drip --dry-run` |
-| Cost reporting | `python3 runner.py spend` or `python3 runner.py ledger` |
-| Inspect configured hopper | Read `../hopper.toml`; edits require explicit scope and verified commit. |
+| Stop one autonomous supervisor, preserving ticket state | `python3 "$R/runner.py" supervise stop --ticket "$TICKET"` |
+| Deliberately park and release a slot | `python3 "$R/runner.py" park --ticket "$TICKET"` |
+| Inspect admission without starting work | `python3 "$R/runner.py" drip --dry-run` |
+| Cost reporting | `python3 "$R/runner.py" spend` or `python3 "$R/runner.py" ledger` |
+| Inspect configuration | Read the ignored `hopper.toml`; edits require explicit scope and verification. |
 
-Global pause/unpause uses the existing operator kill switch: explicitly requested pause creates
-`~/.local/state/agent-loop/PAUSE`; unpause removes only that file. It is not permission to alter
-any ticket marker, force a handoff, or kill an active attempt. Supervisor stop is not foreground
-handoff. Use `runner.py <verb> --help` for supported options.
+Global pause and unpause use the configured state root's existing pause marker. They are not
+permission to alter ticket markers, force a handoff, or kill an active attempt. Use
+`python3 "$R/runner.py" <verb> --help` for supported options.
 
 ## Hard boundaries
 

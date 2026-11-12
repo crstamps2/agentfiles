@@ -21,9 +21,9 @@ import shlex
 import subprocess
 from pathlib import Path
 
-REPO = "example/example-app"
+REPO = "example-org/example-app"
 JIRA_BASE = "https://example.atlassian.net/browse"
-FOOTER = "— opened by Cody's AI agent loop on his behalf"
+FOOTER = "— opened by the agent loop on the operator's behalf"
 
 # verb -> allowed. Anything not listed is refused. `merge`, `review`(assign), `--force` never.
 GITHUB_ALLOW = {
@@ -180,8 +180,8 @@ def clear_build_caches(wt) -> None:
 
 def push_rebased(wt, branch: str) -> None:
     """After a rebase the branch history moved; push with a lease pinned to the remote SHA we
-    last saw, so a colleague's concurrent push is never overwritten (the example-pr-rebase
-    skill's rule). Never a bare --force."""
+    last saw, so a colleague's concurrent push is never overwritten (the repository rebase
+    policy). Never a bare --force."""
     r = _sh(["git", "rev-parse", f"origin/{branch}"], wt)
     if r.returncode:
         raise PublishError(f"no remote ref for {branch}; cannot lease")
@@ -229,7 +229,7 @@ _Pending: the loop's QA gate adds before/after captures before this PR leaves dr
 ---
 
 - [{ticket_key}]({JIRA_BASE}/{ticket_key}) — {ticket_summary}
-- Epic: [ZIP-6774]({JIRA_BASE}/ZIP-6774) — ZUI design-system containers
+- Epic context: see the linked ticket.
 
 ✋ Deployment Dependencies
 ---

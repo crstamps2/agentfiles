@@ -37,7 +37,7 @@ class IntegrationTests(unittest.TestCase):
         self.cfg.ensure_dirs()
 
     def test_production_default_and_mapping_keep_two_slot_capacity(self):
-        cfg = config.load(pathlib.Path(__file__).parent.parent / "hopper.toml")
+        cfg = config.load(config.EXAMPLE_PATH)
         self.assertEqual(cfg.workspace_backend, "orca")
         self.assertEqual(cfg.workspace_statuses.get("in_progress"), "in-progress")
         self.assertEqual(cfg.workspace_statuses.get("ready_for_review"), "status-5")

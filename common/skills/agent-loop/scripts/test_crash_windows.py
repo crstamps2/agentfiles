@@ -23,6 +23,7 @@ run_task, tasks_with, extra_env) by subclassing -- see the bottom of this file f
 test_* methods are suppressed so `unittest test_crash_windows` runs only this file's 38 rows.
 """
 from __future__ import annotations
+from test_config import fixture_toml
 import dataclasses
 import json
 import os
@@ -1461,7 +1462,7 @@ class CrashWindowTests(_test_runner_mod.RunnerHarness):
     def test_cw_37_local_model_ctx4k_or_empty_is_config_error(self):
         """`[local].model = "…-ctx4k:…"` or empty with `[local]` present"""
         root = self.cfg.state_root.parent
-        base = (HERE.parent / "hopper.toml").read_text()
+        base = fixture_toml()
         base = base.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state2"')
         base = base.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}/agents"')
         for bad_model in ('ollama-local/gpt-oss-ctx4k:20b', ''):

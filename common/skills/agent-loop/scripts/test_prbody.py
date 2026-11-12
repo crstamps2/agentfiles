@@ -54,7 +54,7 @@ class LintTests(unittest.TestCase):
 
     def test_missing_section_and_wrong_jira_host_rejected(self):
         self.assertIn("missing section '✋ Deployment Dependencies'", prbody.lint(GOOD.replace("✋ Deployment Dependencies", "Deps")))
-        self.assertIn("wrong Jira host", prbody.lint(GOOD.replace("example.atlassian.net", "example.atlassian.net") + "\nhttps://example.atlassian.net/browse/X"))
+        self.assertIn("wrong Jira host", prbody.lint(GOOD.replace("example.atlassian.net", "wrong.atlassian.net") + "\nhttps://example.atlassian.net/browse/X"))
 
     def test_fallback_is_clean(self):
         b = prbody.fallback_body("ZIP-1", "ZUI Well", ["app/a.rb"], None)

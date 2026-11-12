@@ -7,12 +7,13 @@ from unittest.mock import patch
 import config
 import decision
 import state
+from test_config import fixture_toml
 
 
 class DecisionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); root = pathlib.Path(self.tmp.name)
-        toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
+        toml = fixture_toml().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         toml = toml.replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
         (root / "hopper.toml").write_text(toml)

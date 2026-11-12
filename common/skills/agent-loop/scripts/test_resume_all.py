@@ -9,6 +9,7 @@ import config
 import runner
 import state
 import supervise
+from test_config import fixture_toml
 
 
 class ResumeAllTests(unittest.TestCase):
@@ -17,7 +18,7 @@ class ResumeAllTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); root = pathlib.Path(self.tmp.name)
-        toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+        toml = fixture_toml()
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"').replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
         self.config_path = root / "hopper.toml"; self.config_path.write_text(toml)
         self.cfg = config.load(self.config_path); self.cfg.ensure_dirs()

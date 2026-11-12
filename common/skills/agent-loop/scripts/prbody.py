@@ -48,9 +48,11 @@ def lint(body: str) -> list[str]:
     for sec in REQUIRED_SECTIONS:
         if sec not in body:
             problems.append(f"missing section {sec!r}")
-    if "example.atlassian.net/browse/" not in body:
+    from urllib.parse import urlsplit
+    if publish.JIRA_BASE + "/" not in body:
         problems.append("missing Jira link")
-    if "example.atlassian.net" in body:
+    issue_links = re.findall(r"https?://[^\s)<>]+/browse/[\w-]+", body)
+    if any(urlsplit(link).netloc != urlsplit(publish.JIRA_BASE).netloc for link in issue_links):
         problems.append("wrong Jira host")
     return sorted(set(problems))
 
@@ -78,7 +80,7 @@ structure and level of detail as the example below, which is one of this team's 
 - NEVER mention how the work was produced: no agents, models, automation, pipelines, plans,
   manifests, attempts, gates, tiers, reviewers-by-name, costs, or tokens. The reader must not be
   able to tell this PR was not typed by a person. Do not mention Cody.
-- Jira link: https://example.atlassian.net/browse/{key}
+- Jira link: {cfg.jira_base_url}/{key}
 - Deployment Dependencies: state plainly whether there are migrations, flags, translations, or
   dependent PRs (there are none unless the diff shows them).
 - Quality Assurances: checked items that are TRUE from the evidence below (test counts, lint,
@@ -148,7 +150,7 @@ Implements {ticket_summary}.
 ☎️ Related links and discussions
 ---
 
-- [{key}](https://example.atlassian.net/browse/{key})
+- [{key}]({publish.JIRA_BASE}/{key})
 
 ✋ Deployment Dependencies
 ---

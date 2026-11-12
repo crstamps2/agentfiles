@@ -29,10 +29,10 @@ import workspaces
 
 IN_FLIGHT_STATES = {"spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop", "paused"}
 TERMINAL = {"human-gate-1", "done", "blocked", "colleague-loop", "human-gate-2"}
-WORKTREES = pathlib.Path("~/workspace/example-worktrees").expanduser()
+WORKTREES = pathlib.Path("~/workspace/worktrees").expanduser()
 SPINUP_SCRIPTS = pathlib.Path("~/.claude/skills/spinup/scripts").expanduser()
-example_APP = pathlib.Path("~/workspace/example-app").expanduser()
-ME = "example"
+APP_REPO = pathlib.Path("~/workspace/example-app").expanduser()
+ME = "operator@example.org"
 HARD_MAX_IN_FLIGHT = 7             # Cody, 2026-10-08: never more than 7 tickets processing
 
 
@@ -233,7 +233,7 @@ def spinup_with_panes(cfg, key: str, log=print) -> pathlib.Path:
     ticket = sh.fetch_ticket(key)
     branch = sh.derive_branch(ticket["key"], ticket["issue_type"], ticket["title"])
     wt = _workspace_action(cfg, key, lambda: workspaces.launch(cfg, key, branch, f"/loop-watch {key}",
-                                                              f"https://example.atlassian.net/browse/{key}"), log=log)
+                                                              f"{cfg.jira_base_url}/{key}"), log=log)
     log(f"{key}: spinup completed worktree={wt}")
     _claim_in_jira(sh, ticket, log)
     return wt
@@ -242,7 +242,7 @@ def spinup_with_panes(cfg, key: str, log=print) -> pathlib.Path:
 def retry_spinup(cfg, t: state.Ticket, log=print) -> pathlib.Path:
     """Retry in place using the recorded backend, never the new-launch default."""
     wt = _workspace_action(cfg, t.key, lambda: workspaces.retry_setup(cfg, t, f"/loop-watch {t.key}",
-                                                                    f"https://example.atlassian.net/browse/{t.key}"), log=log)
+                                                                    f"{cfg.jira_base_url}/{t.key}"), log=log)
     sh = _spinup_modules(cfg)
     _claim_in_jira(sh, sh.fetch_ticket(t.key), log)
     return wt
@@ -293,7 +293,7 @@ def record_spinup_failure(cfg, key: str, e: SpinupFailed, log=print) -> None:
 def shared_services_ready(log=print) -> bool:
     """Postgres, Redis and Elasticsearch must answer before a spinup; Elasticsearch needs ~35s after login."""
     try:
-        r = subprocess.run([str(example_APP / "bin" / "dev-services"), "status"], cwd=example_APP,
+        r = subprocess.run([str(APP_REPO / "bin" / "dev-services"), "status"], cwd=APP_REPO,
                            capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as e:
         log(f"drip: shared services check failed: {e}")

@@ -8,6 +8,7 @@ import re
 import tomllib
 
 DEFAULT_PATH = pathlib.Path(__file__).resolve().parent.parent / "hopper.toml"
+EXAMPLE_PATH = DEFAULT_PATH.with_name("hopper.example.toml")
 REQUIRED_TABLES = ("hopper", "paths", "timeouts", "admission", "budgets", "protection", "arms", "outcomes")
 
 
@@ -69,6 +70,14 @@ class Config:
     workspace_repo: pathlib.Path = dataclasses.field(default_factory=lambda: pathlib.Path("~/workspace/example-app").expanduser())
     workspace_statuses: dict = dataclasses.field(default_factory=dict)
     workspace_limit: int | None = None
+    project_configured: bool = False
+    github_repo: str = "example-org/example-app"
+    jira_base_url: str = "https://example.atlassian.net/browse"
+    operator_email: str = "operator@example.org"
+    worktrees_root: pathlib.Path = dataclasses.field(default_factory=lambda: pathlib.Path("~/workspace/worktrees").expanduser())
+    circleci_project: str = "gh/example-org/example-app"
+    pr_footer: str = "— opened by the agent loop on the operator's behalf"
+    house_style_example_pr: int | None = None
 
     def ticket_index(self, key: str) -> int:
         """1-based hopper position, else the ticket number: drives author/critic vendor alternation, so
@@ -95,8 +104,11 @@ def _p(s: str) -> pathlib.Path:
 
 def load(path: pathlib.Path | None = None) -> Config:
     path = pathlib.Path(path) if path else DEFAULT_PATH
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except FileNotFoundError as exc:
+        raise ConfigError(f"Missing local configuration: {path}. Copy hopper.example.toml to hopper.toml and configure it before running.") from exc
     missing = [t for t in REQUIRED_TABLES if t not in raw]
     if missing:
         raise ConfigError(f"{path}: missing tables {missing}")
@@ -135,6 +147,29 @@ def load(path: pathlib.Path | None = None) -> Config:
     workspace_limit = workspace.get("max_open")
     if workspace_limit is not None and (type(workspace_limit) is not int or not 1 <= workspace_limit <= 10):
         raise ConfigError("[workspace].max_open must be an integer between 1 and 10")
+    project = raw.get("project", {})
+    if not isinstance(project, dict):
+        raise ConfigError("[project] must be a table")
+    configured = project.get("configured", False)
+    if type(configured) is not bool:
+        raise ConfigError("[project].configured must be a boolean")
+    if configured:
+        required = ("github_repo", "jira_base_url", "operator_email", "worktrees_root")
+        if any(not isinstance(project.get(name), str) or not project[name].strip() for name in required):
+            raise ConfigError(f"Configured [project] requires nonempty string values for {required}")
+    github_repo = project.get("github_repo", "example-org/example-app")
+    if not isinstance(github_repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", github_repo):
+        raise ConfigError("[project].github_repo must be owner/repository")
+    from urllib.parse import urlsplit
+    jira_base = project.get("jira_base_url", "https://example.atlassian.net/browse")
+    if not isinstance(jira_base, str):
+        raise ConfigError("[project].jira_base_url must be an HTTP(S) issue-link base")
+    parsed = urlsplit(jira_base)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ConfigError("[project].jira_base_url must be an HTTP(S) issue-link base without credentials, query, or fragment")
+    example_pr = project.get("house_style_example_pr")
+    if example_pr is not None and (type(example_pr) is not int or example_pr <= 0):
+        raise ConfigError("[project].house_style_example_pr must be a positive integer")
     repo = workspace.get("repo", "~/workspace/example-app")
     if not isinstance(repo, str) or not repo.strip():
         raise ConfigError("[workspace].repo must be a nonempty path")
@@ -161,4 +196,28 @@ def load(path: pathlib.Path | None = None) -> Config:
         workspace_repo=_p(repo),
         workspace_statuses=dict(statuses),
         workspace_limit=workspace_limit,
+        project_configured=configured,
+        github_repo=github_repo,
+        jira_base_url=jira_base.rstrip("/"),
+        operator_email=str(project.get("operator_email", "operator@example.org")),
+        worktrees_root=_p(project.get("worktrees_root", "~/workspace/worktrees")),
+        circleci_project=str(project.get("circleci_project", f"gh/{github_repo}")),
+        pr_footer=str(project.get("pr_footer", "— opened by the agent loop on the operator's behalf")),
+        house_style_example_pr=example_pr,
     )
+
+
+def configure_project(cfg: Config) -> None:
+    """Bind legacy runtime consumers once, after loading the explicit local config."""
+    if not cfg.project_configured:
+        raise ConfigError("Configure [project] in your local hopper.toml and set configured = true before running; hopper.example.toml is setup-only.")
+    import ci
+    import drip
+    import publish
+    publish.REPO = cfg.github_repo
+    publish.JIRA_BASE = cfg.jira_base_url
+    publish.FOOTER = cfg.pr_footer
+    ci.CIRCLE_PROJECT = cfg.circleci_project
+    drip.ME = cfg.operator_email
+    drip.WORKTREES = cfg.worktrees_root
+    drip.APP_REPO = cfg.workspace_repo

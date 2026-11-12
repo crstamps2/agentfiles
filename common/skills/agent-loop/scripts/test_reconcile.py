@@ -1,4 +1,5 @@
 import contextlib
+from test_config import fixture_toml
 import io
 import json
 import os
@@ -1288,7 +1289,7 @@ class PerTicketLeaseTests(unittest.TestCase):
         import tempfile, config as config_mod
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
-            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = fixture_toml()
             toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"').replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
             (root / "hopper.toml").write_text(toml); cfg = config_mod.load(root / "hopper.toml"); cfg.ensure_dirs()
             a = reconcile.reconcile(cfg, "r1", ticket="ZIP-1")
@@ -1304,7 +1305,7 @@ class MultiRunnerSweepTests(unittest.TestCase):
         import tempfile, config as config_mod, locks, attempt as attempt_mod, agentdef, ladder, contracts, subprocess, os
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
-            toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text()
+            toml = fixture_toml()
             toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"').replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}/agents"')
             (root / "hopper.toml").write_text(toml); (root / "agents").mkdir()
             (root / "agents" / "cloud-worker.md").write_text("---\nname: cloud-worker\nmodel: x/y\nthinking: low\ntools: read\n---\nbody\n")

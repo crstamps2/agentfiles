@@ -7,12 +7,13 @@ from unittest.mock import patch
 import config
 import state
 import watch
+from test_config import fixture_toml
 
 
 class WatchTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); root = pathlib.Path(self.tmp.name)
-        toml = (pathlib.Path(__file__).resolve().parent.parent / "hopper.toml").read_text().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
+        toml = fixture_toml().replace("\ncapacity = 2 ", "\ncapacity = 4 ")
         toml = toml.replace('state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"').replace('pi_agents_dir = "~/.pi/agent/agents"', f'pi_agents_dir = "{root}"')
         (root / "hopper.toml").write_text(toml); self.cfg = config.load(root / "hopper.toml"); self.cfg.ensure_dirs()
         t = state.Ticket(key="ZIP-1", state="implement"); state.save(self.cfg.ticket_dir("ZIP-1"), t)
@@ -52,7 +53,7 @@ class WatchTests(unittest.TestCase):
         lines = []
         with patch.object(watch.supervise, "status", return_value="-"), patch.object(watch, "spend", return_value=0.0), patch.object(watch, "pr_state", return_value="ready"), patch("builtins.print", side_effect=lambda *a, **k: lines.append(" ".join(map(str, a)))):
             watch.run(self.cfg, "ZIP-1", once=False, interval=0)
-        self.assertTrue(any("READY FOR CODY: https://github.example/example-app/pull/4711" in l for l in lines))
+        self.assertTrue(any("READY FOR CODY: https://github.com/example-org/example-app/pull/4711" in l for l in lines))
 
 
 class CohortWatchTests(WatchTests):

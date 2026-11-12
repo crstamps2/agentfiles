@@ -17,7 +17,7 @@ class WorkspaceCapacityTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         root = pathlib.Path(self.tmp.name)
         self.path = root / "hopper.toml"
-        text = config.DEFAULT_PATH.read_text().replace(
+        text = config.EXAMPLE_PATH.read_text().replace(
             'state_root = "~/.local/state/agent-loop"', f'state_root = "{root}/state"')
         self.path.write_text(text)
         self.cfg = config.load(self.path)

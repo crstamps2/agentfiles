@@ -22,6 +22,10 @@ class CohortError(ValueError):
     pass
 
 
+class WorkspaceCapacityError(CohortError):
+    pass
+
+
 @dataclasses.dataclass
 class Slot:
     slot: int
@@ -199,6 +203,19 @@ def _find(value: Cohort, key: str) -> Slot | None:
 def reserve(cfg, key: str, source: str) -> Slot:
     if not isinstance(key, str) or not key or not isinstance(source, str) or not source:
         raise CohortError("ticket and source must be non-empty strings")
+    import workspace_capacity
+    inventory = None
+    generation = None
+    if cfg.workspace_limit is not None:
+        before = load(cfg)
+        if _find(before, key) is None and any(row.ticket is None for row in before.slots):
+            if str(cfg.state_root.resolve()) in getattr(_HELD, "roots", set()):
+                raise WorkspaceCapacityError("workspace inventory must be observed outside the cohort lease")
+            try:
+                inventory = workspace_capacity.observe(cfg)
+            except workspace_capacity.CapacityError as exc:
+                raise WorkspaceCapacityError(str(exc)) from exc
+            generation = before.generation
     with _lease(cfg) as acquired:
         if not acquired:
             raise CohortError("cohort lease is already held")
@@ -224,6 +241,13 @@ def reserve(cfg, key: str, source: str) -> Slot:
         slot = next((row for row in value.slots if row.ticket is None), None)
         if slot is None:
             raise CohortError(f"cohort is full ({value.capacity}/{value.capacity})")
+        if cfg.workspace_limit is not None:
+            if generation != value.generation:
+                raise WorkspaceCapacityError("workspace admission changed; retry next cycle")
+            try:
+                workspace_capacity.check(cfg, inventory, key=key, cohort=value)
+            except workspace_capacity.CapacityError as exc:
+                raise WorkspaceCapacityError(str(exc)) from exc
         now = _now()
         slot.ticket = key
         slot.phase = "reserved"
@@ -546,9 +570,24 @@ def _reconcile_locked(cfg, report, dry_run, pr_lookup, head_lookup, supervisor):
                 _save_unlocked(cfg, value)
     else:
         free = sum(row.ticket is None for row in value.slots)
+        if free <= 0:
+            return report
+        import workspace_capacity
+        try:
+            inventory = workspace_capacity.observe(cfg)
+        except workspace_capacity.CapacityError as exc:
+            report.waits["admission"] = str(exc)
+            return report
         occupied = {row.ticket for row in value.slots if row.ticket}
         waiting = [key for key in drip.parked(cfg) if key not in occupied and not state.human_owned(cfg.ticket_dir(key))]
         if len(waiting) < free:
             waiting.extend(row["key"] for row in drip.candidates(cfg, log=lambda message: None) if row["key"] not in occupied and row["key"] not in waiting)
-        report.admitted.extend(waiting[:free])
+        extra = 0
+        for key in waiting[:free]:
+            try:
+                extra += workspace_capacity.check(cfg, inventory, key=key, cohort=value, extra=extra)
+            except workspace_capacity.CapacityError as exc:
+                report.waits["admission"] = str(exc)
+                break
+            report.admitted.append(key)
     return report

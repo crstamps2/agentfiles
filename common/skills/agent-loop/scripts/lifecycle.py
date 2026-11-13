@@ -464,6 +464,17 @@ def step(cfg, runner, ctx, key: str, wt, *, hopper_index: int, pr_number: int | 
             t = state.transition(t, "paused", reason="implement: no manifest"); _save(cfg, t)
             return Step(key, "implement", "no manifest", wait=True)
         try:
+            setup_pending = json.loads((wt / ".worktree.json").read_text()).get("setup") == "pending"
+        except (OSError, json.JSONDecodeError):
+            setup_pending = False
+        if setup_pending:
+            try:
+                prepared = _sh(["bash", "-lc", "bin/wt prepare --for rails"], wt, 900)
+            except subprocess.TimeoutExpired as exc:
+                return Step(key, "implement", "worktree prepare timed out", detail=str(exc), wait=True)
+            if prepared.returncode:
+                return Step(key, "implement", "worktree prepare failed", detail=(prepared.stderr or prepared.stdout)[-300:], wait=True)
+        try:
             tasks = contracts.load_tasks(manifest)
         except contracts.ManifestError as e:
             return _pause_step(cfg, t, "implement", f"plan failed: manifest invalid: {str(e)[:300]}")

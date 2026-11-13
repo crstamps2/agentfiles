@@ -98,6 +98,13 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 
 # Workflow
 
+## Incremental, Atomic Commits
+
+- All code-producing agents—including foreground sessions, specialists, and managed loops—must commit incrementally at small, logical work boundaries.
+- Each commit should represent one coherent change, with its related tests and necessary supporting changes. Do not accumulate an entire ticket or session into one broad final commit.
+- Separate unrelated fixes, refactors, and formatting. Run relevant checks before committing, stage only changes owned by the current task, and keep hooks enabled.
+- Use meaningful work boundaries—not arbitrary time, file-count, or line-count quotas. Existing publication and protected-branch safeguards still apply.
+
 ## Worktree Workflow
 
 - Pi (and Claude Code) sessions may directly dispatch subagents, write application code, manage worktrees, create PRs via the skill, monitor CI, and run code reviews. No separate orchestration tool is required.

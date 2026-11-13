@@ -158,6 +158,26 @@ after = ["001"]
         r, steps, t = self.run_once(outcomes=("rejected",))
         self.assertEqual(t.state, "implement"); self.assertTrue(steps[-1].wait); self.assertEqual(r.calls, ["001"])
 
+    def test_implement_prepares_a_pending_worktree_before_dispatching_a_worker(self):
+        marker = self.wt / ".worktree.json"; marker.write_text(json.dumps({"setup": "pending"}))
+        seen, prepared = [], []
+
+        class PendingWorktreeRunner(FakeRunner):
+            def implement_task(inner_self, ctx, ticket, task, idx, wt):
+                seen.append(json.loads(marker.read_text())["setup"])
+                return super().implement_task(ctx, ticket, task, idx, wt)
+
+        def sh(cmd, cwd, timeout):
+            if cmd == ["bash", "-lc", "bin/wt prepare --for rails"]:
+                prepared.append((cmd, cwd, timeout))
+                marker.write_text(json.dumps({"setup": "full"}))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch.object(lifecycle, "_sh", side_effect=sh):
+            lifecycle.step(self.cfg, PendingWorktreeRunner(self.cfg, ["rejected"]), None, "ZIP-7873", self.wt, hopper_index=2)
+        self.assertEqual(seen, ["full"])
+        self.assertEqual(prepared, [(["bash", "-lc", "bin/wt prepare --for rails"], self.wt, 900)])
+
     def test_ci_pending_waits_in_ready(self):
         self.checks = [ci.Check("example", "pending")]
         r, steps, t = self.run_once()

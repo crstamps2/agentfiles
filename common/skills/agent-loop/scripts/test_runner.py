@@ -899,6 +899,20 @@ class RunnerHarness(unittest.TestCase):
                                              f"NEXT: {phrase} to include `app/views/components/previews/zui/modal_preview.rb`.\n")
                 self.assertTrue(runner._owner_requests_unallowed_edit(res, self.tasks[0]))
 
+    def test_owner_report_of_an_unallowed_path_is_a_contract_complaint_regardless_of_wording(self):
+        """ZIP-4290: task-boundary reports self-repair without relying on a fixed verb list."""
+        for next_step in (
+            "Owner must change app/assets/javascripts/controllers/datatable_controller.ts outside this task's allowlist.",
+            "Owner must update `app/assets/javascripts/controllers/datatable_controller.ts` for Stimulus reconnect.",
+            "Owner must fix `app/assets/javascripts/controllers/datatable_controller.ts` before this task can proceed.",
+            "The required lifecycle repair is in app/assets/javascripts/controllers/datatable_controller.ts.",
+        ):
+            with self.subTest(next_step=next_step):
+                res = contracts.parse_result("STATUS: blocked\nREASON: owner\nBASE: abc\nFILES: none\n"
+                                             "EVIDENCE: missing lifecycle cleanup\nUNVERIFIED: browser checks\n"
+                                             f"NEXT: {next_step}\n")
+                self.assertTrue(runner._owner_requests_unallowed_edit(res, self.tasks[0]))
+
     def test_premium_owner_request_for_an_unquoted_unallowed_path_is_a_contract_complaint(self):
         """ZIP-8699: a plain-text unallowed path must not leave the ticket blocked as `owner`."""
         outcome, rows = self.run_task("fail", "fail", "owner_boundary_plain", "owner_boundary_plain")

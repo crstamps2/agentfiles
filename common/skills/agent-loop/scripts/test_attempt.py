@@ -94,6 +94,25 @@ class CreateTests(AttemptTestCase):
         self.assertEqual(loaded.attempt_id, rec.attempt_id)
         self.assertEqual(loaded.status, "CREATED")
 
+    def test_create_hands_verification_commands_to_runner(self):
+        task = make_task(verification_commands=["bin/rails test test/slow_test.rb"], timeout_s=900,
+                         visual=True, stop_when=["the verification commands pass"])
+        agent = types.SimpleNamespace(
+            name="cloud-worker",
+            body="Run every command in `verification_commands` before reporting.\n",
+        )
+        rec = attempt.create(self.cfg, "TICK-1", task, self.wt, 1, agent, "cloud",
+                             ladder.Rung("cloud-worker", "cheap", 1), "run-abc")
+        handoff = "The runner executes the listed verification commands after you return `STATUS: pass`."
+        task_md = (rec.path / "task.md").read_text()
+        self.assertIn(handoff, task_md)
+        self.assertIn("the verification commands pass", task_md)
+        self.assertNotIn("and every verification command holds", task_md)
+        body = (rec.path / "body.md").read_text()
+        self.assertIn(handoff, body)
+        self.assertGreater(body.index(handoff), body.index("Run every command"))
+        self.assertIn("Do not run or wait for the listed commands yourself", body)
+
     def test_create_dir_valid_only_once_attempt_json_written(self):
         # attempt.json is written last; if it's missing, load() must refuse the dir.
         adir = attempt.attempt_dir(self.cfg, "TICK-1", "001", 1)

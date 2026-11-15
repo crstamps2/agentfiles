@@ -161,8 +161,13 @@ EXCERPT_MAX_CHARS = 7000
 VISUAL_EVIDENCE_NOTE = (
     "Screenshots are the runner's browser gate's job and the human review's, not yours: you have no browser session, "
     "dev server or signed-in org, so never report `REASON: environment` for a screenshot criterion. The criterion "
-    "still stands: list it under UNVERIFIED, check everything else, and report `STATUS: pass` only once every other "
-    "criterion and every verification command holds.")
+    "still stands: list it under UNVERIFIED, check everything else, and report `STATUS: pass` once every other "
+    "criterion holds; the runner executes the verification commands.")
+RUNNER_VERIFICATION_HANDOFF = (
+    "The runner executes the listed verification commands after you return `STATUS: pass`. "
+    "This task-specific handoff supersedes any general instruction to run them. Do not run or wait for the listed "
+    "commands yourself, even when a stop condition refers to them; report `STATUS: pass` when the implementation is "
+    "ready for the runner's gate and describe only checks you actually ran in `EVIDENCE`.")
 
 
 def _slug(h: str) -> str:
@@ -231,6 +236,7 @@ Files or globs listed here that do not exist yet are files you are expected to C
 {bl(task.acceptance)}
 
 ## Verification commands
+{RUNNER_VERIFICATION_HANDOFF}
 {bl(task.verification_commands)}
 
 ## Stop / escalate when
@@ -557,7 +563,7 @@ def create(cfg, ticket_key: str, task: contracts.Task, worktree, n: int, agent, 
             safe_write(adir / "feedback.md", text)
 
         body = getattr(agent, "body", "") if not isinstance(agent, str) else ""
-        safe_write(adir / "body.md", body)
+        safe_write(adir / "body.md", f"{body.rstrip()}\n\n{RUNNER_VERIFICATION_HANDOFF}\n")
         safe_write(adir / "prompt.md",
                    f"Your task file is {adir / 'task.md'}. Read it, then begin.\n"
                    f"When done, write your result to this ABSOLUTE path (starts with '/', no './' prefix):\n"

@@ -225,6 +225,13 @@ def resume_active(cfg, key, *, retry_task, ensure_supervisor) -> str:
     action = contract["resume"]
     note = f"automatic recovery {event_id}"
     if not contract.get("action_applied"):
+        if (action["kind"] == "resume-stage" and action["state"] == "ready"
+                and heal.policy(ticket.reason)[0] == "ci-reset"):
+            heal.record(tdir, "ci-reset", ticket.reason, ticket.previous or "?", "recovery resume")
+            ci_state = tdir / "ci.json"
+            cis = json.loads(ci_state.read_text()) if ci_state.exists() else {}
+            cis["attempts"] = 0
+            ci_state.write_text(json.dumps(cis))
         contract["status"] = "resuming"
         ticket.recovery["active"] = contract
         state.save(tdir, ticket)

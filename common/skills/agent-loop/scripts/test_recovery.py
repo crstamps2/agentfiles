@@ -137,6 +137,27 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(ticket.recovery["active"], None)
         self.assertEqual(ticket.recovery["queued"], [])
 
+    def test_resume_active_restores_the_ci_window_before_resuming_ready(self):
+        """ZIP-8882: repair recovery bypasses lifecycle's paused ci-reset branch."""
+        import ci
+        state.save(self.tdir, state.Ticket(
+            key=self.key, state="paused", previous="ready", worktree=str(pathlib.Path(self.tmp.name) / "wt"),
+            reason=f"CI still failing after {ci.MAX_CI_ATTEMPTS} loop attempts: example",
+        ))
+        (self.tdir / "ci.json").write_text(json.dumps({"pr": 1, "attempts": ci.MAX_CI_ATTEMPTS,
+                                                         "actions": ["rerun"]}))
+        contract = recovery.new_contract(
+            self.key, {"state": "ready", "head_sha": "abc123"},
+            {"kind": "resume-stage", "state": "ready"}, ("defect-1",), contract_id="ci-recovery",
+        )
+        recovery.activate(self.cfg, self.key, contract)
+        recovery.mark_ready(self.cfg, self.key, "event-1")
+
+        recovery.resume_active(self.cfg, self.key, retry_task=lambda *args: None, ensure_supervisor=lambda *args: None)
+
+        self.assertEqual(state.load(self.tdir).state, "ready")
+        self.assertEqual(json.loads((self.tdir / "ci.json").read_text())["attempts"], 0)
+
     def test_resume_active_obsoletes_a_changed_task_slug(self):
         contract = self.contract(contract_id="recovery-1")
         recovery.activate(self.cfg, self.key, contract)

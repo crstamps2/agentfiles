@@ -28,10 +28,10 @@ import pathlib
 import re
 
 POLICIES = [
-    # (regex on the pause reason, action, max automatic recoveries for this reason per ticket)
+    # (regex on the pause reason, action, max automatic recoveries for this reason per ticket; None is unbounded)
     (r"^provider unavailable|usage limit|rate.?limit", "retry", 100),   # clears on its own; never a plan/worker fault
-    (r"^resource: on battery", "retry", 200),           # waits for AC; effectively unbounded but visible
-    (r"^resource: ", "retry", 200),
+    (r"^resource: on battery", "retry", None),          # waits for AC; effectively unbounded but visible
+    (r"^resource: ", "retry", None),
     (r"^heavy lane held|worker slot|slot busy", "retry", 200),
     (r"verification timeout|heavy lane busy", "retry", 6),
     (r"^CI still failing after \d+ loop attempts:", "ci-reset", 1),
@@ -51,7 +51,7 @@ POLICIES = [
 ]
 
 
-def policy(reason: str) -> tuple[str, int]:
+def policy(reason: str) -> tuple[str, int | None]:
     for pat, action, budget in POLICIES:
         if re.search(pat, reason or "", re.I):
             return action, budget
@@ -162,6 +162,6 @@ def decide(tdir: pathlib.Path, reason: str) -> tuple[str, str]:
     if wait:
         return "wait", f"provider cooling off; {wait // 60} min left"
     n = count_for(tdir, action, reason_key(reason))
-    if n >= budget:
+    if budget is not None and n >= budget:
         return "human", f"{action} already tried {n}x for this reason; budget {budget} spent"
-    return action, f"{action} ({n + 1}/{budget})"
+    return action, f"{action} ({n + 1}/{budget if budget is not None else 'unbounded'})"

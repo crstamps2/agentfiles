@@ -117,6 +117,15 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(heal.decide(tdir, "resource: load 31.2 on 10 cores > 2.0/core")[0], "retry")
             self.assertEqual(heal.decide(tdir, "heavy lane held by a live owner")[0], "retry")
 
+    def test_resource_pause_retries_after_its_retry_budget(self):
+        """ZIP-4290: low disk exhausted 200 retries and was incorrectly queued for repair."""
+        with tempfile.TemporaryDirectory() as d:
+            tdir = pathlib.Path(d)
+            reason = "resource: disk free 15.6GB < 20.0GB"
+            for _ in range(200):
+                heal.record(tdir, "retry", reason, "implement")
+            self.assertEqual(heal.decide(tdir, reason)[0], "retry")
+
     def test_distinct_failures_still_heal(self):
         import tempfile, pathlib as _p
         with tempfile.TemporaryDirectory() as d:

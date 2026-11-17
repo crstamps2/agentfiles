@@ -6,8 +6,8 @@ and hands schema violations straight back to the author (design: "rejects the pl
 the author on any violation"). Nothing here runs a worker. Ticket text is exported to a file
 and passed by PATH; it is data, never part of the prompt's instructions.
 
-Author/critic assignment is deterministic per ticket (odd hopper index -> Fable authors,
-even -> Astra authors) and recorded so the PR-comment judge later is always the other vendor.
+Astra authors and Fable critiques by default. The assignment is recorded so the PR-comment
+judge later uses the opposite vendor from the effective author.
 """
 from __future__ import annotations
 
@@ -71,16 +71,16 @@ def export_ticket(key: str, dest: pathlib.Path) -> pathlib.Path:
 AUTHOR_DEF, CRITIC_DEF, WRITER_DEF = "flagship-author", "flagship-critic", "task-writer"
 
 
-AUTHOR_MODELS = {"anthropic": "anthropic/claude-opus-5-5", "openai": "openai/gpt-5.6-sol"}
-CRITIC_MODELS = {"anthropic": "anthropic/claude-fable-5-1", "openai": "openai/gpt-6-astra"}
+AUTHOR_MODELS = {"anthropic": "anthropic/claude-opus-5-5", "openai": "openai/gpt-6.2-astra"}
+CRITIC_MODELS = {"anthropic": "anthropic/claude-fable-5-1", "openai": "openai/gpt-6.2-astra"}
 
 
-def vendor_of(model: str) -> str:
+def vendor_of(model: str | None) -> str:
     return (model or "").split("/", 1)[0]
 
 
 def sibling_model(model: str) -> str | None:
-    """The other vendor's model of the same tier when the assigned provider is unavailable."""
+    """Return the other vendor's model; Astra uses the author (Opus) fallback first."""
     model = model.replace("openai-codex/", "openai/", 1)
     for table in (AUTHOR_MODELS, CRITIC_MODELS):
         if model in table.values():
@@ -89,15 +89,17 @@ def sibling_model(model: str) -> str | None:
     return WORKER_SIBLINGS.get(model)
 
 
-# Same tier, other vendor, for worker and task-writer models. Only models a ChatGPT-account Codex
-# login accepts belong here: gpt-5.4-mini was listed for a month and every failover to it failed.
-WORKER_SIBLINGS = {"anthropic/claude-sonnet-5-5": "openai/gpt-5.6-terra",
-                   "openai/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
-                   "anthropic/claude-haiku-4-5": "openai/gpt-6-luna",
-                   "openai/gpt-6-luna": "anthropic/claude-haiku-4-5",
-                   # Existing processes can still hold pre-upgrade model IDs during this rollout.
-                   "openai-codex/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
-                   "openai-codex/gpt-6-luna": "anthropic/claude-haiku-4-5"}
+# Same-tier worker and task-writer routes, plus pre-upgrade IDs still held by existing runs.
+WORKER_SIBLINGS = {
+    "anthropic/claude-sonnet-5-5": "openai/gpt-6.2-sol",
+    "openai/gpt-6.2-sol": "anthropic/claude-sonnet-5-5",
+    "anthropic/claude-haiku-4-5": "openai/gpt-6-luna",
+    "openai/gpt-6-luna": "anthropic/claude-haiku-4-5",
+    "openai/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
+    "openai/gpt-5.6-sol": "anthropic/claude-opus-5-5",
+    "openai/gpt-6.1-sol": "anthropic/claude-opus-5-5",
+    "openai/gpt-6-astra": "anthropic/claude-fable-5-1",
+}
 
 
 def run_agent_with_failover(cfg, agent_name: str, prompt: str, stage_dir: pathlib.Path, wt, timeout_s: int,
@@ -333,6 +335,7 @@ def plan_ticket(cfg, key: str, wt, hopper_index: int, stage_root: pathlib.Path) 
     else:
         log["result"] = "failed"; log["reason"] = f"manifest still invalid after 3 author passes: {violations[:3]}"; return log
     log["author_s"] = round(time.monotonic() - t0)
+    verdict = "missing"
     for rnd in range(1, PLAN_ROUNDS + 1):
         spent = _spent(stage_root)
         if spent > PLAN_BUDGET_USD:
@@ -367,7 +370,8 @@ def _spent(stage_root: pathlib.Path) -> float:
     """Billed USD so far for this planning run (author + critic sessions under stage_root)."""
     try:
         import ledger
-        return sum(ledger.summarize_session(f)["billed_usd"] for f in stage_root.rglob("session/*.jsonl") if ledger.summarize_session(f))
+        summaries = (ledger.summarize_session(f) for f in stage_root.rglob("session/*.jsonl"))
+        return sum(summary["billed_usd"] for summary in summaries if summary)
     except Exception:  # noqa: BLE001
         return 0.0
 

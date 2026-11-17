@@ -180,7 +180,7 @@ memory: user
 
 ```toml
 [specialist]
-pi_model = "openai/gpt-5.6-terra"
+pi_model = "openai/gpt-6.2-sol"
 pi_thinking = "xhigh"
 ```
 
@@ -192,12 +192,12 @@ second `---`):
 name: code-reviewer
 description: Expert code reviewer. Use proactively after code changes to review for quality, security, performance, and adherence to project conventions. Read-only -- never modifies code.
 tools: read, grep, find, bash
-model: openai/gpt-5.6-terra
+model: openai/gpt-6.2-sol
 thinking: xhigh
 ---
 ```
 
-Note `tier: specialist` became `model: openai/gpt-5.6-terra` + `thinking: xhigh`; `access: Read, Grep, Glob, Bash` mapped
+Note `tier: specialist` became `model: openai/gpt-6.2-sol` + `thinking: xhigh`; `access: Read, Grep, Glob, Bash` mapped
 to `tools: read, grep, find, bash` (no write-capable tool); `permissionMode`/`memory` were
 dropped.
 
@@ -220,7 +220,7 @@ No `access:` key -> no `tools:` key rendered (full default tool set). Rendered o
 ---
 name: rails-engineer
 description: Senior Ruby on Rails engineer for backend implementation.
-model: openai/gpt-5.6-terra
+model: openai/gpt-6.2-sol
 thinking: max
 ---
 ```

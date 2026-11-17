@@ -98,6 +98,8 @@ The specific specialist roles named in the routing rules below (`rails-engineer`
 
 # Workflow
 
+- The full design/plan/implementation/review workflow is for `zipline-app` work. For personal agentfiles, harness, and configuration requests, make scoped changes directly with ownership checks, focused verification, and appropriate commits; do not add design/plan approval gates or review fan-out unless requested.
+
 ## Incremental, Atomic Commits
 
 - All code-producing agents—including foreground sessions, specialists, and managed loops—must commit incrementally at small, logical work boundaries.

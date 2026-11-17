@@ -20,7 +20,9 @@ class ProviderHealthTests(unittest.TestCase):
 
     def test_an_exhausted_provider_routes_every_model_to_its_equivalent(self):
         providers.mark_exhausted(self.root, "openai", "You have hit your ChatGPT usage limit (prolite plan). Try again in ~8405 min.")
-        cases = {"openai/gpt-5.6-sol": "anthropic/claude-opus-5-5", "openai/gpt-6-astra": "anthropic/claude-fable-5-1",
+        cases = {"openai/gpt-6.2-astra": "anthropic/claude-opus-5-5",
+                 "openai/gpt-6.2-sol": "anthropic/claude-sonnet-5-5",
+                 "openai/gpt-5.6-sol": "anthropic/claude-opus-5-5", "openai/gpt-6-astra": "anthropic/claude-fable-5-1",
                  "openai/gpt-5.6-terra": "anthropic/claude-sonnet-5-5", "openai/gpt-6-luna": "anthropic/claude-haiku-4-5",
                  "anthropic/claude-sonnet-5-5": "anthropic/claude-sonnet-5-5"}
         for model, want in cases.items():
@@ -29,8 +31,18 @@ class ProviderHealthTests(unittest.TestCase):
 
     def test_and_vice_versa(self):
         providers.mark_exhausted(self.root, "anthropic", "rate_limit_error: usage limit reached")
-        self.assertEqual(providers.resolve(self.root, "anthropic/claude-sonnet-5-5"), "openai/gpt-5.6-terra")
-        self.assertEqual(providers.resolve(self.root, "anthropic/claude-opus-5-5"), "openai/gpt-5.6-sol")
+        self.assertEqual(providers.resolve(self.root, "anthropic/claude-sonnet-5-5"), "openai/gpt-6.2-sol")
+        self.assertEqual(providers.resolve(self.root, "anthropic/claude-opus-5-5"), "openai/gpt-6.2-astra")
+        self.assertEqual(providers.resolve(self.root, "anthropic/claude-fable-5-1"), "openai/gpt-6.2-astra")
+
+    def test_62_models_pass_through_when_healthy_or_both_vendors_are_unavailable(self):
+        models = ("openai/gpt-6.2-astra", "openai/gpt-6.2-sol")
+        for model in models:
+            self.assertEqual(providers.resolve(self.root, model), model)
+        for vendor in ("openai", "anthropic"):
+            providers.mark_exhausted(self.root, vendor, "usage limit")
+        for model in models:
+            self.assertEqual(providers.resolve(self.root, model), model)
 
     def test_the_reset_time_in_the_message_is_honoured_and_then_expires(self):
         providers.mark_exhausted(self.root, "openai", "Try again in ~8405 min.")

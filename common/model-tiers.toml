@@ -12,23 +12,23 @@
 # the orchestrator's settings.json (defaultModel / defaultThinkingLevel).
 [orchestrator]
 claude = "opus"
-codex_model = "gpt-5.5"
+codex_model = "gpt-6.2-astra"
 codex_effort = "high"
-pi_model = "openai/gpt-6.1-sol"
+pi_model = "openai/gpt-6.2-astra"
 pi_thinking = "high"
 
 [specialist]
 claude = "sonnet"
-codex_model = "gpt-5.4"
+codex_model = "gpt-6.2-sol"
 codex_effort = "medium"
-pi_model = "openai/gpt-5.6-terra"
+pi_model = "openai/gpt-6.2-sol"
 pi_thinking = "xhigh"
 
 [specialist-execution]
 claude = "sonnet"
-codex_model = "gpt-5.4"
+codex_model = "gpt-6.2-sol"
 codex_effort = "high"
-pi_model = "openai/gpt-5.6-terra"
+pi_model = "openai/gpt-6.2-sol"
 pi_thinking = "max"
 
 [specialist-fast]
@@ -49,9 +49,9 @@ pi_thinking = "low"
 # (see docs/superpowers/plans/2026-09-10-agent-loop-1-runner-core.md, Task 14). ---
 [worker-cloud]
 claude = "sonnet"                    # workers are pi-only; other tools get a sane default
-codex_model = "gpt-5.4-mini"
+codex_model = "gpt-6.2-sol"
 codex_effort = "medium"
-pi_model = "openai/gpt-5.6-terra"   # Codex-first cloud worker; Claude Sonnet 5.5 is its provider-outage fallback
+pi_model = "openai/gpt-6.2-sol"   # Codex-first cloud worker; Claude Sonnet 5.5 is its provider-outage fallback
 pi_thinking = "low"
 
 [worker-small]
@@ -63,16 +63,16 @@ pi_thinking = "low"
 
 [worker-premium]
 claude = "sonnet"
-codex_model = "gpt-5.4"
+codex_model = "gpt-6.2-astra"
 codex_effort = "high"
-pi_model = "openai/gpt-5.6-terra"
+pi_model = "openai/gpt-6.2-astra"
 pi_thinking = "max"
 
 [flagship-author]
 claude = "opus"
-codex_model = "gpt-5.5"
+codex_model = "gpt-6.2-astra"
 codex_effort = "high"
-pi_model = "openai/gpt-5.6-sol"   # Codex-first plan author; Claude Opus 5.5 is its provider-outage fallback
+pi_model = "openai/gpt-6.2-astra"   # Codex-first plan author; Claude Opus 5.5 is its provider-outage fallback
 pi_thinking = "medium"
 
 [flagship-critic]
@@ -84,21 +84,21 @@ pi_thinking = "high"
 
 [task-writer]
 claude = "sonnet"
-codex_model = "gpt-5.4-mini"
+codex_model = "gpt-6.2-sol"
 codex_effort = "medium"
-pi_model = "openai/gpt-5.6-terra"  # field guide tier 2: turns a critic finding into a precise manifest edit; never a full re-plan
+pi_model = "openai/gpt-6.2-sol"  # field guide tier 2: turns a critic finding into a precise manifest edit; never a full re-plan
 pi_thinking = "medium"
 
 [repair-agent]
 claude = "opus"
-codex_model = "gpt-5.5"
+codex_model = "gpt-6.2-astra"
 codex_effort = "high"
-pi_model = "openai/gpt-5.6-terra"   # fixes runner defects test-first in a throwaway worktree (repair.py)
+pi_model = "openai/gpt-6.2-astra"   # fixes runner defects test-first in a throwaway worktree (repair.py)
 pi_thinking = "max"
 
 [repair-reviewer]
 claude = "opus"
 codex_model = "gpt-5.5"
 codex_effort = "high"
-pi_model = "anthropic/claude-opus-5-5"    # opposite-vendor reviewer for unattended Terra repairs
+pi_model = "anthropic/claude-opus-5-5"    # opposite-vendor reviewer for unattended Astra repairs
 pi_thinking = "high"

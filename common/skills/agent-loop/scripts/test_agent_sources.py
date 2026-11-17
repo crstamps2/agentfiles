@@ -22,18 +22,18 @@ class WorkerSourceTests(unittest.TestCase):
     def test_work_tiers_prefer_codex_and_review_gates_use_claude(self):
         t = tomllib.loads(TIERS.read_text())
         expected = {
-            "orchestrator": "openai/gpt-6.1-sol",
-            "specialist": "openai/gpt-5.6-terra",
-            "specialist-execution": "openai/gpt-5.6-terra",
+            "orchestrator": "openai/gpt-6.2-astra",
+            "specialist": "openai/gpt-6.2-sol",
+            "specialist-execution": "openai/gpt-6.2-sol",
             "specialist-fast": "openai/gpt-6-luna",
             "data-fetch": "openai/gpt-6-luna",
-            "worker-cloud": "openai/gpt-5.6-terra",
+            "worker-cloud": "openai/gpt-6.2-sol",
             "worker-small": "openai/gpt-6-luna",
-            "worker-premium": "openai/gpt-5.6-terra",
-            "flagship-author": "openai/gpt-5.6-sol",
+            "worker-premium": "openai/gpt-6.2-astra",
+            "flagship-author": "openai/gpt-6.2-astra",
             "flagship-critic": "anthropic/claude-fable-5-1",
-            "task-writer": "openai/gpt-5.6-terra",
-            "repair-agent": "openai/gpt-5.6-terra",
+            "task-writer": "openai/gpt-6.2-sol",
+            "repair-agent": "openai/gpt-6.2-astra",
             "repair-reviewer": "anthropic/claude-opus-5-5",
         }
         for name, model in expected.items():
@@ -41,6 +41,8 @@ class WorkerSourceTests(unittest.TestCase):
             for key in ("claude", "codex_model", "codex_effort", "pi_model", "pi_thinking"):
                 self.assertIn(key, t[name], f"{name}.{key}")
             self.assertEqual(t[name]["pi_model"], model, name)
+            if model.startswith("openai/gpt-6.2-"):
+                self.assertEqual(t[name]["codex_model"], model.split("/", 1)[1], name)
             if name not in ("orchestrator", "flagship-critic", "repair-reviewer"):
                 self.assertTrue(model.startswith("openai/"), name)
         self.assertEqual(t["orchestrator"]["pi_thinking"], "high")

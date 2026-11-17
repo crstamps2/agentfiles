@@ -10,7 +10,7 @@ import procs
 class PureTests(unittest.TestCase):
     def test_assignment_uses_codex_author_and_opposite_vendor_critic(self):
         cfg = type("Cfg", (), {"pi_agents_dir": "x"})()
-        expected = {"author_model": "openai/gpt-5.6-sol", "critic_model": "anthropic/claude-fable-5-1"}
+        expected = {"author_model": "openai/gpt-6.2-astra", "critic_model": "anthropic/claude-fable-5-1"}
         self.assertEqual(plan.assignment(cfg, 1), expected)
         self.assertEqual(plan.assignment(cfg, 2), expected)
 
@@ -235,8 +235,12 @@ if __name__ == "__main__":
 class FailoverTests(unittest.TestCase):
     def test_sibling_model_is_the_other_vendor_same_tier(self):
         self.assertEqual(plan.sibling_model("openai/gpt-6-astra"), "anthropic/claude-fable-5-1")
-        self.assertEqual(plan.sibling_model("anthropic/claude-opus-5-5"), "openai/gpt-5.6-sol")
-        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5-5"), "openai/gpt-5.6-terra")
+        self.assertEqual(plan.sibling_model("anthropic/claude-opus-5-5"), "openai/gpt-6.2-astra")
+        self.assertEqual(plan.sibling_model("anthropic/claude-fable-5-1"), "openai/gpt-6.2-astra")
+        self.assertEqual(plan.sibling_model("anthropic/claude-sonnet-5-5"), "openai/gpt-6.2-sol")
+        self.assertEqual(plan.sibling_model("openai/gpt-6.2-astra"), "anthropic/claude-opus-5-5")
+        self.assertEqual(plan.sibling_model("openai/gpt-6.2-sol"), "anthropic/claude-sonnet-5-5")
+        self.assertEqual(plan.sibling_model("openai/gpt-5.6-sol"), "anthropic/claude-opus-5-5")
         self.assertEqual(plan.sibling_model("openai/gpt-5.6-terra"), "anthropic/claude-sonnet-5-5")
         self.assertEqual(plan.sibling_model("anthropic/claude-haiku-4-5"), "openai/gpt-6-luna")
         self.assertEqual(plan.sibling_model("openai/gpt-6-luna"), "anthropic/claude-haiku-4-5")

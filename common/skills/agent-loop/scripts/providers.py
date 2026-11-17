@@ -17,14 +17,16 @@ import time
 
 # Equivalent model on the other vendor, per direction. Only models a ChatGPT-account Codex login accepts.
 EQUIVALENT = {
+    "openai/gpt-6.2-astra": "anthropic/claude-opus-5-5",
+    "openai/gpt-6.2-sol": "anthropic/claude-sonnet-5-5",
     "openai/gpt-5.6-sol": "anthropic/claude-opus-5-5",
     "openai/gpt-6.1-sol": "anthropic/claude-opus-5-5",
     "openai/gpt-6-astra": "anthropic/claude-fable-5-1",
     "openai/gpt-5.6-terra": "anthropic/claude-sonnet-5-5",
     "openai/gpt-6-luna": "anthropic/claude-haiku-4-5",
-    "anthropic/claude-opus-5-5": "openai/gpt-5.6-sol",
-    "anthropic/claude-fable-5-1": "openai/gpt-6-astra",
-    "anthropic/claude-sonnet-5-5": "openai/gpt-5.6-terra",
+    "anthropic/claude-opus-5-5": "openai/gpt-6.2-astra",
+    "anthropic/claude-fable-5-1": "openai/gpt-6.2-astra",
+    "anthropic/claude-sonnet-5-5": "openai/gpt-6.2-sol",
     "anthropic/claude-haiku-4-5": "openai/gpt-6-luna",
     # Existing processes can still hold pre-upgrade model IDs during this rollout.
     "openai-codex/gpt-5.6-sol": "anthropic/claude-opus-5-5",

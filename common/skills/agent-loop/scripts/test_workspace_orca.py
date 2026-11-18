@@ -37,6 +37,8 @@ class LocalOrca:
         self.receipt_overrides = {}
         self.mutation_bindings = []
         self.chat_present = True
+        self.chat_places: list[dict[str, str]] | None = None
+        self.dev_http_code = "200"
         self.page_handles = ["page-1", "page-2"]
         self.wait_satisfied = True
         self.workspace_status = "in-progress"
@@ -64,7 +66,7 @@ class LocalOrca:
         if argv[0] == "overmind":
             return subprocess.CompletedProcess(argv, 0, "web 123 running\n", "")
         if argv[0] == "curl":
-            return subprocess.CompletedProcess(argv, 0, "200", "")
+            return subprocess.CompletedProcess(argv, 0, self.dev_http_code, "")
         if argv[0] != "/opt/homebrew/bin/orca":
             raise AssertionError(f"Unexpected command: {argv}")
         self.assert_local(argv)
@@ -114,6 +116,11 @@ class LocalOrca:
                       "outcome": {"kind": self.kind, "handle": "chat-1" if self.kind == "structured" else "term-agent", "sessionId": "session-1", "tabId": "structured-agent-session-pi_test"},
                       "receipt": {"mode": self.kind, "preferred": "structured", "reason": "explicit_surface", "detail": "Requested surface" if self.kind == "structured" else "Chat unavailable; terminal fallback", **self.receipt_overrides},
                       "prompt": {"delivery": "submit", "outcome": self.prompt_outcome, "messageId": "message-1", **self.prompt_overrides}}
+        elif cmd == ("agent", "show"):
+            place = {"orcaSessionId": "session-1", "kind": "chat", "agent": "pi", "hostId": "local",
+                     "worktreeId": f"repo::{self.path}", "paneKey": "structured-agent-session-pi_test:renderer-leaf"}
+            places = self.chat_places if self.chat_places is not None else [place] if self.chat_present else []
+            result = {"orcaSessionId": "session-1", "kind": "chat", "places": places}
         elif cmd == ("tab", "create"):
             result = {"browserPageId": "page-" + str(sum(c[1:3] == ["tab", "create"] for c in self.calls))}
         elif cmd == ("tab", "list"):
@@ -183,6 +190,65 @@ class OrcaLifecycleTests(unittest.TestCase):
         self.assertEqual(self.fake.count("agent", "launch"), 1)
         self.assertEqual(self.fake.count("terminal", "create"), 2)
         self.assertEqual(self.fake.count("tab", "create"), 2)
+
+    def test_completed_setup_does_not_require_an_exited_terminal_to_remain_open(self):
+        self.launch()
+        self.fake.terminal_handles.remove("term-Setup")
+        self.assertEqual(self.launch().status, "ok")
+        self.assertEqual(self.fake.count("terminal", "create"), 2)
+
+    def test_failed_setup_still_requires_the_recorded_terminal(self):
+        self.fake.exit_code = 1
+        self.assertEqual(self.launch().status, "setup-failed")
+        self.fake.terminal_handles.remove("term-Setup")
+        with self.assertRaisesRegex(workspaces.WorkspaceError, "orca-terminal-stale"):
+            self.launch()
+        self.assertEqual(self.fake.count("terminal", "create"), 1)
+
+    def test_renderer_orphan_with_same_running_dev_terminal_and_live_service_is_valid(self):
+        self.launch()
+        self.fake.terminal_overrides["term-Dev"] = {"orphaned": True}
+        self.assertEqual(self.launch().status, "ok")
+        self.assertEqual(self.fake.count("terminal", "create"), 2)
+        self.assertEqual(self.fake.count("terminal", "read"), 1)
+
+    def test_renderer_orphan_without_running_dev_and_service_is_rejected(self):
+        self.launch()
+        self.fake.terminal_overrides["term-Dev"] = {"orphaned": True}
+        for terminal_status, http in (("exited", "200"), ("running", "503")):
+            with self.subTest(terminal_status=terminal_status, http=http):
+                self.fake.terminal_statuses["term-Dev"] = terminal_status
+                self.fake.dev_http_code = http
+                with self.assertRaisesRegex(workspaces.WorkspaceError, "orca-dev-unconfirmed"):
+                    self.launch()
+        self.assertEqual(self.fake.count("terminal", "create"), 2)
+
+    def test_missing_or_misattributed_dev_cannot_be_replaced_by_a_healthy_endpoint(self):
+        self.launch()
+        self.fake.terminal_overrides["term-Dev"] = {"orphaned": True, "worktreeId": "foreign"}
+        self.fake.calls.clear()
+        with self.assertRaisesRegex(workspaces.WorkspaceError, "orca-terminal-stale"):
+            self.launch()
+        self.fake.terminal_handles.remove("term-Dev")
+        with self.assertRaisesRegex(workspaces.WorkspaceError, "orca-terminal-stale"):
+            self.launch()
+        self.assertFalse(any(c[0] in ("curl", "overmind") for c in self.fake.calls))
+        self.assertEqual(self.fake.count("terminal", "create"), 0)
+
+    def test_chat_is_verified_by_native_session_placement_not_renderer_pane_guess(self):
+        self.launch()
+        self.assertEqual(self.launch().binding.agent["session_id"], "session-1")
+        self.assertEqual(self.fake.count("agent", "show", "orca_session_id:session-1"), 1)
+        place = {"orcaSessionId": "session-1", "kind": "chat", "agent": "pi", "hostId": "local",
+                 "worktreeId": f"repo::{self.fake.path}", "paneKey": "tab:renderer-leaf"}
+        for places in ([], [place, place], [{**place, "hostId": "remote"}],
+                       [{**place, "worktreeId": "other"}], [{**place, "orcaSessionId": "other"}],
+                       [{**place, "paneKey": ""}]):
+            with self.subTest(places=places):
+                self.fake.chat_places = places
+                with self.assertRaisesRegex(workspaces.WorkspaceError, "orca-chat-stale"):
+                    self.launch()
+        self.assertEqual(self.fake.count("agent", "launch"), 1)
 
     def test_interrupted_setup_retry_waits_on_same_recorded_terminal(self):
         self.fake.exit_code = 1

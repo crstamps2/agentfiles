@@ -147,9 +147,14 @@ class Backend(Adapter):
         return Snapshot(binding, value["identity"], lane)
 
     def verify_resources(self, binding):
-        _, value = self.workspace(binding)
-        handles = set(binding.terminals.values())
-        dev = binding.operations.get("dev", {}).get("result", {}).get("handle")
+        self.workspace(binding)
+        # A successful setup is durable; its exited terminal is not a live resource.
+        # Keep the original handle/receipt for audit and retain checks for incomplete setup.
+        setup = binding.operations.get("setup", {})
+        setup_complete = setup.get("status") == "done" and type(setup.get("exit_code")) is int and setup["exit_code"] == 0
+        handles = {handle for role, handle in binding.terminals.items() if role != "setup" or not setup_complete}
+        dev_receipt = binding.operations.get("dev", {})
+        dev = dev_receipt.get("result", {}).get("handle")
         if dev:
             handles.add(dev)
         agent = binding.agent or binding.operations.get("agent", {}).get("result", {}).get("agent", {})
@@ -161,10 +166,18 @@ class Backend(Adapter):
             if result.get("truncated") is not False or not isinstance(terminals, list):
                 raise WorkspaceError("orca-terminals-unconfirmed")
             for handle in handles:
-                matches = [t for t in terminals if isinstance(t, dict) and t.get("handle") == handle
-                           and t.get("worktreeId") == binding.workspace_id and t.get("executionHostId") == "local" and t.get("orphaned") is not True]
-                if len(matches) != 1:
+                matches = [t for t in terminals if isinstance(t, dict) and t.get("handle") == handle]
+                if (len(matches) != 1 or matches[0].get("worktreeId") != binding.workspace_id
+                        or matches[0].get("executionHostId") != "local"):
                     raise WorkspaceError("orca-terminal-stale")
+                terminal = matches[0]
+                if terminal.get("orphaned") is not False:
+                    if (terminal.get("orphaned") is not True or binding.phase != "ready"
+                            or dev_receipt.get("status") != "done" or handle != dev
+                            or binding.terminals.get("dev") != dev or handle == agent.get("handle")
+                            or any(value == handle for role, value in binding.terminals.items() if role != "dev")):
+                        raise WorkspaceError("orca-terminal-stale")
+                    self.verify_detached_dev(binding, handle, terminal)
         if agent.get("kind") == "terminal":
             if not binding.agent or any(not isinstance(agent.get(k), str) or not agent[k] for k in ("pty_id", "incarnation_id")):
                 raise WorkspaceError("orca-terminal-identity-unconfirmed")
@@ -172,16 +185,7 @@ class Backend(Adapter):
             if any(observed[k] != agent[k] for k in observed):
                 raise WorkspaceError("orca-terminal-replaced")
         if agent.get("kind") == "chat":
-            inventory = self.command(["worktree", "ps", "--limit", "10000"])
-            rows = inventory.get("worktrees")
-            if inventory.get("truncated") is not False or not isinstance(rows, list):
-                raise WorkspaceError("orca-chat-unconfirmed")
-            owners = [w for w in rows if isinstance(w, dict) and w.get("worktreeId") == binding.workspace_id
-                      and w.get("hostId") == "local" and w.get("identity", {}).get("key") == value["identity"]]
-            pane = f"{agent['tab_id']}:{agent['session_id']}" if agent.get("tab_id") else agent["handle"]
-            if len(owners) != 1 or len([a for a in owners[0].get("agents", []) if isinstance(a, dict) and a.get("paneKey") == pane
-                                       and a.get("structuredHostOwned") is True and a.get("agentType") == "pi"]) != 1:
-                raise WorkspaceError("orca-chat-stale")
+            self.verify_chat(binding, agent)
         pages = set(binding.views.values())
         pages.update(op.get("result", {}).get("page") for stage, op in binding.operations.items()
                      if stage.startswith("view-") and op.get("status") == "done")
@@ -193,6 +197,39 @@ class Backend(Adapter):
             for page in pages:
                 if len([t for t in tabs if isinstance(t, dict) and t.get("browserPageId") == page and t.get("worktreeId") == binding.workspace_id]) != 1:
                     raise WorkspaceError("orca-browser-stale")
+
+    def verify_detached_dev(self, binding, handle, terminal):
+        # A renderer can lose the pane while the local PTY and its dev service
+        # keep running. Confirm both without reattaching or sending input.
+        if terminal.get("connected") is not True or any(
+                not isinstance(terminal.get(field), str) or not terminal[field] for field in ("ptyId", "incarnationId")):
+            raise WorkspaceError("orca-dev-unconfirmed")
+        observed = self.obj(self.command(["terminal", "read", "--terminal", handle, "--limit", "1"], timeout=5), "terminal")
+        if observed.get("handle") != handle or observed.get("status") != "running":
+            raise WorkspaceError("orca-dev-unconfirmed")
+        try:
+            ready = self.probe_server(binding)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise WorkspaceError("orca-dev-unconfirmed") from exc
+        if not ready:
+            raise WorkspaceError("orca-dev-unconfirmed")
+
+    def verify_chat(self, binding, agent):
+        # paneKey contains a renderer leaf ID, not the durable Orca chat session ID.
+        session = agent.get("session_id")
+        if not isinstance(session, str) or not session:
+            raise WorkspaceError("orca-chat-unconfirmed")
+        observed = self.command(["agent", "show", f"orca_session_id:{session}"], timeout=5)
+        places = observed.get("places")
+        if (observed.get("orcaSessionId") != session or observed.get("kind") != "chat"
+                or not isinstance(places, list) or len(places) != 1 or not isinstance(places[0], dict)):
+            raise WorkspaceError("orca-chat-stale")
+        expected = {"orcaSessionId": session, "kind": "chat", "agent": "pi", "hostId": "local",
+                    "worktreeId": binding.workspace_id}
+        pane = places[0].get("paneKey")
+        if (not isinstance(pane, str) or not pane
+                or any(places[0].get(field) != value for field, value in expected.items())):
+            raise WorkspaceError("orca-chat-stale")
 
     def observe_terminal(self, binding):
         handle = binding.agent["handle"]
@@ -257,21 +294,25 @@ class Backend(Adapter):
         if value["exitCode"] != 0:
             raise DefiniteFailure("setup-failed")
 
+    def probe_server(self, binding):
+        status = self.run(["overmind", "status"], cwd=binding.worktree,
+                          env={**os.environ, "OVERMIND_SOCKET": str(pathlib.Path(binding.worktree) / ".overmind.sock")},
+                          capture_output=True, text=True, timeout=10)
+        web = any(len(parts := line.split()) >= 3 and parts[0] == "web" and parts[2] == "running" for line in status.stdout.splitlines())
+        if status.returncode or not web:
+            return False
+        hostname = f"admin.{binding.key.lower()}.test"
+        response = self.run(["curl", "-q", "--insecure", "--silent", "--output", os.devnull, "--write-out", "%{http_code}",
+                             "--max-time", "5", "--noproxy", "*", "--resolve", f"{hostname}:443:127.0.0.1", f"https://{hostname}"],
+                            capture_output=True, text=True, timeout=7)
+        return response.returncode == 0 and re.fullmatch(r"[23][0-9]{2}", response.stdout.strip()) is not None
+
     def server_ready(self, binding, *, timeout=120):
         deadline = time.monotonic() + timeout
-        hostname = f"admin.{binding.key.lower()}.test"
         while time.monotonic() < deadline:
             try:
-                status = self.run(["overmind", "status"], cwd=binding.worktree,
-                                  env={**os.environ, "OVERMIND_SOCKET": str(pathlib.Path(binding.worktree) / ".overmind.sock")},
-                                  capture_output=True, text=True, timeout=10)
-                web = any(len(parts := line.split()) >= 3 and parts[0] == "web" and parts[2] == "running" for line in status.stdout.splitlines())
-                if status.returncode == 0 and web:
-                    response = self.run(["curl", "-q", "--insecure", "--silent", "--output", os.devnull, "--write-out", "%{http_code}",
-                                         "--max-time", "5", "--noproxy", "*", "--resolve", f"{hostname}:443:127.0.0.1", f"https://{hostname}"],
-                                        capture_output=True, text=True, timeout=7)
-                    if response.returncode == 0 and re.fullmatch(r"[23][0-9]{2}", response.stdout.strip()):
-                        return True
+                if self.probe_server(binding):
+                    return True
             except (OSError, subprocess.TimeoutExpired):
                 return False
             time.sleep(2)

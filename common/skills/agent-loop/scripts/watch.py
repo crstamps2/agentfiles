@@ -68,15 +68,22 @@ def _slot(cfg, key: str):
 def snapshot(cfg, key: str) -> dict:
     tdir = cfg.ticket_dir(key)
     t = state.load(tdir) if (tdir / "state.json").exists() else None
-    snap = {"state": t.state if t else "queued", "reason": (t.reason or "")[:120] if t else ""}
+    row, _ = _slot(cfg, key)
+    parked = (tdir / "PARKED").exists()
+    if t:
+        stage = t.state
+    else:
+        has_slot = row is not None and not isinstance(row, str)
+        tracked = key in cfg.tickets or has_slot or parked or (tdir / "INTERACTIVE.json").exists()
+        stage = "queued" if tracked else "unmanaged"
+    snap = {"state": stage, "reason": (t.reason or "")[:120] if t else ""}
     if t and t.needs_operator:
         snap["needs_operator"] = t.needs_operator[:160]
-    row, _ = _slot(cfg, key)
     if isinstance(row, str):
         snap["cohort_error"] = row
     elif row is not None:
         snap["slot"], snap["admission_sequence"], snap["slot_phase"] = row.slot, row.admission_sequence, row.phase
-    elif (tdir / "PARKED").exists():
+    elif parked:
         snap["waiting"] = "parked"
     if _recovery_text(t):
         snap["recovery"] = _recovery_text(t)

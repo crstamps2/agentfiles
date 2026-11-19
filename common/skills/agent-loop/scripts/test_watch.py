@@ -67,6 +67,33 @@ class CohortWatchTests(WatchTests):
         contract = recovery.new_contract("ZIP-1", {"state": "gates"}, {"kind": "resume-stage", "state": "gates"}, ("85564066c4d9",))
         recovery.activate(self.cfg, "ZIP-1", contract)
 
+    def test_snapshot_distinguishes_untracked_from_reserved_before_state_exists(self):
+        import cohort
+        key = "ZIP-6344"
+        tdir = self.cfg.ticket_dir(key)
+        self.assertNotIn(key, self.cfg.tickets)
+        cohort.initialize(self.cfg)
+        with patch.object(watch.supervise, "status", return_value="not loaded"):
+            self.assertEqual(watch.snapshot(self.cfg, key)["state"], "unmanaged")
+            self.assertFalse(tdir.exists())
+            self.assertEqual(cohort.members(self.cfg), [])
+            cohort.reserve(self.cfg, key, "drip")
+            s = watch.snapshot(self.cfg, key)
+        self.assertEqual((s["state"], s["slot_phase"]), ("queued", "reserved"))
+        self.assertFalse((tdir / "state.json").exists())
+
+    def test_snapshot_preserves_queued_for_hopper_and_ticket_records(self):
+        configured = next(iter(self.cfg.tickets))
+        state.save(self.cfg.ticket_dir("ZIP-2"), state.Ticket(key="ZIP-2", state="queued"))
+        parked = self.cfg.ticket_dir("ZIP-3"); parked.mkdir(); (parked / "PARKED").touch()
+        foreground = self.cfg.ticket_dir("ZIP-4"); foreground.mkdir()
+        (foreground / "INTERACTIVE.json").write_text(json.dumps({"ticket": "ZIP-4", "mode": "interactive"}))
+        with patch.object(watch.supervise, "status", return_value="not loaded"):
+            for key in (configured, "ZIP-2", "ZIP-3", "ZIP-4"):
+                with self.subTest(key=key):
+                    self.assertEqual(watch.snapshot(self.cfg, key)["state"], "queued")
+        self.assertFalse(self.cfg.ticket_dir(configured).exists())
+
     def test_snapshot_and_line_show_slot_recovery_and_progress(self):
         self.cohort_member()
         with patch.object(watch.supervise, "status", return_value="state=running, pid=1"), patch.object(watch, "pr_state", return_value="draft"):

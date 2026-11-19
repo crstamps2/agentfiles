@@ -28,6 +28,8 @@ jql_extra = ""
 
 [workspace]
 backend = "orca"
+# Uncomment to preserve old receipts without letting the runner invoke cmux.
+# allow_legacy_cmux = false
 repo = "~/workspace/example-app"
 max_open = 10
 # These status IDs are examples; confirm the IDs in your Orca environment.

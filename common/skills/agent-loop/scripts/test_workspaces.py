@@ -47,6 +47,32 @@ class WorkspaceSelectionTests(unittest.TestCase):
     def test_legacy_ticket_stays_cmux(self):
         self.assertEqual(self.select(), "cmux")
 
+    def test_orca_only_refuses_legacy_recovery_without_loading_adapter(self):
+        from unittest.mock import patch
+
+        self.path.write_text(self.path.read_text() + '\n[workspace]\nallow_legacy_cmux=false\n')
+        self.cfg = config.load(self.path)
+        self.ticket.worktree = self.tmp.name
+        for bound in (False, True):
+            with self.subTest(bound=bound):
+                if bound:
+                    wb.write(self.cfg.ticket_dir(self.ticket.key), wb.Binding(backend="cmux", key=self.ticket.key,
+                             worktree=self.tmp.name))
+                before = wb.read(self.cfg.ticket_dir(self.ticket.key))
+                with (patch.object(workspaces.WorkspaceBackend, 'adapter',
+                                   side_effect=AssertionError('legacy adapter loaded')),
+                      self.assertRaisesRegex(workspaces.WorkspaceError, 'legacy-cmux-disabled')):
+                    workspaces.retry_setup(self.cfg, self.ticket, 'prompt', 'ref')
+                self.assertEqual(wb.read(self.cfg.ticket_dir(self.ticket.key)), before)
+
+    def test_orca_only_refuses_new_cmux_override_but_accepts_orca(self):
+        self.path.write_text(self.path.read_text() + '\n[workspace]\nallow_legacy_cmux=false\n')
+        self.cfg = config.load(self.path)
+        self.ticket = state.Ticket(key="ZIP-1")
+        with self.assertRaisesRegex(workspaces.WorkspaceError, 'legacy-cmux-disabled'):
+            self.select(new_launch=True, override="cmux")
+        self.assertEqual(self.select(new_launch=True), "orca")
+
     def test_bound_orca_survives_default_change(self):
         self.bind()
         self.cfg = dataclasses.replace(self.cfg, workspace_backend="cmux")

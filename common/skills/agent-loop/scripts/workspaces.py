@@ -50,6 +50,8 @@ class WorkspaceBackend:
     binding: Binding | None
 
     def adapter(self, *, run=None, checkpoint=None, timeout=None):
+        if self.name == "cmux" and not self.cfg.allow_legacy_cmux:
+            raise WorkspaceError("legacy-cmux-disabled")
         module = importlib.import_module(f"workspace_{self.name}")
         adapter = module.Backend(self.cfg, run=run or subprocess.run,
                                  checkpoint=checkpoint or (lambda b: write(self.cfg.ticket_dir(b.key), b)))
@@ -74,6 +76,8 @@ def backend_for(cfg, ticket: state.Ticket, *, new_launch: bool = False, override
         name = "cmux"
     if name not in BACKENDS:
         raise BindingError("Unknown workspace backend")
+    if name == "cmux" and not cfg.allow_legacy_cmux:
+        raise WorkspaceError("legacy-cmux-disabled", ticket.key)
     return WorkspaceBackend(cfg, name, binding)
 
 
@@ -244,6 +248,8 @@ def notify(ticket_dir, key: str, title: str, body: str, *, run=None) -> bool:
         return False
     cfg = config.load()
     if cfg.ticket_dir(key).resolve() != pathlib.Path(ticket_dir).resolve():
+        return False
+    if binding.backend == "cmux" and not cfg.allow_legacy_cmux:
         return False
     adapter = WorkspaceBackend(cfg, binding.backend, binding).adapter(run=run, timeout=5)
     adapter.notify(binding, title, body)

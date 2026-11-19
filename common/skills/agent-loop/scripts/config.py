@@ -67,6 +67,7 @@ class Config:
     cohort_capacity: int = 4
     hard_capacity: int = 7
     workspace_backend: str = "orca"
+    allow_legacy_cmux: bool = True
     workspace_repo: pathlib.Path = dataclasses.field(default_factory=lambda: pathlib.Path("~/workspace/example-app").expanduser())
     workspace_statuses: dict = dataclasses.field(default_factory=dict)
     workspace_limit: int | None = None
@@ -141,6 +142,11 @@ def load(path: pathlib.Path | None = None) -> Config:
     workspace = raw.get("workspace", {})
     if not isinstance(workspace, dict) or workspace.get("backend", "orca") not in ("orca", "cmux"):
         raise ConfigError("[workspace].backend must be orca or cmux")
+    allow_legacy_cmux = workspace.get("allow_legacy_cmux", True)
+    if type(allow_legacy_cmux) is not bool:
+        raise ConfigError("[workspace].allow_legacy_cmux must be a boolean")
+    if not allow_legacy_cmux and workspace.get("backend") == "cmux":
+        raise ConfigError("[workspace].backend cannot be cmux when allow_legacy_cmux is false")
     statuses = workspace.get("statuses", {})
     if not isinstance(statuses, dict) or any(not isinstance(v, str) or not v.strip() for v in statuses.values()):
         raise ConfigError("[workspace.statuses] IDs must be nonempty strings")
@@ -193,6 +199,7 @@ def load(path: pathlib.Path | None = None) -> Config:
         local_model=local_model,
         local_unload_after_attempt=local_unload_after_attempt,
         workspace_backend=workspace.get("backend", "orca"),
+        allow_legacy_cmux=allow_legacy_cmux,
         workspace_repo=_p(repo),
         workspace_statuses=dict(statuses),
         workspace_limit=workspace_limit,

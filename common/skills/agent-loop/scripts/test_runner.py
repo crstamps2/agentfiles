@@ -242,6 +242,25 @@ class RunnerHarness(unittest.TestCase):
         outcome, rows = self.run_task("transport_429", "transport_429")
         self.assertEqual([r["outcome"] for r in rows], ["environment", "environment"]); self.assertEqual(outcome, "paused")
 
+    def test_cloud_worker_retries_on_other_vendor_after_provider_503(self):
+        primary = "openai/gpt-6.2-sol"
+        (self.cfg.pi_agents_dir / "cloud-worker.md").write_text(AGENT.format(name="cloud-worker", model=primary))
+        launch = self.launcher
+
+        def unavailable_primary(argv, *args, **kwargs):
+            if argv[argv.index("--model") + 1] == primary:
+                return _real_run_stage([sys.executable, "-c", "import sys; sys.exit('OpenAI API error (503): 503 no healthy upstream')"],
+                                       *args, **kwargs)
+            return launch(argv, *args, **kwargs)
+
+        self.launcher = unavailable_primary
+        outcome, rows = self.run_task()
+        self.assertEqual(outcome, "accepted")
+        workers = [r for r in rows if r["stage_kind"] == "worker"]
+        self.assertEqual([(r["model"], r["outcome"]) for r in workers],
+                         [(primary, "environment"), ("anthropic/claude-sonnet-5-5", "accepted")])
+        self.assertTrue(workers[0]["reason"].startswith("provider unavailable"))
+
     def test_provider_registry_fallback_wins_over_prior_attempt_failover(self):
         """ZIP-4275: an exhausted Codex provider must not be selected again after registry failover."""
         import providers

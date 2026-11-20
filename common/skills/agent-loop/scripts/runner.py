@@ -25,6 +25,7 @@ import ladder
 import locks
 import procid
 import procs
+import providers
 import reconcile
 import state
 import worktree
@@ -45,6 +46,8 @@ def _classify(res: contracts.Result | None, stage: procs.StageResult, violations
         if any(__import__("re").search(p, stderr, __import__("re").I)
                for p in (r"usage limit", r"insufficient_quota", r"overloaded")):   # providers word refusals many ways
             return "environment", "provider unavailable: worker model refused (usage limit/overload)"
+        if stage.returncode and (error := re.search(providers.API_SERVER_ERROR, stderr, re.I | re.M)):
+            return "environment", f"provider unavailable: worker API returned HTTP {error[1]}"
         if stage.returncode and any(__import__("re").search(p, stderr, __import__("re").I)
                                     for p in (r"429", r"quota", r"rate.?limit", r"ECONNREFUSED",
                                               r"ENOTFOUND", r"unauthorized", r"401", r"5\d\d", r"connection")):
@@ -527,7 +530,6 @@ class Runner:
         return plan.sibling_model(model)
 
     def _attempt(self, t, task, wt, arm, rung, n, attempts, env_failures):
-        import providers
         agent = agentdef.load(self.cfg.pi_agents_dir, rung.agent)
         resolved = providers.resolve(self.cfg.state_root, agent.model)
         registry_failover = resolved != agent.model

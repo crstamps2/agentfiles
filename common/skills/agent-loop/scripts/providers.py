@@ -35,7 +35,9 @@ EQUIVALENT = {
     "openai-codex/gpt-6-luna": "anthropic/claude-haiku-4-5",
 }
 DEFAULT_COOL_OFF_S = 30 * 60
-LIMIT = re.compile(r"usage limit|insufficient_quota|rate_limit_error|quota exceeded|\b429\b|no api key found", re.I)
+API_SERVER_ERROR = r"^(?:OpenAI|Anthropic) API error \((5\d\d)\):"
+LIMIT = re.compile(r"usage limit|insufficient_quota|rate_limit_error|quota exceeded|\b429\b|no api key found"
+                   rf"|{API_SERVER_ERROR}", re.I | re.M)
 RESET = re.compile(r"try again in ~?\s*(\d+)\s*(min|minute|hour|h\b|sec|s\b)", re.I)
 
 

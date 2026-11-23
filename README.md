@@ -2,7 +2,8 @@
 
 One tool-neutral source of truth for AI agent-orchestration config -- agent
 roles, skills, hooks, and MCP servers -- usable by **Claude Code, Codex CLI,
-and pi**.
+and pi**. It also ships an optional [Software Factory](#software-factory): an agent loop
+that takes ready tickets to review-ready pull requests, one Orca workspace per ticket.
 
 ## What it is
 
@@ -18,6 +19,172 @@ gets tuned in one tool and the other quietly falls behind. `agentfiles`
 keeps reusable framework content in `common/` plus native `tools/` overlays.
 Private organization overrides and externally owned packages retain their own sources;
 resolve ownership before comparing or synchronizing installed artifacts.
+
+## Software Factory
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/software-factory/img/banner-dark.png">
+  <img alt="Software Factory: ready tickets in, review-ready pull requests out. Nameplate: input is ready issue-tracker tickets; output is an open, ready-for-review pull request at Human Gate 1; each ticket gets one Orca workspace; Pi agents work in specialist roles; a launchd-supervised Python runner controls the line; the loop never assigns reviewers, merges, or deploys." src="docs/software-factory/img/banner-light.png">
+</picture>
+
+The optional [agent loop](common/skills/agent-loop/README.md) runs this framework as a
+**governed AI software factory**: automated orchestration and bounded recovery between a
+human-chosen intake and a human review boundary. Each admitted ticket is planned, built,
+checked, and recovered inside its own [Orca](https://github.com/stablyai/orca) workspace.
+People set the intent and own review, merge, and release.
+
+### One ticket, one workspace, one line
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/software-factory/img/line-dark.png">
+  <img alt="Production line: Intake, then an Orca workspace with a worktree, dev server, and Pi chat agent, then plan and plan review, implement, gates, pull request and bot review, and Human Gate 1 where people take over. Real product ambiguity goes to a human decision and back to planning. A failed gate creates a recovery contract that resumes at the recorded stage." src="docs/software-factory/img/line-light.png">
+</picture>
+
+Every admitted ticket follows the same stages:
+`spinup → plan → plan-review → implement → gates → draft-pr → ready → bot-loop → human-gate-1`.
+
+- **Failures become recovery contracts.** Each failure records its evidence first, then a
+  structured contract (task retry, stage resume, republish, replan, spinup retry, or provider
+  wait) that the reconciler consumes. Nothing resumes from a guess.
+- **Only real product questions reach a person.** A decision wait needs the sources checked,
+  materially different options, a recommendation, and one question.
+- **The line stops at Human Gate 1:** an open, ready-for-review pull request whose evidence SHA
+  matches the worktree, with no open recovery or decision. The loop never assigns reviewers,
+  merges, or deploys.
+
+### The factory floor is an Orca board
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/software-factory/img/floor-dark.png">
+  <img alt="Orca status lanes: In progress, Ready for Review, In review, Approved, Done. The loop moves a workspace to Ready for Review at verified Human Gate 1; people move it after that. In progress and Ready for Review count toward the open-workspace budget. An operator can set a workspace On Hold, which stops its supervisor and releases its cohort slot." src="docs/software-factory/img/floor-light.png">
+</picture>
+
+Each ticket's Orca workspace holds a worktree cut from `origin/main`, a setup terminal, a dev
+server, a Pi agent in an Orca chat session, and reference and app browser tabs. The status lanes
+are the hand-off surface between people and the loop.
+
+- **Ready for Review is earned.** The loop moves a workspace there only after Human Gate 1 is
+  verified. People move it from there.
+- **On Hold hands a ticket back.** The loop stops that ticket's supervisor and frees its cohort
+  slot.
+- **A review backlog slows intake.** `workspace.max_open` counts workspaces that are in progress
+  or awaiting review.
+- **Every workspace action leaves a receipt.** Worktree creation, setup, dev server, and agent
+  launch are recorded in a per-ticket binding. After a restart the loop inspects what exists
+  instead of replaying an uncertain step, so it cannot spawn a second agent.
+- **Liveness comes from Orca, not the UI.** Agents are confirmed by their durable Orca session ID
+  and dev servers by a running terminal plus an HTTP probe.
+
+cmux remains a legacy backend; set `allow_legacy_cmux = false` in `hopper.toml` to run Orca-only.
+
+### Stations on the line
+
+| Station | What runs there | Status |
+| --- | --- | --- |
+| Intake & admission | The drip pulls ranked, ready issue-tracker work and checks dependencies. Admission checks machine pressure (memory compression, load, disk), cohort capacity, and the Orca open-workspace budget. | Running |
+| Workstations | One Orca workspace per ticket: an exactly named worktree, setup and dev-server terminals, a Pi agent, and browser tabs. Optional tabs never block a launch. | Running |
+| Workspace identity | A per-ticket binding records backend, worktree, terminals, agent session, and views. A recorded binding never changes backend. | Running |
+| Work instructions | An evidence-backed plan, a plan review, a bounded task manifest with explicit dependencies, skills, and a definition of done. | Running |
+| Specialist roles | Tool-neutral [agent definitions](common/agents/) for authoring, critique, task writing, implementation, review, adjudication, repair, and QA, each mapped to a tier in [`model-tiers.toml`](common/model-tiers.toml). | Running |
+| Quality control | Target-repo tests, lint, builds, browser evidence, and CI. The runner executes verification itself, and a rejecting guard is rerun on the base tree before an attempt is charged. | Running |
+| Recovery | Evidence first, then a structured recovery contract. Runner defects go to test-first repair with independent review. | Running |
+| Governance | Protected paths, a private config that fails closed, foreground ownership for direct work, On Hold hand-back, and no reviewer assignment, merge, or deploy. | By design |
+| Visibility | Orca status lanes, an unread flag when the loop needs a person, and on-demand `runner.py overview` and `watch --once` snapshots. Nothing polls on a timer. | Running |
+| Economics | Pre-implementation, premium, and unattended budgets; a usage ledger; per-stage metrics. | Instrumented; needs outcome analysis |
+| Independent acceptance | A protected holdout scenario suite the implementing agent cannot redefine. | Next to build |
+| Production feedback | A loop that turns incidents and customer outcomes into new checks. | Next to build |
+
+"Running" means built and in use, not that every ticket clears that station without help.
+
+### Where it sits
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/software-factory/img/levels-dark.png">
+  <img alt="Autonomy levels. Level 3, supervise the agents: people manage sessions and review diffs closely. Level 4, operate through intent, which is this line: people shape specs, skills, plans, and schedules while agents execute. Level 5, operate the factory: a black box that turns specs into software." src="docs/software-factory/img/levels-light.png">
+</picture>
+
+"Software factory" covers two operating models. This line is a **governed** factory: like
+[AWS AI-DLC](https://aws.amazon.com/blogs/devops/open-sourcing-adaptive-workflows-for-ai-driven-development-life-cycle-ai-dlc/),
+[GitHub Spec Kit](https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/),
+[Continuous AI](https://github.blog/ai-and-ml/generative-ai/continuous-ai-in-practice-what-developers-can-automate-today-with-agentic-ci/),
+and [Microsoft's agentic platform](https://developer.microsoft.com/blog/learn-from-microsoft-transform-software-development-through-an-agentic-platform/),
+it keeps human decision gates. A **dark** factory, as
+[StrongDM describes it](https://factory.strongdm.ai/), removes routine human coding and code
+review and relies on external scenario validation
+([Simon Willison's account](https://simonwillison.net/2026/Feb/7/software-factory/)). This line
+keeps human review on purpose. The levels come from
+[Dan Shapiro's five-level framework](https://www.danshapiro.com/blog/2026/01/the-five-levels-from-spicy-autocomplete-to-the-software-factory/),
+which is shared vocabulary, not a certification.
+
+### What's next: proving yield
+
+1. **Measure.** Run a consecutive batch and count: share reaching Human Gate 1 without rescue,
+   human minutes per accepted ticket, median and slow-tail lead time, total cost including failed
+   attempts, and rework after review. On Hold hand-backs are already recorded as
+   `operator-on-hold`, so interventions are countable.
+2. **Accept independently.** Add a protected scenario suite the implementing agent cannot
+   redefine.
+3. **Harden.** Show that recurring rescue classes stop recurring, with the original failing gate
+   passing on an exact verification receipt.
+4. **Prove unattended.** Routine failures resolve while the operator is away, and real product
+   questions arrive with useful evidence.
+
+Raising capacity or removing safeguards is a separate decision. A dependable factory can keep
+people in charge of release.
+
+### Run your own line
+
+1. Read the [agent-loop operator guide](common/skills/agent-loop/README.md) and the
+   [operations policy](common/skills/agent-loop/references/operations-policy.md).
+2. Install the prerequisites: Python 3.11+, pi 1.3.0+ with `pi-subagents`, Node.js, Git, GitHub
+   CLI, issue-tracker access, and model-provider access.
+3. Install [Orca](https://github.com/stablyai/orca) with its CLI on `PATH` (`orca`, or `orca-ide`
+   on Linux) and register your app checkout. Before creating anything, the runner checks that Orca
+   is reachable, the repo matches, and the Orca build reports the capabilities the adapter needs.
+4. Create the private `hopper.toml` (see
+   [Agent loop local configuration](#agent-loop-local-configuration)) and set
+   `project.configured = true`.
+5. Inspect before you run anything that writes:
+
+   ```bash
+   R="<agentfiles checkout>/common/skills/agent-loop/scripts"
+   python3 "$R/runner.py" overview
+   python3 "$R/runner.py" drip --dry-run
+   ```
+
+A real `drip` creates Orca workspaces and starts agents, so start with one supervised ticket. The
+Orca adapter's dev-server probe assumes `bin/dev` under overmind, a `PORT` in `.env`, and a
+per-ticket local `.test` hostname; adapt those pieces for other apps.
+
+<details>
+<summary><strong>The engine, by responsibility</strong></summary>
+
+All modules live in [`common/skills/agent-loop/scripts/`](common/skills/agent-loop/scripts/). The
+operator entry point is `runner.py`.
+
+| Responsibility | Modules | Role |
+| --- | --- | --- |
+| Operator entry | `runner.py`, `lifecycle.py` | Operator commands and dispatch; advancing a ticket through its persisted stages. |
+| Workspaces | `workspaces.py`, `workspace_orca.py`, `workspace_cmux.py`, `workspace_binding.py`, `workspace_capacity.py` | Backend selection and receipt-based launch, the Orca and legacy cmux adapters, per-ticket bindings, and the status-based workspace budget and On Hold detection. |
+| Config & records | `config.py`, `state.py`, `attempt.py` | Load the private `hopper.toml`; keep ticket and attempt records that make interrupted work recoverable. |
+| Planning & contracts | `plan.py`, `contracts.py`, `agentdef.py` | Plans and plan review, task manifests and worker results, and Pi agent definitions. |
+| Implement & verify | `ladder.py`, `guards.py`, `worktree.py` | Worker escalation, verification soundness, snapshots, and allowed-file boundaries. |
+| Intake & capacity | `drip.py`, `admission.py`, `cohort.py` | Select eligible work, check machine pressure, track cohort slots, and honor On Hold hand-backs. |
+| Recovery | `reconcile.py`, `heal.py`, `recovery.py`, `review_reconcile.py` | Reconcile interrupted attempts, apply reason-specific healing, and keep explicit recovery contracts. |
+| Runner repair | `repair.py` | Turn runner defects into test-first, independently reviewed repairs. |
+| Decisions & ownership | `decision.py`, `interactive.py` | Validate real product questions and keep foreground work separate from the cohort. |
+| CI & review | `ci.py`, `botreview.py` | Classify CI results and turn bot review feedback into scoped follow-up work. |
+| Publication | `publish.py`, `prbody.py`, `screenshots.py` | Publish accepted changes, write PR descriptions, and capture screenshots. |
+| Process safety | `supervise.py`, `providers.py`, `locks.py`, `procid.py`, `procs.py` | launchd supervision, provider availability, ownership leases, process identity, and bounded subprocesses. |
+| Visibility & spend | `watch.py`, `sidebar.py`, `budget.py`, `ledger.py`, `metrics.py` | Ticket snapshots, workspace presentation and review routing, spend, usage, and stage metrics. |
+| Advanced & test-only | `parallel.py`, `cohort_migration.py`, `fake_worker.py` | Intra-ticket parallelism (gated off), cohort migration, and a simulated worker for tests. |
+| Regression evidence | `test_*.py` | Behavioral tests for contracts, lifecycle, recovery, ownership, workspaces, and publication. |
+
+</details>
+
+The images come from [`docs/software-factory/index.html`](docs/software-factory/index.html), a
+standalone version of this overview. Edit it, then run `python3 docs/software-factory/render.py`
+to regenerate the light and dark images.
 
 ## Quick start
 
@@ -62,6 +229,8 @@ common/                   # Shared tool-neutral source, edit framework content h
   mcp/servers.jsonc       # MCP server catalog
   model-tiers.toml        # Tier -> concrete model, per tool
   scripts/agentfiles-scan.sh  # Deny-list + secret scan for public pushes
+
+docs/software-factory/    # Software Factory overview page, README images, render script
 
 tools/
   claude/setup.md         # Ownership-aware setup and native Claude rules

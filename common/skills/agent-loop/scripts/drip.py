@@ -28,7 +28,7 @@ import workspace_binding
 import workspaces
 
 IN_FLIGHT_STATES = {"spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop", "paused"}
-TERMINAL = {"human-gate-1", "done", "blocked", "colleague-loop", "human-gate-2"}
+TERMINAL = {"retired", "human-gate-1", "done", "blocked", "colleague-loop", "human-gate-2"}
 WORKTREES = pathlib.Path("~/workspace/worktrees").expanduser()
 SPINUP_SCRIPTS = pathlib.Path("~/.claude/skills/spinup/scripts").expanduser()
 APP_REPO = pathlib.Path("~/workspace/example-app").expanduser()

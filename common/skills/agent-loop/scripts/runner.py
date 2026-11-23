@@ -963,6 +963,9 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv); cfg = config.load(a.config)
     config.configure_project(cfg)
     cfg.ensure_dirs()
+    if (getattr(a, "ticket", None) and a.cmd not in ("supervise", "watch", "spend", "ledger")
+            and state.load(cfg.ticket_dir(a.ticket)).state == "retired"):
+        ap.error(f"{a.ticket}: workspace retired by operator; no dispatch or resume")
     if a.cmd == "workspace-adopt":
         import workspaces
         try:

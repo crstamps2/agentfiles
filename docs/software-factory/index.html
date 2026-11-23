@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Software Factory</title>
+<meta name="description" content="How the agentfiles agent loop runs as a governed AI software factory: ready tickets in, review-ready pull requests out, one Orca workspace per ticket.">
+<!-- Source for the README images in ./img. Edit this page, then run render.py. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one 1120px column. A banner with a machine nameplate opens the page; diagrams and tables scroll inside their own frames. */
+:root{
+  --bg:#f1f4f2;--surface:#ffffff;--surface-2:#e8eeeb;--ink:#17252a;--muted:#52646a;--line:#d2dcd8;
+  --auto:#13684f;--auto-soft:#e1efe7;--human:#8a5a16;--human-soft:#f7ebd5;--neutral-soft:#eef1ef;--neutral-line:#8a9a95;
+  --link:#1f5d82;--new:#1f5d82;
+  --plate:#1b2a30;--plate-ink:#e8f0ed;--plate-muted:#a6bab4;--plate-line:#34474e;--rivet:#5d7279;
+  --f-display:"Archivo Black","Archivo","Inter",system-ui,sans-serif;
+  --f-body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono","DejaVu Sans Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1719;--surface:#152024;--surface-2:#1b292d;--ink:#e2ebe8;--muted:#9bb0aa;--line:#2b3c41;
+  --auto:#5fc79d;--auto-soft:#14302a;--human:#e2b063;--human-soft:#33281a;--neutral-soft:#1a2528;--neutral-line:#6f837d;
+  --link:#86bfe2;--new:#86bfe2;
+  --plate:#0b1214;--plate-ink:#e8f0ed;--plate-muted:#93aaa3;--plate-line:#2a3a3f;--rivet:#3f5257;color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1719;--surface:#152024;--surface-2:#1b292d;--ink:#e2ebe8;--muted:#9bb0aa;--line:#2b3c41;
+  --auto:#5fc79d;--auto-soft:#14302a;--human:#e2b063;--human-soft:#33281a;--neutral-soft:#1a2528;--neutral-line:#6f837d;
+  --link:#86bfe2;--new:#86bfe2;
+  --plate:#0b1214;--plate-ink:#e8f0ed;--plate-muted:#93aaa3;--plate-line:#2a3a3f;--rivet:#3f5257;color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.6}
+a{color:var(--link);text-underline-offset:3px}
+a:hover{text-decoration-thickness:2px}
+a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--link);outline-offset:3px;border-radius:4px}
+code{font-family:var(--f-mono);font-size:.86em}
+.shell{max-width:1120px;margin:0 auto;padding-block:40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.eyebrow{font-family:var(--f-mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--auto);font-weight:600}
+h1,h2,h3{text-wrap:balance}
+h1{font-family:var(--f-display);font-weight:400;font-size:clamp(32px,4.4vw,50px);line-height:1.04;letter-spacing:-.01em;margin:14px 0 20px}
+h2{font-weight:800;font-size:clamp(26px,3.4vw,34px);line-height:1.15;letter-spacing:-.025em;margin:0 0 12px}
+h3{font-weight:700;font-size:18px;line-height:1.3;letter-spacing:-.01em;margin:0 0 8px}
+p{margin:0 0 12px}
+.lede{max-width:64ch;color:var(--muted)}
+/* Banner */
+.banner{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:40px;align-items:center;background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:36px}
+.banner>*{min-width:0}
+.banner .deck{font-size:clamp(17px,2vw,19px);line-height:1.55;margin:0}
+.plate{position:relative;background:var(--plate);color:var(--plate-ink);border-radius:10px;padding:26px 26px 18px;border:1px solid var(--plate-line)}
+.plate::before,.plate::after{content:"";position:absolute;width:9px;height:9px;border-radius:50%;background:var(--rivet);top:10px;left:10px}
+.plate::after{left:auto;right:10px}
+.plate-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline;border-bottom:1px solid var(--plate-line);padding-bottom:10px;margin:0 6px 4px}
+.plate-name{font-family:var(--f-display);font-size:15px;letter-spacing:.12em;text-transform:uppercase}
+.plate-rev{font-family:var(--f-mono);font-size:11px;color:var(--plate-muted)}
+.plate dl{margin:0 6px;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:16px}
+.plate dt{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--plate-muted);padding:9px 0;border-bottom:1px dashed var(--plate-line)}
+.plate dd{margin:0;font-size:14px;line-height:1.45;padding:8px 0;border-bottom:1px dashed var(--plate-line)}
+.plate dt:last-of-type,.plate dd:last-of-type{border-bottom:0}
+.position{margin:22px 0 0;padding:18px 22px;background:var(--surface);border:1px solid var(--line);border-radius:10px;display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px;align-items:center}
+.position .tag{font-family:var(--f-mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--auto);font-weight:600;white-space:nowrap}
+.position p{margin:0;font-size:17px}
+nav.jump{display:flex;flex-wrap:wrap;gap:8px;margin:26px 0 8px}
+nav.jump a{font-size:13px;text-decoration:none;color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 13px;background:var(--surface)}
+nav.jump a:hover{border-color:var(--auto)}
+section{margin:56px 0;scroll-margin-top:20px}
+/* Diagrams and panels */
+.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:12.5px;color:var(--muted);margin:0 0 6px}
+.key::before{content:"";display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:7px;vertical-align:-1px;background:var(--auto-soft);border:1.5px solid var(--auto)}
+.key-human::before{background:var(--human-soft);border-color:var(--human)}
+.key-neutral::before{background:var(--neutral-soft);border-color:var(--neutral-line)}
+figure.panel{margin:18px 0 26px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px 22px 18px}
+.panel-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 24px;align-items:baseline;margin-bottom:6px}
+.panel-title{font-family:var(--f-mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.diagram-scroll{overflow-x:auto;margin:6px -4px 10px;padding:4px}
+.diagram-scroll svg{display:block;width:100%;min-width:860px;height:auto}
+figcaption{font-size:13.5px;color:var(--muted);max-width:80ch}
+.d-auto{fill:var(--auto-soft);stroke:var(--auto);stroke-width:1.5}
+.d-new{fill:var(--auto-soft);stroke:var(--new);stroke-width:2.5}
+.d-human{fill:var(--human-soft);stroke:var(--human);stroke-width:1.5}
+.d-neutral{fill:var(--neutral-soft);stroke:var(--neutral-line);stroke-width:1.5}
+.d-title{font-family:var(--f-body);font-size:14.5px;font-weight:700;fill:var(--ink);text-anchor:middle}
+.d-detail{font-size:11.5px;font-weight:400;fill:var(--muted)}
+.d-label{font-family:var(--f-body);font-size:12px;fill:var(--muted)}
+.d-label-strong{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.08em;fill:var(--muted)}
+.d-label-auto{fill:var(--auto);font-weight:600}
+.d-label-new{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.1em;fill:var(--new);font-weight:600}
+.d-path{fill:none;stroke:var(--auto);stroke-width:2}
+.d-path-human{fill:none;stroke:var(--human);stroke-width:2;stroke-dasharray:6 4}
+.d-bracket{fill:none;stroke:var(--neutral-line);stroke-width:1.2}
+.mk-auto{fill:var(--auto)}
+.mk-human{fill:var(--human)}
+/* Cards, callouts */
+.callout{padding:18px 22px;background:var(--auto-soft);border-radius:10px;margin:22px 0;max-width:860px}
+.callout p{margin:0}
+.note{padding:18px 22px;background:var(--human-soft);border-radius:10px;margin:22px 0}
+.note h3{font-size:17px}
+.note p{font-size:14.5px;margin:6px 0 0}
+.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:22px}
+.card p{font-size:15px}
+.card p:last-child{margin-bottom:0}
+.card ul{padding-left:18px;margin:8px 0 12px;font-size:14.5px}
+.card li{margin:3px 0}
+.card-kicker{font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+blockquote{margin:12px 0;padding-left:14px;border-left:3px solid var(--human);font-weight:700;font-size:16.5px}
+.levels{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:12px 0 14px}
+.level{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:18px}
+.level-here{border:2px solid var(--auto);background:var(--auto-soft)}
+.level .num{font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.level h3{font-size:17px;margin:6px 0}
+.level p{font-size:14px;margin:0}
+/* Tables */
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin:20px 0}
+table{width:100%;border-collapse:collapse;font-size:14.5px;min-width:700px}
+th{text-align:left;font-family:var(--f-mono);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);background:var(--surface-2);padding:13px 16px}
+td{padding:14px 16px;vertical-align:top;border-top:1px solid var(--line)}
+td:first-child{font-weight:650;width:20%}
+.stations td:nth-child(2){width:60%}
+.engine td:nth-child(2){width:36%}
+.engine td code a{white-space:nowrap}
+.chip{display:inline-block;font-family:var(--f-mono);font-size:11px;font-weight:600;letter-spacing:.04em;padding:3px 8px;border-radius:4px;white-space:nowrap}
+.chip-run{color:var(--auto);background:var(--auto-soft)}
+.chip-bound{color:var(--human);background:var(--human-soft)}
+.chip-next{color:var(--human);background:transparent;border:1px dashed var(--human)}
+.sub{display:block;font-size:13px;color:var(--muted);margin-top:5px}
+ol.steps{padding-left:22px;max-width:860px}
+ol.steps li{margin:14px 0;padding-left:4px}
+.code{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:16px 18px;margin:18px 0}
+.code pre{overflow-x:auto;font:13px/1.7 var(--f-mono);margin:8px 0;white-space:pre}
+.small{font-size:13px;color:var(--muted)}
+.bottom{font-weight:800;font-size:clamp(24px,3.2vw,34px);line-height:1.25;letter-spacing:-.025em;max-width:26em;margin:10px 0 14px}
+ol.sources{padding-left:22px;font-size:14.5px}
+ol.sources li{margin:12px 0}
+.src-note{display:block;font-size:12.5px;color:var(--muted)}
+footer{margin-top:44px;padding-top:18px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+@media (max-width:820px){
+  .banner{grid-template-columns:minmax(0,1fr);gap:26px;padding:24px}
+  .grid-2,.levels{grid-template-columns:minmax(0,1fr)}
+  .position{grid-template-columns:minmax(0,1fr);gap:8px}
+  section{margin:44px 0}
+}
+</style>
+</head>
+<body>
+<main class="shell">
+
+<header class="banner" data-shot="banner">
+  <div>
+    <div class="eyebrow">Software Factory · agentfiles</div>
+    <h1>Ready tickets in.<br>Review-ready pull requests out.</h1>
+    <p class="deck">A governed AI software factory. Each ticket is planned, built, checked, and recovered inside its own Orca workspace, while people set the intent and own review and release.</p>
+  </div>
+  <aside class="plate" aria-label="Factory nameplate">
+    <div class="plate-head"><span class="plate-name">Agent Loop Line</span><span class="plate-rev">agentfiles</span></div>
+    <dl>
+      <dt>Input</dt><dd>Ready tickets from the issue tracker, ranked and dependency-checked</dd>
+      <dt>Output</dt><dd>Open, ready-for-review PR with matching evidence (Human Gate 1)</dd>
+      <dt>Workstation</dt><dd>One Orca workspace per ticket: worktree, dev server, Pi agent, browser tabs</dd>
+      <dt>Operators</dt><dd>Pi agents in specialist roles, routed by model tier</dd>
+      <dt>Control</dt><dd>Python runner under launchd, covered by 1,100+ behavioral tests</dd>
+      <dt>Stops at</dt><dd>Human Gate 1. Never assigns reviewers, merges, or deploys.</dd>
+    </dl>
+  </aside>
+</header>
+
+<div class="position">
+  <span class="tag">Positioning</span>
+  <p>A <strong>governed AI software factory</strong>: automated orchestration and bounded recovery between a human-chosen intake and a human review boundary. The line is built and running. Its next job is proving yield.</p>
+</div>
+
+<nav class="jump" aria-label="Page sections">
+  <a href="#line">The line</a><a href="#floor">The Orca floor</a><a href="#stations">Stations</a><a href="#position">Where it sits</a><a href="#next">What's next</a><a href="#adopt">Run your own</a><a href="#engine">The engine</a><a href="#sources">Sources</a>
+</nav>
+
+<section id="line">
+  <div class="eyebrow">How it runs</div>
+  <h2>One ticket, one workspace, one line</h2>
+  <p class="lede">Every admitted ticket follows the same sequence: <code>spinup → plan → plan-review → implement → gates → draft-pr → ready → bot-loop → human-gate-1</code>. Failures go to recorded recovery. Real product questions go to a person.</p>
+  <figure class="panel" data-shot="line">
+    <div class="panel-head"><span class="panel-title">The production line · simplified</span><div class="legend"><span class="key">Automated work or checks</span><span class="key key-human">Human intent, judgment, or authority</span></div></div>
+    <div class="diagram-scroll" tabindex="0" role="region" aria-label="Production line diagram; scrolls sideways on small screens">
+    <svg viewBox="0 24 1010 376" role="img" aria-labelledby="line-t line-d" xmlns="http://www.w3.org/2000/svg">
+      <title id="line-t">The agent-loop production line</title>
+      <desc id="line-d">A ticket moves from intake to an Orca workspace, then planning and plan review, implementation, gates, pull request and bot review, and finally Human Gate 1 where people take over. Real product ambiguity goes to a human decision and returns to planning. A failed gate creates a recovery contract that resumes at the recorded stage. An operator can put any workspace On Hold in Orca to take the ticket back.</desc>
+      <defs>
+        <marker id="m-auto" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-auto" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="m-human" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-human" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+      <text class="d-label-new" x="212" y="40" text-anchor="middle">ORCA</text>
+      <g class="d-path" marker-end="url(#m-auto)">
+        <path d="M127 90 H149"/><path d="M273 90 H295"/><path d="M419 90 H441"/><path d="M565 90 H587"/><path d="M711 90 H733"/><path d="M857 90 H879"/>
+      </g>
+      <rect class="d-auto" x="5" y="46" width="122" height="88" rx="9"/>
+      <text class="d-title" x="66" y="82">Intake<tspan class="d-detail" x="66" dy="20">Ranked tickets</tspan><tspan class="d-detail" x="66" dy="16">Capacity checks</tspan></text>
+      <rect class="d-new" x="151" y="46" width="122" height="88" rx="9"/>
+      <text class="d-title" x="212" y="82">Workspace<tspan class="d-detail" x="212" dy="20">Worktree + server</tspan><tspan class="d-detail" x="212" dy="16">Pi chat agent</tspan></text>
+      <rect class="d-auto" x="297" y="46" width="122" height="88" rx="9"/>
+      <text class="d-title" x="358" y="82">Plan + review<tspan class="d-detail" x="358" dy="20">Plan, critique,</tspan><tspan class="d-detail" x="358" dy="16">task manifest</tspan></text>
+      <rect class="d-auto" x="443" y="46" width="122" height="88" rx="9"/>
+      <text class="d-title" x="504" y="82">Implement<tspan class="d-detail" x="504" dy="20">Guarded tasks,</tspan><tspan class="d-detail" x="504" dy="16">atomic commits</tspan></text>
+      <rect class="d-auto" x="589" y="46" width="122" height="88" rx="9"/>
+      <text class="d-title" x="650" y="82">Gates<tspan class="d-detail" x="650" dy="20">Tests · lint · CI</tspan><tspan class="d-detail" x="650" dy="16">Browser evidence</tspan></text>
+      <rect class="d-auto" x="735" y="46" width="122" height="88" rx="9"/>
+      <text class="d-title" x="796" y="82">PR + bot loop<tspan class="d-detail" x="796" dy="20">Draft, then ready</tspan><tspan class="d-detail" x="796" dy="16">Review feedback</tspan></text>
+      <rect class="d-human" x="881" y="46" width="122" height="88" rx="9"/>
+      <text class="d-title" x="942" y="82">Human Gate 1<tspan class="d-detail" x="942" dy="20">Ready for Review</tspan><tspan class="d-detail" x="942" dy="16">People take over</tspan></text>
+      <path class="d-path-human" d="M330 134 V224" marker-end="url(#m-human)"/>
+      <text class="d-label" x="320" y="186" text-anchor="end">Real product ambiguity</text>
+      <rect class="d-human" x="230" y="226" width="230" height="72" rx="9"/>
+      <text class="d-title" x="345" y="256">Product decision<tspan class="d-detail" x="345" dy="20">One question, options, recommendation</tspan></text>
+      <path class="d-path-human" d="M392 226 V136" marker-end="url(#m-human)"/>
+      <path class="d-path" d="M650 134 V224" marker-end="url(#m-auto)"/>
+      <text class="d-label" x="660" y="186">Failed gate</text>
+      <rect class="d-auto" x="540" y="226" width="250" height="72" rx="9"/>
+      <text class="d-title" x="665" y="256">Recovery contract<tspan class="d-detail" x="665" dy="20">Retry · resume · replan · repair</tspan></text>
+      <path class="d-path" d="M540 262 H500 V136" marker-end="url(#m-auto)"/>
+      <text class="d-label" x="665" y="322" text-anchor="middle">Evidence first, then resume at the recorded stage</text>
+      <text class="d-label" x="942" y="162" text-anchor="middle">The loop stops here:</text>
+      <text class="d-label" x="942" y="178" text-anchor="middle">no reviewers, merge,</text>
+      <text class="d-label" x="942" y="194" text-anchor="middle">or deploy.</text>
+      <text class="d-label" x="5" y="364">Any stage: an operator can set the workspace On Hold in Orca. The loop stops that ticket's supervisor and frees its slot.</text>
+      <text class="d-label" x="5" y="386">Leases, protected paths, checkpoints, and workspace operation receipts apply throughout.</text>
+    </svg>
+    </div>
+    <figcaption>Publication and review substeps are folded together. Reaching Human Gate 1 means an open, ready pull request whose evidence SHA matches the worktree, with no open recovery or decision.</figcaption>
+  </figure>
+</section>
+
+<section id="floor">
+  <div class="eyebrow">Workstations</div>
+  <h2>The factory floor is an Orca board</h2>
+  <p class="lede">Each admitted ticket gets its own <a href="https://github.com/stablyai/orca">Orca</a> workspace: a worktree cut from <code>origin/main</code>, a setup terminal, a dev server, a Pi agent in an Orca chat session, and reference and app browser tabs. The workspace's status lane is how people and the loop hand work back and forth.</p>
+  <figure class="panel" data-shot="floor">
+    <div class="panel-head"><span class="panel-title">Orca status lanes</span><div class="legend"><span class="key">Loop working</span><span class="key key-human">Waiting on, or set by, a person</span><span class="key key-neutral">Past the loop's boundary</span></div></div>
+    <div class="diagram-scroll" tabindex="0" role="region" aria-label="Orca status lane diagram; scrolls sideways on small screens">
+    <svg viewBox="0 10 1010 290" role="img" aria-labelledby="floor-t floor-d" xmlns="http://www.w3.org/2000/svg">
+      <title id="floor-t">Orca workspace status lanes</title>
+      <desc id="floor-d">Five lanes: In progress, Ready for Review, In review, Approved, Done. The loop moves a workspace from In progress to Ready for Review when Human Gate 1 is verified. People move it after that. In progress and Ready for Review count toward the open-workspace budget; the other lanes do not. An operator can move a workspace to On Hold, which stops its supervisor, releases its cohort slot, and removes it from the budget.</desc>
+      <defs>
+        <marker id="f-auto" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-auto" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="f-human" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-human" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+      <path class="d-bracket" d="M5 44 V36 H395 V44"/>
+      <text class="d-label-strong" x="200" y="26" text-anchor="middle">COUNTS TOWARD THE OPEN-WORKSPACE BUDGET</text>
+      <path class="d-bracket" d="M413 44 V36 H1005 V44"/>
+      <text class="d-label-strong" x="709" y="26" text-anchor="middle">NOT COUNTED</text>
+      <rect class="d-auto" x="5" y="52" width="186" height="78" rx="9"/>
+      <text class="d-title" x="98" y="86">In progress<tspan class="d-detail" x="98" dy="20">Pi agent building</tspan></text>
+      <rect class="d-human" x="209" y="52" width="186" height="78" rx="9"/>
+      <text class="d-title" x="302" y="86">Ready for Review<tspan class="d-detail" x="302" dy="20">Human Gate 1 verified</tspan></text>
+      <rect class="d-neutral" x="413" y="52" width="186" height="78" rx="9"/>
+      <text class="d-title" x="506" y="86">In review<tspan class="d-detail" x="506" dy="20">People reviewing</tspan></text>
+      <rect class="d-neutral" x="617" y="52" width="186" height="78" rx="9"/>
+      <text class="d-title" x="710" y="86">Approved<tspan class="d-detail" x="710" dy="20">Set by people</tspan></text>
+      <rect class="d-neutral" x="821" y="52" width="184" height="78" rx="9"/>
+      <text class="d-title" x="913" y="86">Done<tspan class="d-detail" x="913" dy="20">Set by people</tspan></text>
+      <path class="d-path" d="M191 91 H207" marker-end="url(#f-auto)"/>
+      <path class="d-path-human" d="M395 91 H411" marker-end="url(#f-human)"/>
+      <path class="d-path-human" d="M599 91 H615" marker-end="url(#f-human)"/>
+      <path class="d-path-human" d="M803 91 H819" marker-end="url(#f-human)"/>
+      <text class="d-label d-label-auto" x="122" y="154">Loop moves it at verified Human Gate 1</text>
+      <text class="d-label" x="709" y="154" text-anchor="middle">People move it from here</text>
+      <path class="d-path-human" d="M98 130 V202" marker-end="url(#f-human)"/>
+      <text class="d-label" x="108" y="182">Operator sets</text>
+      <rect class="d-human" x="5" y="204" width="390" height="72" rx="9"/>
+      <text class="d-title" x="200" y="234">On Hold<tspan class="d-detail" x="200" dy="20">Supervisor stopped · cohort slot released · not counted</tspan></text>
+      <text class="d-label" x="430" y="226">The cohort slot frees at verified Human Gate 1.</text>
+      <text class="d-label" x="430" y="248">The workspace keeps counting until someone moves it past Ready for Review,</text>
+      <text class="d-label" x="430" y="270">so a review backlog slows new intake.</text>
+    </svg>
+    </div>
+    <figcaption>Lane names and status IDs are set per project in the private <code>hopper.toml</code>. cmux is a legacy backend that can be turned off with <code>allow_legacy_cmux = false</code>; a ticket keeps the backend it started with.</figcaption>
+  </figure>
+  <div class="grid-2">
+    <article class="card">
+      <div class="card-kicker">Restart-safe workstations</div>
+      <h3>Every workspace action leaves a receipt</h3>
+      <p>Creating the worktree, running setup, starting the dev server, and launching the agent each record a receipt in the ticket's workspace binding. After a crash or restart, the loop checks what already exists. An uncertain step is inspected and never blindly replayed, so a restart cannot spawn a second agent.</p>
+    </article>
+    <article class="card">
+      <div class="card-kicker">Liveness checks</div>
+      <h3>Liveness comes from Orca, not the UI</h3>
+      <p>The loop confirms an agent by its durable Orca chat session ID and confirms the dev server by its running terminal plus a live HTTP probe. If Orca's window drops a pane while the process keeps running, the ticket keeps going. A finished setup terminal does not count as a missing resource.</p>
+    </article>
+  </div>
+</section>
+
+<section id="stations">
+  <div class="eyebrow">Capabilities</div>
+  <h2>Stations on the line</h2>
+  <p class="lede">What each part of the factory does. “Running” means built and in use; it does not mean every ticket clears that station without help.</p>
+  <div class="table-wrap"><table class="stations">
+    <thead><tr><th scope="col">Station</th><th scope="col">What runs there</th><th scope="col">Status</th></tr></thead>
+    <tbody>
+      <tr><td>Intake &amp; admission</td><td>The drip pulls ranked, ready issue-tracker work in configured epics and checks dependencies. Admission checks machine pressure (memory compression, load, disk), the cohort capacity, and the Orca open-workspace budget.</td><td><span class="chip chip-run">Running</span></td></tr>
+      <tr><td>Workstations</td><td>One Orca workspace per ticket: an exactly named worktree from <code>origin/main</code>, setup and dev-server terminals, a Pi agent in an Orca chat session, and reference and app tabs. Optional tabs never block a launch.</td><td><span class="chip chip-run">Running</span></td></tr>
+      <tr><td>Workspace identity</td><td>A per-ticket binding records the backend, worktree, terminals, agent session, and views. A recorded binding never changes backend. <code>workspace-adopt</code> can enroll one existing, verified Orca workspace.</td><td><span class="chip chip-run">Running</span></td></tr>
+      <tr><td>Work instructions</td><td>An evidence-backed plan, a plan review, a bounded task manifest with explicit dependencies, skills, and a definition of done.</td><td><span class="chip chip-run">Running</span></td></tr>
+      <tr><td>Specialist roles</td><td>Tool-neutral agent definitions, including author and critic, task writer, cloud, premium, and small workers, code reviewer, review adjudicator, repair agent and reviewer, and QA. Each role maps to a model tier in <code>common/model-tiers.toml</code>, with a fallback during provider outages.</td><td><span class="chip chip-run">Running</span></td></tr>
+      <tr><td>Quality control</td><td>Target-repo tests, lint, builds, browser evidence, and CI. The runner executes verification commands itself, and a rejecting guard is rerun on the base tree before an attempt is charged.</td><td><span class="chip chip-run">Running</span></td></tr>
+      <tr><td>Recovery</td><td>Each failure records evidence, then a structured contract: task retry, stage resume, republish, replan, spinup retry, or provider wait. Runner defects go to test-first repair with independent review.</td><td><span class="chip chip-run">Running</span></td></tr>
+      <tr><td>Governance</td><td>Protected paths, a private config that fails closed, foreground ownership for direct work, On Hold hand-back, and no reviewer assignment, merge, or deploy.</td><td><span class="chip chip-bound">By design</span></td></tr>
+      <tr><td>Visibility</td><td>Orca status lanes, an unread flag on the workspace when the loop needs a person, and on-demand <code>runner.py overview</code> and <code>watch --once</code> snapshots. Nothing polls on a timer.</td><td><span class="chip chip-run">Running</span></td></tr>
+      <tr><td>Economics</td><td>Pre-implementation, premium daily and monthly, and unattended daily budgets; a usage ledger; per-stage metrics.</td><td><span class="chip chip-bound">Instrumented</span><span class="sub">Needs joined-up outcome analysis</span></td></tr>
+      <tr><td>Independent acceptance</td><td>A protected holdout scenario suite that the implementing agent cannot redefine.</td><td><span class="chip chip-next">Next to build</span></td></tr>
+      <tr><td>Production feedback</td><td>A loop that turns incidents and customer outcomes into new checks.</td><td><span class="chip chip-next">Next to build</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><p><strong>The factory is the machinery around the coding:</strong> scheduling, workstations, acceptance guards, evidence, recovery, and ownership. Many agents alone would not make a factory. This orchestration does.</p></div>
+</section>
+
+<section id="position">
+  <div class="eyebrow">Context</div>
+  <h2>Where it sits</h2>
+  <p class="lede">“Software factory” covers two operating models in current AI practice. This line is the first kind, by design.</p>
+  <div class="grid-2">
+    <article class="card">
+      <div class="card-kicker">This model</div>
+      <h3>Governed AI software factory</h3>
+      <p>A repeatable delivery system that connects specifications, agents, orchestration, verification, permissions, and human decision gates. AWS's AI-driven development lifecycle keeps human clarification and approval. GitHub's spec-driven and Continuous AI workflows produce reviewable artifacts. Microsoft's agentic platform builds governance into each stage.</p>
+      <p class="small">Sources: <a href="#source-1">AWS AI-DLC</a>, <a href="#source-2">GitHub Spec Kit</a>, <a href="#source-3">Continuous AI</a>, <a href="#source-4">Microsoft</a>.</p>
+    </article>
+    <article class="card">
+      <div class="card-kicker">A stricter model</div>
+      <h3>Dark software factory</h3>
+      <p>Specifications and scenarios drive implementation with no routine human coding or code review. External behavioral validation carries the trust that review usually carries.</p>
+      <blockquote>“Code must not be written by humans.”<br>“Code must not be reviewed by humans.”</blockquote>
+      <p class="small">StrongDM's stated constraints, not a universal maturity bar. <a href="#source-5">Source</a>. This line keeps human review on purpose.</p>
+    </article>
+  </div>
+  <figure class="panel" data-shot="levels">
+    <div class="panel-head"><span class="panel-title">Autonomy levels</span></div>
+    <div class="levels">
+      <article class="level"><div class="num">Level 3</div><h3>Supervise the agents</h3><p>AI does substantial development. People manage sessions and review diffs closely.</p></article>
+      <article class="level level-here"><div class="num">Level 4 · this line</div><h3>Operate through intent</h3><p>People shape specs, skills, plans, and schedules. Agents execute while the person is away.</p></article>
+      <article class="level"><div class="num">Level 5</div><h3>Operate the factory</h3><p>The system becomes “a black box that turns specs into software.”</p></article>
+    </div>
+    <figcaption>Levels from Dan Shapiro's practitioner framework, which is shared vocabulary and not a certification. The architecture is built for Level 4; day-to-day operation still includes Level 3 supervision when a ticket needs rescue.</figcaption>
+  </figure>
+</section>
+
+<section id="next">
+  <div class="eyebrow">Roadmap</div>
+  <h2>What's next on the line: proving yield</h2>
+  <p class="lede">The next milestone is evidence that the existing line produces acceptable changes with little intervention and known cost. Raising capacity or removing safeguards is a separate decision.</p>
+  <div class="grid-2">
+    <article class="card">
+      <div class="card-kicker">Measure</div>
+      <h3>Run a consecutive batch and count</h3>
+      <ul><li>Share of tickets reaching Human Gate 1 without rescue</li><li>Human minutes per accepted ticket</li><li>Median and slow-tail lead time</li><li>Total cost, including failed attempts and repair</li><li>Rework after review and escaped regressions</li></ul>
+      <p>On Hold hand-backs are recorded in cohort history as <code>operator-on-hold</code>, which makes interventions countable.</p>
+    </article>
+    <article class="card">
+      <div class="card-kicker">Accept independently</div>
+      <h3>Add a protected scenario suite</h3>
+      <ul><li>Existing click and submit behavior</li><li>Keyboard, focus, and accessibility</li><li>Narrow screens and overflowing content</li><li>Client-side navigation and caching</li><li>Visual checks of compiled assets</li></ul>
+      <p>Correctness should be shown outside the builder's own account of success.</p>
+    </article>
+    <article class="card">
+      <div class="card-kicker">Harden</div>
+      <h3>Retire recurring failure classes</h3>
+      <p>Recovery and test-first runner repair are in place. The useful measure is whether each rescue class stops recurring, shown by the original failing gate passing with an exact verification receipt.</p>
+    </article>
+    <article class="card">
+      <div class="card-kicker">Prove unattended</div>
+      <h3>Ordinary failures resolve while the operator is away</h3>
+      <p>The goal is routine failures fixing themselves and real product questions reaching the operator with useful evidence. A small, bounded cohort is the right proving ground.</p>
+    </article>
+  </div>
+  <div class="note"><h3>Human release authority stays</h3><p>Approval, communications, merge, and deployment rules are deliberate boundaries. A dependable factory can keep people in charge of release.</p></div>
+</section>
+
+<section id="adopt">
+  <div class="eyebrow">Adopting it</div>
+  <h2>Run your own line</h2>
+  <p class="lede">You can borrow the practices, pilot one ticket, or stand up a full line. Each step works on its own.</p>
+  <div class="grid-2">
+    <article class="card"><div class="card-kicker">Lightweight</div><h3>Borrow the practices</h3><p>Start with the shared instructions, role definitions, skills, and verification habits in your current tool. Setup paths exist for Pi, Claude Code, and Codex CLI; the autonomous runner is Pi-based. No intake, Orca board, or supervisor needed.</p></article>
+    <article class="card"><div class="card-kicker">Supervised pilot</div><h3>Try one bounded ticket</h3><p>Pick one explicitly owned ticket with clear acceptance criteria and a spend expectation. Run it interactively in its own worktree and watch each stage before letting anything run in the background.</p></article>
+  </div>
+  <h3 style="margin-top:30px">Setup sequence</h3>
+  <ol class="steps">
+    <li><strong>Read the guide and policy.</strong> Start with the <a href="https://github.com/crstamps2/agentfiles/blob/main/README.md">README</a>, the <a href="https://github.com/crstamps2/agentfiles/blob/main/common/skills/agent-loop/README.md">agent-loop operator guide</a>, and the <a href="https://github.com/crstamps2/agentfiles/blob/main/common/skills/agent-loop/references/operations-policy.md">operations policy</a>, which is the authority on ownership and recovery.</li>
+    <li><strong>Install tooling.</strong> Python 3.11+, Pi 1.3.0+ with <code>pi-subagents</code>, Node.js, Git, GitHub CLI, issue-tracker access, and model-provider access. The repository supplies no credentials; keep them in environment variables or your credential store.</li>
+    <li><strong>Install Orca.</strong> Put its CLI on your PATH (<code>orca</code>, or <code>orca-ide</code> on Linux) and register your app checkout. Before creating anything, the runner confirms Orca is reachable, the repo matches, and the Orca build reports the capabilities the adapter needs.</li>
+    <li><strong>Create your private config.</strong> Copy <code>hopper.example.toml</code> to <code>hopper.toml</code>, fill in project, workspace, Orca status IDs, paths, budgets, and cohort capacity, then set <code>project.configured = true</code>. The runner refuses to act on a missing or incomplete file and never falls back to the template. Never commit <code>hopper.toml</code>.</li>
+    <li><strong>Inspect, then pilot.</strong> Run the read-only commands below. A real <code>drip</code> creates Orca workspaces and starts agents, so run it only when you mean to, and start with one supervised ticket.</li>
+  </ol>
+  <div class="code"><div class="small">Read-only inspection in a fresh checkout</div><pre>git clone https://github.com/crstamps2/agentfiles.git
+cd agentfiles
+./bootstrap.sh --tool=pi --repo="$PWD" --dry-run
+
+cd common/skills/agent-loop
+cp -n hopper.example.toml hopper.toml   # then edit it
+R="$PWD/scripts"
+python3 "$R/runner.py" overview
+python3 "$R/runner.py" drip --dry-run</pre><p class="small">Dropping <code>--dry-run</code> from bootstrap has your CLI run its setup document and can change your harness configuration.</p></div>
+  <div class="note"><h3>Portable framework, project-specific line</h3><p>The framework supports macOS and Linux. A full line also relies on launchd supervisors and on target-app conventions in the Orca adapter's dev-server probe: <code>bin/dev</code> under overmind, a <code>PORT</code> in <code>.env</code>, and a per-ticket local <code>.test</code> hostname. Another app needs those pieces adapted.</p></div>
+</section>
+
+<section id="engine">
+  <div class="eyebrow">Under the hood</div>
+  <h2>The engine, by responsibility</h2>
+  <p class="lede">Most of these are modules, not scripts to launch. The operator entry point is <code>runner.py</code>.</p>
+  <div class="table-wrap"><table class="engine">
+    <thead><tr><th scope="col">Responsibility</th><th scope="col">Python files</th><th scope="col">Role</th></tr></thead>
+    <tbody>
+      <tr><td>Operator entry</td><td><code>runner.py</code>, <code>lifecycle.py</code></td><td>Operator commands and dispatch; advancing a ticket through its persisted stages.</td></tr>
+      <tr><td>Workspaces</td><td><code>workspaces.py</code>, <code>workspace_orca.py</code>, <code>workspace_cmux.py</code>, <code>workspace_binding.py</code>, <code>workspace_capacity.py</code></td><td>Backend selection and receipt-based launch, the Orca and legacy cmux adapters, durable per-ticket bindings, and the status-based Orca workspace budget and On Hold detection.</td></tr>
+      <tr><td>Config &amp; records</td><td><code>config.py</code>, <code>state.py</code>, <code>attempt.py</code></td><td>Load the private <code>hopper.toml</code> and keep ticket and attempt records that make interrupted work recoverable.</td></tr>
+      <tr><td>Planning &amp; contracts</td><td><code>plan.py</code>, <code>contracts.py</code>, <code>agentdef.py</code></td><td>Plans and plan review, task manifests and worker results, and Pi agent definitions.</td></tr>
+      <tr><td>Implement &amp; verify</td><td><code>ladder.py</code>, <code>guards.py</code>, <code>worktree.py</code></td><td>Worker escalation, verification soundness, snapshots, and allowed-file boundaries.</td></tr>
+      <tr><td>Intake &amp; capacity</td><td><code>drip.py</code>, <code>admission.py</code>, <code>cohort.py</code></td><td>Select eligible work, check machine pressure, track cohort slots, and honor On Hold hand-backs.</td></tr>
+      <tr><td>Recovery</td><td><code>reconcile.py</code>, <code>heal.py</code>, <code>recovery.py</code>, <code>review_reconcile.py</code></td><td>Reconcile interrupted attempts, apply reason-specific healing, keep explicit recovery contracts, and release externally reviewed obsolete reservations.</td></tr>
+      <tr><td>Runner repair</td><td><code>repair.py</code></td><td>Turn runner defects into test-first, independently reviewed repairs.</td></tr>
+      <tr><td>Decisions &amp; ownership</td><td><code>decision.py</code>, <code>interactive.py</code></td><td>Validate real product questions and keep foreground work separate from the cohort.</td></tr>
+      <tr><td>CI &amp; review</td><td><code>ci.py</code>, <code>botreview.py</code></td><td>Classify CI results and turn bot review feedback into scoped follow-up work.</td></tr>
+      <tr><td>Publication</td><td><code>publish.py</code>, <code>prbody.py</code>, <code>screenshots.py</code></td><td>Publish accepted changes, write PR descriptions, and capture component screenshots.</td></tr>
+      <tr><td>Process safety</td><td><code>supervise.py</code>, <code>providers.py</code>, <code>locks.py</code>, <code>procid.py</code>, <code>procs.py</code></td><td>launchd supervision, provider availability, ownership leases, process identity, and bounded subprocesses.</td></tr>
+      <tr><td>Visibility &amp; spend</td><td><code>watch.py</code>, <code>sidebar.py</code>, <code>budget.py</code>, <code>ledger.py</code>, <code>metrics.py</code></td><td>Ticket snapshots, workspace presentation and review routing, spend, usage attribution, and stage metrics.</td></tr>
+      <tr><td>Advanced &amp; test-only</td><td><code>parallel.py</code>, <code>cohort_migration.py</code>, <code>fake_worker.py</code></td><td>Intra-ticket parallelism (gated off), cohort migration, and a simulated worker for tests.</td></tr>
+      <tr><td>Regression evidence</td><td><code>test_*.py</code></td><td>Behavioral tests across contracts, lifecycle, recovery, ownership, workspaces, and publication. A passing suite covers the tested behavior; it does not prove every end-to-end run.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small">All files live in <a href="https://github.com/crstamps2/agentfiles/tree/main/common/skills/agent-loop/scripts"><code>common/skills/agent-loop/scripts/</code></a>.</p>
+</section>
+
+<section aria-label="Bottom line">
+  <div class="eyebrow">Bottom line</div>
+  <p class="bottom">A specialized software factory: tickets enter, Orca workspaces build them, and people review what comes out.</p>
+  <p class="lede">The assembly line exists. What remains is showing it delivers acceptable changes consistently, with little intervention and a known cost.</p>
+</section>
+
+<section id="sources">
+  <div class="eyebrow">References</div>
+  <h2>Sources</h2>
+  <ol class="sources">
+    <li id="source-1"><a href="https://aws.amazon.com/blogs/devops/open-sourcing-adaptive-workflows-for-ai-driven-development-life-cycle-ai-dlc/">AWS: Open-Sourcing Adaptive Workflows for AI-Driven Development Life Cycle</a><span class="src-note">AI-led execution with human clarification, approval, and verification.</span></li>
+    <li id="source-2"><a href="https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/">GitHub: Spec-driven development with AI</a><span class="src-note">Specifications, planning, task decomposition, and implementation.</span></li>
+    <li id="source-3"><a href="https://github.blog/ai-and-ml/generative-ai/continuous-ai-in-practice-what-developers-can-automate-today-with-agentic-ci/">GitHub: Continuous AI in practice</a><span class="src-note">Bounded background agents and reviewable repository artifacts.</span></li>
+    <li id="source-4"><a href="https://developer.microsoft.com/blog/learn-from-microsoft-transform-software-development-through-an-agentic-platform/">Microsoft: Transform software development through an agentic platform</a><span class="src-note">Agents across the lifecycle, with governance.</span></li>
+    <li id="source-5"><a href="https://factory.strongdm.ai/">StrongDM Software Factory</a><span class="src-note">Development without human implementation or routine code review.</span></li>
+    <li id="source-6"><a href="https://factory.strongdm.ai/principles">StrongDM: The Principles</a><span class="src-note">Seed, validation harness, and feedback. See also <a href="https://factory.strongdm.ai/techniques">Techniques</a>.</span></li>
+    <li id="source-7"><a href="https://www.danshapiro.com/blog/2026/01/the-five-levels-from-spicy-autocomplete-to-the-software-factory/">Dan Shapiro: The Five Levels, from Spicy Autocomplete to the Dark Factory</a><span class="src-note">Practitioner taxonomy, January 23, 2026.</span></li>
+    <li id="source-8"><a href="https://simonwillison.net/2026/Feb/7/software-factory/">Simon Willison: How StrongDM's AI team build serious software without even looking at the code</a><span class="src-note">Independent eyewitness account of a working demonstration, February 7, 2026.</span></li>
+  </ol>
+</section>
+
+<footer>A description of the system and an architectural view, not a certification, security audit, or operating instruction.</footer>
+</main>
+</body>
+</html>

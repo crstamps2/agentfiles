@@ -9,7 +9,7 @@ import pathlib
 
 STATES = ("queued", "spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready",
           "bot-loop", "human-gate-1", "colleague-loop", "human-gate-2", "done", "blocked", "paused",
-          "decision-required")
+          "decision-required", "retired")
 _FORWARD = ("queued", "spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready",
             "bot-loop", "human-gate-1", "colleague-loop", "human-gate-2", "done")
 RESUMABLE_STATES = frozenset(("spinup", "plan", "plan-review", "implement", "gates", "draft-pr", "ready", "bot-loop"))
@@ -18,7 +18,7 @@ EDGES = {s: set() for s in STATES}
 for a, b in zip(_FORWARD, _FORWARD[1:]):
     EDGES[a].add(b)
 for s in STATES:
-    if s not in ("done", "blocked", "paused", "decision-required", "human-gate-1", "human-gate-2"):
+    if s not in ("retired", "done", "blocked", "paused", "decision-required", "human-gate-1", "human-gate-2"):
         EDGES[s] |= {"blocked", "paused", "decision-required"}
 EDGES["blocked"] |= {"implement", "plan"}
 for s in ("ready", "bot-loop", "colleague-loop", "human-gate-1", "human-gate-2"):
@@ -55,6 +55,7 @@ class Ticket:
     spinup_failures: int = 0
     needs_operator: str = ""
     updated_utc: str = ""
+    retired_workspace: dict = dataclasses.field(default_factory=dict)
 
 
 def _now() -> str:
@@ -105,7 +106,7 @@ def resume_target(t: Ticket, target: str, reason: str = "") -> Ticket:
     """Resume controller-owned pre-review work from a durable checkpoint."""
     if target not in RESUMABLE_STATES:
         raise IllegalTransition(f"invalid recovery target {target!r}")
-    if t.state in ("human-gate-1", "human-gate-2", "done"):
+    if t.state in ("human-gate-1", "human-gate-2", "done", "retired"):
         raise IllegalTransition(f"{t.key}: cannot recover terminal state {t.state!r}")
     return _replace(t, state=target, previous=t.state, reason=reason, updated_utc=_now(), needs_operator="")
 

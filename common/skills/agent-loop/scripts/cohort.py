@@ -220,6 +220,8 @@ def reserve(cfg, key: str, source: str) -> Slot:
         if not acquired:
             raise CohortError("cohort lease is already held")
         value = _load_unlocked(cfg)
+        if state.load(cfg.ticket_dir(key)).state == "retired":
+            raise CohortError(f"{key}: workspace retired by operator")
         if state.human_owned(cfg.ticket_dir(key)):
             raise CohortError(f"{key} is under foreground control")
         for row in value.history:

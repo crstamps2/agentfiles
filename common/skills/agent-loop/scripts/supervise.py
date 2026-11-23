@@ -89,6 +89,8 @@ def _launchctl(*args) -> subprocess.CompletedProcess:
 def start(key: str, worktree: str, state_root: pathlib.Path) -> str:
     import state
     tdir = pathlib.Path(state_root) / "tickets" / key
+    if state.load(tdir).state == "retired":
+        return "retired"
     if state.human_owned(tdir):
         return "interactive"
     if (tdir / "PARKED").exists():
